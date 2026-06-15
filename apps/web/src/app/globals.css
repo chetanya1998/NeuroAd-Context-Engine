@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #000;
+  color: #f8fafc;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(245, 158, 11, 0.45);
+}
+
+.timeline-grid {
+  background-image: linear-gradient(to right, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 64px 100%;
+}
