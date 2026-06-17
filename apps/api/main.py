@@ -28,16 +28,54 @@ from pydantic import BaseModel
 
 
 APP_DIR = Path(__file__).resolve().parent
-STORAGE_DIR = APP_DIR / "storage"
+
+
+def path_from_env(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    return Path(value).expanduser() if value else default
+
+
+def int_from_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def cors_origins_from_env() -> list[str]:
+    value = os.getenv("CORS_ORIGINS")
+    if value:
+        return [origin.strip() for origin in value.split(",") if origin.strip()]
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+
+STORAGE_DIR = path_from_env("NEUROAD_STORAGE_DIR", APP_DIR / "storage")
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 FRAME_DIR = STORAGE_DIR / "frames"
 AUDIO_DIR = STORAGE_DIR / "audio"
 REPORT_DIR = STORAGE_DIR / "reports"
-DB_PATH = STORAGE_DIR / "neuroad.db"
+DB_PATH = path_from_env("NEUROAD_DB_PATH", STORAGE_DIR / "neuroad.db")
+MODEL_DIR = path_from_env("NEUROAD_MODEL_DIR", STORAGE_DIR.parent / "models")
+VOSK_MODEL_DIR = path_from_env("VOSK_MODEL_DIR", MODEL_DIR / "vosk-model-small-en-us-0.15")
+MOBILENET_SSD_GRAPH = path_from_env("MOBILENET_SSD_GRAPH", MODEL_DIR / "mobilenet-ssd" / "frozen_inference_graph.pb")
+MOBILENET_SSD_CONFIG = path_from_env(
+    "MOBILENET_SSD_CONFIG",
+    MODEL_DIR / "mobilenet-ssd" / "ssd_mobilenet_v1_coco.pbtxt",
+)
 
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+MAX_UPLOAD_BYTES = int_from_env("NEUROAD_MAX_UPLOAD_MB", 200) * 1024 * 1024
+MAX_SOURCE_SECONDS = int_from_env("NEUROAD_MAX_SOURCE_SECONDS", 0)
+MAX_ANALYSIS_SECONDS = int_from_env("NEUROAD_MAX_ANALYSIS_SECONDS", 180)
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
-EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("NEUROAD_WORKERS", "1")))
+EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS", 1)))
+VOSK_MODEL_CACHE: Any | None = None
+MOBILENET_SSD_NET_CACHE: Any | None = None
 
 PROCESSING_STEPS = [
     ("metadata", "Metadata fetched"),
@@ -104,10 +142,132 @@ AD_CATALOG = [
     },
 ]
 
+COCO_LABELS = [
+    "background",
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "street sign",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "hat",
+    "backpack",
+    "umbrella",
+    "shoe",
+    "eye glasses",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "plate",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "mirror",
+    "dining table",
+    "window",
+    "desk",
+    "toilet",
+    "door",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "blender",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
+    "hair brush",
+]
+
 
 def ensure_storage_dirs() -> None:
-    for directory in [UPLOAD_DIR, FRAME_DIR, AUDIO_DIR, REPORT_DIR, STORAGE_DIR / "samples"]:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    for directory in [UPLOAD_DIR, FRAME_DIR, AUDIO_DIR, REPORT_DIR, STORAGE_DIR / "samples", MODEL_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def enforce_source_duration(duration_seconds: int | float) -> None:
+    if MAX_SOURCE_SECONDS > 0 and duration_seconds > MAX_SOURCE_SECONDS:
+        limit_minutes = MAX_SOURCE_SECONDS / 60
+        raise ValueError(f"Video duration exceeds the configured {limit_minutes:g} minute limit.")
+
+
+def runtime_dependency_status() -> dict[str, Any]:
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    yt_dlp_available = importlib.util.find_spec("yt_dlp") is not None
+    vosk_available = importlib.util.find_spec("vosk") is not None
+    ultralytics_available = importlib.util.find_spec("ultralytics") is not None
+    return {
+        "ffmpeg": {"available": bool(ffmpeg_path), "path": ffmpeg_path},
+        "ffprobe": {"available": bool(ffprobe_path), "path": ffprobe_path},
+        "yt_dlp": {"available": yt_dlp_available, "path": None},
+        "vosk": {"available": vosk_available, "model_path": str(VOSK_MODEL_DIR), "model_ready": VOSK_MODEL_DIR.exists()},
+        "mobilenet_ssd": {
+            "available": MOBILENET_SSD_GRAPH.exists() and MOBILENET_SSD_CONFIG.exists(),
+            "graph_path": str(MOBILENET_SSD_GRAPH),
+            "config_path": str(MOBILENET_SSD_CONFIG),
+        },
+        "ultralytics": {"available": ultralytics_available, "path": None},
+    }
 
 
 @asynccontextmanager
@@ -120,10 +280,7 @@ ensure_storage_dirs()
 app = FastAPI(title="NeuroAd Context Engine API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=cors_origins_from_env(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -477,6 +634,30 @@ def get_video_or_404(video_id: str) -> sqlite3.Row:
     return video
 
 
+@app.get("/health")
+def health() -> dict[str, Any]:
+    dependencies = runtime_dependency_status()
+    storage_ready = STORAGE_DIR.exists() and os.access(STORAGE_DIR, os.W_OK)
+    db_ready = DB_PATH.parent.exists() and os.access(DB_PATH.parent, os.W_OK)
+    media_ready = bool(dependencies["ffmpeg"]["available"] and dependencies["ffprobe"]["available"])
+    ready = bool(storage_ready and db_ready and media_ready)
+    return {
+        "status": "ok" if ready else "degraded",
+        "ready": ready,
+        "storage_ready": storage_ready,
+        "database_ready": db_ready,
+        "storage_dir": str(STORAGE_DIR),
+        "database_path": str(DB_PATH),
+        "limits": {
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "max_source_seconds": MAX_SOURCE_SECONDS,
+            "max_analysis_seconds": MAX_ANALYSIS_SECONDS,
+            "workers": int_from_env("NEUROAD_WORKERS", 1),
+        },
+        "dependencies": dependencies,
+    }
+
+
 @app.post("/api/videos/upload")
 async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
     suffix = Path(file.filename or "").suffix.lower()
@@ -495,6 +676,11 @@ async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
             output.write(chunk)
 
     duration = probe_duration(target)
+    try:
+        enforce_source_duration(duration)
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     title = Path(file.filename or "Uploaded video").stem
     execute(
         """
@@ -636,18 +822,15 @@ def get_job(job_id: str) -> dict[str, Any]:
 
 @app.get("/api/system/dependencies")
 def get_system_dependencies() -> dict[str, Any]:
-    ffmpeg_path = shutil.which("ffmpeg")
-    ffprobe_path = shutil.which("ffprobe")
-    yt_dlp_available = importlib.util.find_spec("yt_dlp") is not None
+    dependencies = runtime_dependency_status()
+    ffmpeg_available = dependencies["ffmpeg"]["available"]
+    ffprobe_available = dependencies["ffprobe"]["available"]
+    yt_dlp_available = dependencies["yt_dlp"]["available"]
     return {
-        "ready": bool(ffmpeg_path and ffprobe_path),
-        "youtube_ingest_ready": bool(ffmpeg_path and ffprobe_path and yt_dlp_available),
+        "ready": bool(ffmpeg_available and ffprobe_available),
+        "youtube_ingest_ready": bool(ffmpeg_available and ffprobe_available and yt_dlp_available),
         "youtube_cookies_configured": bool(os.getenv("YTDLP_COOKIES_FILE") or os.getenv("YTDLP_COOKIES_BROWSER")),
-        "dependencies": {
-            "ffmpeg": {"available": bool(ffmpeg_path), "path": ffmpeg_path},
-            "ffprobe": {"available": bool(ffprobe_path), "path": ffprobe_path},
-            "yt_dlp": {"available": yt_dlp_available, "path": None},
-        },
+        "dependencies": dependencies,
     }
 
 
@@ -730,6 +913,7 @@ def process_upload_job(job_id: str, video_id: str) -> None:
 
         source = Path(video["file_path"])
         duration = probe_duration_or_raise(source)
+        enforce_source_duration(duration)
         update_job(job_id, "processing", 8, "metadata")
 
         segments = make_segments(duration)
@@ -785,7 +969,7 @@ def probe_duration_or_raise(path: Path) -> float:
 
 
 def make_segments(duration: float) -> list[dict[str, Any]]:
-    capped = min(duration, 180.0)
+    capped = min(duration, float(MAX_ANALYSIS_SECONDS)) if MAX_ANALYSIS_SECONDS > 0 else duration
     segment_size = 2.0 if capped < 60 else 5.0
     segments = []
     start = 0.0
@@ -864,21 +1048,113 @@ def compute_audio_metrics(audio_path: Path, segments: list[dict[str, Any]]) -> d
 
 
 def transcribe_audio(audio_path: Path) -> list[dict[str, Any]]:
+    if os.getenv("NEUROAD_ENABLE_TRANSCRIPTION", "1").lower() in {"0", "false", "no", "off"}:
+        return []
+    engine = os.getenv("NEUROAD_TRANSCRIPTION_ENGINE", "vosk").lower()
+    if engine == "vosk":
+        return transcribe_audio_vosk(audio_path)
+    if engine != "whisper":
+        return []
     try:
         import whisper
     except ImportError as exc:
-        raise RuntimeError("openai-whisper is required for transcription.") from exc
+        if os.getenv("NEUROAD_REQUIRE_TRANSCRIPTION", "0").lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError("openai-whisper is required for transcription.") from exc
+        return []
     model_name = os.getenv("WHISPER_MODEL", "tiny")
     model = whisper.load_model(model_name)
     result = model.transcribe(str(audio_path), fp16=False)
     return result.get("segments", [])
 
 
+def get_vosk_model() -> Any | None:
+    global VOSK_MODEL_CACHE
+    if VOSK_MODEL_CACHE is not None:
+        return VOSK_MODEL_CACHE
+    if not VOSK_MODEL_DIR.exists():
+        if os.getenv("NEUROAD_REQUIRE_TRANSCRIPTION", "0").lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError(f"Vosk model directory is missing: {VOSK_MODEL_DIR}")
+        return None
+    try:
+        from vosk import Model
+    except ImportError as exc:
+        if os.getenv("NEUROAD_REQUIRE_TRANSCRIPTION", "0").lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError("vosk is required for Vosk transcription.") from exc
+        return None
+    VOSK_MODEL_CACHE = Model(str(VOSK_MODEL_DIR))
+    return VOSK_MODEL_CACHE
+
+
+def transcribe_audio_vosk(audio_path: Path) -> list[dict[str, Any]]:
+    model = get_vosk_model()
+    if model is None:
+        return []
+    from vosk import KaldiRecognizer
+
+    transcript_segments: list[dict[str, Any]] = []
+    with wave.open(str(audio_path), "rb") as wav:
+        recognizer = KaldiRecognizer(model, wav.getframerate())
+        recognizer.SetWords(True)
+        while True:
+            data = wav.readframes(4000)
+            if not data:
+                break
+            chunk_end = wav.tell() / float(wav.getframerate())
+            if recognizer.AcceptWaveform(data):
+                payload = json.loads(recognizer.Result())
+                transcript_segments.extend(vosk_payload_to_segments(payload, len(transcript_segments), chunk_end))
+        payload = json.loads(recognizer.FinalResult())
+        transcript_segments.extend(vosk_payload_to_segments(payload, len(transcript_segments), None))
+    return transcript_segments
+
+
+def vosk_payload_to_segments(payload: dict[str, Any], start_index: int, fallback_end: float | None) -> list[dict[str, Any]]:
+    words = payload.get("result") or []
+    if words:
+        segments: list[dict[str, Any]] = []
+        current: list[dict[str, Any]] = []
+        for word in words:
+            if current and (
+                float(word.get("start", 0)) - float(current[-1].get("end", 0)) > 0.8
+                or float(word.get("end", 0)) - float(current[0].get("start", 0)) > 8
+            ):
+                segments.append(vosk_words_to_segment(current, start_index + len(segments)))
+                current = []
+            current.append(word)
+        if current:
+            segments.append(vosk_words_to_segment(current, start_index + len(segments)))
+        return segments
+
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return []
+    end = float(fallback_end or 0)
+    return [{"index": start_index, "start": max(0.0, end - 5.0), "end": end, "text": text}]
+
+
+def vosk_words_to_segment(words: list[dict[str, Any]], index: int) -> dict[str, Any]:
+    return {
+        "index": index,
+        "start": float(words[0].get("start", 0)),
+        "end": float(words[-1].get("end", words[0].get("start", 0))),
+        "text": " ".join(str(word.get("word", "")).strip() for word in words if word.get("word")),
+    }
+
+
 def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    if os.getenv("NEUROAD_ENABLE_OBJECT_DETECTION", "1").lower() in {"0", "false", "no", "off"}:
+        return detect_lightweight_visual_context(frames)
+    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
+    if engine == "mobilenet_ssd":
+        return detect_mobilenet_ssd_objects(frames)
+    if engine != "yolo":
+        return detect_lightweight_visual_context(frames)
     try:
         from ultralytics import YOLO
     except ImportError as exc:
-        raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
+        if os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
+        return detect_lightweight_visual_context(frames)
     model_name = os.getenv("YOLO_MODEL", "yolov8n.pt")
     model = YOLO(model_name)
     output: dict[int, list[dict[str, Any]]] = {}
@@ -900,6 +1176,126 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
                     }
                 )
         output[segment_index] = sorted(detections, key=lambda item: item["confidence"], reverse=True)[:5]
+    return output
+
+
+def get_mobilenet_ssd_net() -> Any | None:
+    global MOBILENET_SSD_NET_CACHE
+    if MOBILENET_SSD_NET_CACHE is not None:
+        return MOBILENET_SSD_NET_CACHE
+    if not MOBILENET_SSD_GRAPH.exists() or not MOBILENET_SSD_CONFIG.exists():
+        if os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError("MobileNet-SSD model files are missing.")
+        return None
+    try:
+        import cv2
+    except ImportError as exc:
+        if os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError("opencv-python is required for MobileNet-SSD object detection.") from exc
+        return None
+    MOBILENET_SSD_NET_CACHE = cv2.dnn.readNetFromTensorflow(str(MOBILENET_SSD_GRAPH), str(MOBILENET_SSD_CONFIG))
+    return MOBILENET_SSD_NET_CACHE
+
+
+def detect_mobilenet_ssd_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    try:
+        import cv2
+    except ImportError:
+        return detect_lightweight_visual_context(frames)
+    net = get_mobilenet_ssd_net()
+    if net is None:
+        return detect_lightweight_visual_context(frames)
+
+    output: dict[int, list[dict[str, Any]]] = {}
+    for segment_index, frame in frames.items():
+        image = cv2.imread(str(frame["path"]))
+        if image is None:
+            output[segment_index] = []
+            continue
+        height, width = image.shape[:2]
+        blob = cv2.dnn.blobFromImage(image, size=(300, 300), swapRB=True, crop=False)
+        net.setInput(blob)
+        detections = net.forward()
+        objects: list[dict[str, Any]] = []
+        for detection in detections[0, 0, :, :]:
+            confidence = float(detection[2])
+            if confidence < 0.35:
+                continue
+            class_id = int(detection[1])
+            label = COCO_LABELS[class_id] if 0 <= class_id < len(COCO_LABELS) else str(class_id)
+            x1 = clamp(float(detection[3])) * width
+            y1 = clamp(float(detection[4])) * height
+            x2 = clamp(float(detection[5])) * width
+            y2 = clamp(float(detection[6])) * height
+            objects.append(
+                {
+                    "label": label,
+                    "confidence": confidence,
+                    "bbox": [x1, y1, x2, y2],
+                    "frame_timestamp": frame["timestamp"],
+                }
+            )
+        output[segment_index] = sorted(objects, key=lambda item: item["confidence"], reverse=True)[:5]
+    return output
+
+
+def detect_lightweight_visual_context(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    try:
+        import cv2
+    except ImportError:
+        return {segment_index: [] for segment_index in frames}
+
+    face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    output: dict[int, list[dict[str, Any]]] = {}
+    for segment_index, frame in frames.items():
+        image = cv2.imread(str(frame["path"]))
+        if image is None:
+            output[segment_index] = []
+            continue
+
+        height, width = image.shape[:2]
+        grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        detections: list[dict[str, Any]] = []
+
+        if not face_detector.empty():
+            faces = face_detector.detectMultiScale(grayscale, scaleFactor=1.1, minNeighbors=5, minSize=(32, 32))
+            for x, y, w, h in faces[:3]:
+                detections.append(
+                    {
+                        "label": "person",
+                        "confidence": 0.58,
+                        "bbox": [float(x), float(y), float(x + w), float(y + h)],
+                        "frame_timestamp": frame["timestamp"],
+                    }
+                )
+
+        mean_brightness = float(np.mean(grayscale))
+        contrast = float(np.std(grayscale))
+        edge_density = float(np.mean(cv2.Canny(grayscale, 80, 160) > 0))
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        saturation = float(np.mean(hsv[:, :, 1]))
+
+        scene_tags: list[tuple[str, float]] = []
+        if edge_density > 0.09 and contrast > 42:
+            scene_tags.append(("detailed scene", 0.46))
+        if saturation > 80:
+            scene_tags.append(("colorful scene", 0.44))
+        if mean_brightness > 165:
+            scene_tags.append(("bright scene", 0.42))
+        elif mean_brightness < 75:
+            scene_tags.append(("low light scene", 0.42))
+
+        for label, confidence in scene_tags[: max(0, 3 - len(detections))]:
+            detections.append(
+                {
+                    "label": label,
+                    "confidence": confidence,
+                    "bbox": [0.0, 0.0, float(width), float(height)],
+                    "frame_timestamp": frame["timestamp"],
+                }
+            )
+
+        output[segment_index] = detections[:5]
     return output
 
 

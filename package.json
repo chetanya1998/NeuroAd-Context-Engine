@@ -6,10 +6,16 @@
     "apps/web"
   ],
   "scripts": {
+    "build": "npm run build:web",
+    "lint": "npm run lint:web",
+    "test": "npm run test:api",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
     "dev:web": "npm --workspace apps/web run dev",
     "build:web": "npm --workspace apps/web run build",
     "lint:web": "npm --workspace apps/web run lint",
     "dev:api": "cd apps/api && uvicorn main:app --reload --host 0.0.0.0 --port 8000",
-    "test:api": "cd apps/api && pytest"
+    "test:api": "if [ -x apps/api/.venv/bin/pytest ]; then apps/api/.venv/bin/pytest apps/api/tests; else cd apps/api && pytest; fi"
   }
 }

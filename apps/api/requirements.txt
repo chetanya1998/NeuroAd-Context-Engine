@@ -7,9 +7,6 @@ wheel==0.47.0
 numpy==1.26.4
 pandas==2.2.3
 opencv-python==4.10.0.84
-openai-whisper==20240930
-ultralytics==8.3.57
-sentence-transformers==3.3.1
 yt-dlp==2025.10.14
 pytest==8.3.4
 httpx==0.28.1

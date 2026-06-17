@@ -95,7 +95,6 @@ Sample/mock analysis is disabled in the current build. Completed dashboards shou
 - OpenCV
 - OpenAI Whisper open-source package
 - Ultralytics YOLO
-- sentence-transformers
 - NumPy
 - pandas
 - yt-dlp for permitted YouTube media ingestion
@@ -555,6 +554,41 @@ cd apps/api
 uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
+### Docker Local Run
+
+After installing Docker Desktop, build and run the API plus web app:
+
+```bash
+npm run docker:up
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+The API is exposed at:
+
+```text
+http://localhost:8000
+```
+
+Useful Docker commands:
+
+```bash
+npm run docker:build
+npm run docker:down
+docker compose logs -f api
+docker compose logs -f web
+```
+
+Docker stores backend uploads, frames, audio, reports, and SQLite data in the named volume:
+
+```text
+neuroad-api-data
+```
+
 ## Environment Variables
 
 ### Frontend
@@ -572,16 +606,111 @@ http://localhost:8000
 ### Backend
 
 ```bash
+NEUROAD_STORAGE_DIR=./storage
+NEUROAD_DB_PATH=./storage/neuroad.db
 NEUROAD_WORKERS=1
+NEUROAD_MAX_UPLOAD_MB=200
+NEUROAD_MAX_SOURCE_SECONDS=600
+NEUROAD_MAX_ANALYSIS_SECONDS=180
+NEUROAD_MODEL_DIR=./models
+NEUROAD_ENABLE_TRANSCRIPTION=1
+NEUROAD_TRANSCRIPTION_ENGINE=vosk
+NEUROAD_REQUIRE_TRANSCRIPTION=0
+NEUROAD_ENABLE_OBJECT_DETECTION=1
+NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+NEUROAD_REQUIRE_OBJECT_DETECTION=0
+VOSK_MODEL_DIR=./models/vosk-model-small-en-us-0.15
+MOBILENET_SSD_GRAPH=./models/mobilenet-ssd/frozen_inference_graph.pb
+MOBILENET_SSD_CONFIG=./models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 YTDLP_COOKIES_FILE=/absolute/path/to/cookies.txt
 YTDLP_COOKIES_BROWSER=chrome
 ```
 
 Notes:
 
+- `NEUROAD_STORAGE_DIR` controls where uploads, frames, audio, and reports are written.
+- `NEUROAD_DB_PATH` controls the SQLite database path.
 - `NEUROAD_WORKERS` controls in-process job concurrency.
 - Keep it low on CPU-only machines.
+- `NEUROAD_TRANSCRIPTION_ENGINE=vosk` uses the small offline Vosk model installed by Docker.
+- `NEUROAD_TRANSCRIPTION_ENGINE=whisper` opts back into Whisper, but only after installing `requirements-whisper.txt`.
+- `NEUROAD_ENABLE_TRANSCRIPTION=0` skips transcription completely.
+- `NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd` uses OpenCV DNN with the MobileNet-SSD model installed by Docker.
+- `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` opts back into YOLO, but only after installing `requirements-yolo.txt`.
+- `NEUROAD_ENABLE_OBJECT_DETECTION=0` skips model-based object detection and uses the OpenCV visual-context fallback.
+- `NEUROAD_REQUIRE_TRANSCRIPTION=1` or `NEUROAD_REQUIRE_OBJECT_DETECTION=1` makes missing model files fail the job instead of falling back.
+- `CORS_ORIGINS` is required for deployed Netlify origins.
 - `YTDLP_COOKIES_FILE` is preferred over browser-cookie extraction in deployed environments.
+
+### Docker Vosk + MobileNet-SSD Install
+
+Docker installs Vosk and OpenCV MobileNet-SSD by default. Rebuild the API image after pulling these changes:
+
+```bash
+docker compose build api --no-cache
+docker compose up
+```
+
+The relevant Docker build args are:
+
+```bash
+INSTALL_VOSK=1
+INSTALL_MOBILENET_SSD=1
+```
+
+The runtime env is:
+
+```bash
+NEUROAD_ENABLE_TRANSCRIPTION=1
+NEUROAD_TRANSCRIPTION_ENGINE=vosk
+NEUROAD_ENABLE_OBJECT_DETECTION=1
+NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+```
+
+### Optional Whisper Install
+
+`openai-whisper` is intentionally excluded from the base Docker image because it pulls a large PyTorch stack and can fail or time out during container builds. To install it locally in the Python environment:
+
+```bash
+source apps/api/.venv/bin/activate
+pip install -r apps/api/requirements-whisper.txt
+```
+
+To include it in a Docker build:
+
+```bash
+docker compose build api --build-arg INSTALL_WHISPER=1
+```
+
+Then set:
+
+```bash
+NEUROAD_ENABLE_TRANSCRIPTION=1
+```
+
+### Optional YOLO Install
+
+Ultralytics YOLO is also excluded from the base Docker image because it pulls PyTorch and large accelerator packages. With `NEUROAD_ENABLE_OBJECT_DETECTION=0`, the backend uses an OpenCV-only fallback that can detect face/person-like context and visual scene tags such as bright, low-light, colorful, or detailed scenes.
+
+To install YOLO locally:
+
+```bash
+source apps/api/.venv/bin/activate
+pip install -r apps/api/requirements-yolo.txt
+```
+
+To include YOLO in a Docker build:
+
+```bash
+docker compose build api --build-arg INSTALL_YOLO=1
+```
+
+Then set:
+
+```bash
+NEUROAD_ENABLE_OBJECT_DETECTION=1
+```
 
 ## Storage
 
@@ -615,6 +744,7 @@ Ignored examples:
 
 - `node_modules/`
 - `.next/`
+- Docker named volumes
 - `.venv/`
 - `apps/api/.venv/`
 - generated uploaded videos
@@ -637,7 +767,7 @@ Only `.gitkeep` files inside storage folders are committed.
 apps/api/.venv/bin/pytest apps/api/tests
 ```
 
-or, after activating the virtual environment:
+or, when the local virtual environment exists:
 
 ```bash
 npm run test:api
@@ -666,7 +796,7 @@ See the detailed deployment guide:
 Recommended MVP deployment:
 
 ```text
-Vercel:
+Netlify:
   Next.js frontend
 
 Render/Railway/Fly.io/VPS:
@@ -683,7 +813,7 @@ Later:
   optional GPU worker
 ```
 
-Do not deploy this as a Vercel-only app. The backend needs long-running Python work, local file writes, and system-level video tooling.
+Do not deploy this as a Netlify-only app. The backend needs long-running Python work, local file writes, and system-level video tooling.
 
 ## YouTube Ingestion Notes
 
@@ -732,7 +862,6 @@ Before public launch, add:
 - User-owned private storage
 - Delete video/report endpoint
 - Storage retention policy
-- CORS configuration through environment variables
 - Job retry policies
 - Audit logging
 
@@ -858,6 +987,7 @@ npm run build:web
 
 ### V1.1
 
+- Netlify deployment config
 - Dockerfile for API
 - Health endpoint
 - Configurable storage and database paths
@@ -890,9 +1020,7 @@ Third-party libraries and models have their own licenses. Review licenses for:
 
 - Whisper
 - Ultralytics YOLO
-- sentence-transformers
 - yt-dlp
 - FFmpeg
 
 TRIBE v2 is referenced only as product inspiration and future research-mode framing. Do not present this MVP as actual brain-reading or guaranteed attention prediction.
-

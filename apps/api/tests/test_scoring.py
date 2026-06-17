@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from main import attention_label, make_segments, score_attention
+from main import attention_label, cors_origins_from_env, health, make_segments, score_attention
 
 
 def test_segmentation_short_video_uses_two_second_chunks():
@@ -28,3 +28,15 @@ def test_attention_labels():
     assert attention_label(45) == "Neutral"
     assert attention_label(25) == "Drop risk"
     assert attention_label(10) == "Weak moment"
+
+
+def test_cors_origins_can_be_configured(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com, http://localhost:3000")
+    assert cors_origins_from_env() == ["https://app.example.com", "http://localhost:3000"]
+
+
+def test_health_reports_deployment_limits():
+    payload = health()
+    assert payload["limits"]["max_upload_mb"] == 200
+    assert payload["limits"]["max_analysis_seconds"] == 180
+    assert "ffmpeg" in payload["dependencies"]
