@@ -7,7 +7,6 @@ services:
     dockerfilePath: ./apps/api/Dockerfile
     dockerContext: ./apps/api
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 120
     disk:
       name: neuroad-data
       mountPath: /data
