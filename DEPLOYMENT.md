@@ -1,217 +1,215 @@
-# NeuroAd Context Engine Deployment Strategy
+# NeuroAd Context Engine Deployment Guide
 
-## Recommended MVP Deployment
+## Target Architecture
 
-Use a split deployment:
-
-- Frontend: Vercel
-- Backend/API: Render, Railway, Fly.io, or a small VPS
-- Storage: backend persistent disk for MVP
-- Database: SQLite on persistent disk for MVP, PostgreSQL for public demos
-- Video processing: backend worker process in the FastAPI service for MVP
-
-This is the lowest-friction path because the current app is already structured as:
-
-- `apps/web`: Next.js frontend
-- `apps/api`: FastAPI backend
-- `apps/api/storage`: local uploads, frames, audio, reports, and SQLite data
-
-## Codex Sites Plugin Strategy
-
-The Codex Sites plugin is not available in the current Codex session, and it was not listed as an installable plugin candidate.
-
-Even if Codex Sites becomes available, use it only for a static preview or marketing/demo shell, not for the full NeuroAd AI MVP. This product needs a backend that can run FFmpeg, Whisper, YOLO, OpenCV, sentence-transformers, yt-dlp, local file writes, and long-running video jobs.
-
-Recommended use of Codex Sites, if available later:
-
-- Host a static public landing/demo page.
-- Show screenshots, product positioning, and a link to the real app.
-- Embed a precomputed sample report or exported JSON visualization.
-- Link out to the deployed Next.js app.
-
-Do not use Codex Sites for:
-
-- Uploaded-video analysis
-- YouTube ingestion
-- FFmpeg processing
-- Whisper transcription
-- YOLO object detection
-- SQLite/local file persistence
-- Background jobs
-
-Best strategy with Sites:
+Use Netlify for the Next.js frontend and a separate container host for the FastAPI/video backend.
 
 ```text
-Codex Sites:
-  Static landing/demo page
-  -> CTA links to hosted app
-
-Vercel:
-  Next.js dashboard app
-  -> calls API
-
-Render/Railway/Fly/VPS:
-  FastAPI + AI processing
-  -> persistent disk or object storage
+Netlify
+  apps/web Next.js app
+  NEXT_PUBLIC_API_BASE=https://your-api-host
+      |
+      v
+Render/Railway/Fly.io/VPS
+  apps/api FastAPI service
+  FFmpeg/FFprobe
+  OpenCV, yt-dlp
+  Optional Whisper and YOLO model dependencies
+  persistent disk for SQLite, uploads, frames, audio, and reports
 ```
 
-## Why Not Vercel-Only
+Do not put the Python analysis backend on Netlify Functions. This app needs system packages, large Python/model dependencies, local media writes, and long-running video jobs.
 
-Vercel is good for the Next.js frontend, but not for the AI/video backend because this app needs:
+## Files Added For Deployment
 
-- FFmpeg and FFprobe
-- long-running video jobs
-- local file writes
-- Python model dependencies
-- Whisper, YOLO, OpenCV, sentence-transformers
-- yt-dlp for permitted YouTube ingestion
+- `netlify.toml`: Netlify build settings for the Next.js frontend.
+- `.nvmrc`: Node 22 for local and hosted builds.
+- `apps/api/Dockerfile`: containerized FastAPI backend with FFmpeg.
+- `apps/api/.dockerignore`: keeps generated media/model files out of Docker builds.
+- `render.yaml`: Render blueprint for the backend service and persistent disk.
+- `apps/api/.env.example`: backend deployment variables.
+- `apps/web/.env.example`: frontend deployment variables.
 
-Those are better hosted in a persistent Python service or container.
+## Backend Deployment
 
-## Phase 1: Demo Deployment
+The repo includes a Render blueprint because it is the fastest MVP path for a persistent Docker service.
 
-### 1. Deploy the FastAPI backend
+### Render Blueprint
 
-Use Render/Railway/Fly.io with a Dockerized API service.
+1. Push this repo to GitHub.
+2. In Render, create a Blueprint from the repo.
+3. Render will read `render.yaml`.
+4. Set the prompted `CORS_ORIGINS` value after the Netlify site exists.
 
-Backend requirements:
+The blueprint creates:
 
-- Python 3.10 or 3.11
-- FFmpeg/FFprobe installed at system level
-- `apps/api/requirements.txt`
-- persistent disk mounted to `apps/api/storage`
-- public HTTPS URL, for example `https://neuroad-api.onrender.com`
+- Docker web service named `neuroad-api`
+- persistent disk mounted at `/data`
+- health check path: `/health`
+- storage path: `/data/neuroad/storage`
+- SQLite path: `/data/neuroad/neuroad.db`
 
-Backend start command:
+Default backend env:
 
 ```bash
-cd apps/api
-uvicorn main:app --host 0.0.0.0 --port $PORT
+NEUROAD_STORAGE_DIR=/data/neuroad/storage
+NEUROAD_DB_PATH=/data/neuroad/neuroad.db
+NEUROAD_WORKERS=1
+NEUROAD_MAX_UPLOAD_MB=200
+NEUROAD_MAX_SOURCE_SECONDS=600
+NEUROAD_MAX_ANALYSIS_SECONDS=180
+NEUROAD_MODEL_DIR=/opt/neuroad/models
+NEUROAD_ENABLE_TRANSCRIPTION=1
+NEUROAD_TRANSCRIPTION_ENGINE=vosk
+NEUROAD_ENABLE_OBJECT_DETECTION=1
+NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
+MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
+MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
+WHISPER_MODEL=tiny
+YOLO_MODEL=yolov8n.pt
 ```
 
-Important environment variables:
+Docker now installs the lightweight Vosk speech model and OpenCV MobileNet-SSD object model by default. This keeps Whisper and YOLO out of the base image, avoiding the large PyTorch install while preserving transcript and object-detection functionality. If a model is missing, the app falls back unless the matching `NEUROAD_REQUIRE_*` variable is set to `1`.
+
+Set CORS after Netlify deploys:
 
 ```bash
-CORS_ORIGINS=https://your-vercel-domain.vercel.app
-YTDLP_COOKIES_FILE=/path/to/cookies.txt
-YTDLP_COOKIES_BROWSER=chrome
+CORS_ORIGINS=https://your-netlify-site.netlify.app,http://localhost:3000,http://127.0.0.1:3000
 ```
 
-For production, prefer `YTDLP_COOKIES_FILE` if YouTube ingestion is required. Some YouTube streams may still block cloud datacenter IPs, so upload/direct MP4 should remain the reliable path.
-
-### 2. Deploy the Next.js frontend
-
-Deploy `apps/web` to Vercel.
-
-Vercel settings:
+Optional YouTube settings:
 
 ```bash
-Root Directory: apps/web
-Build Command: npm run build
-Output: .next
+YOUTUBE_API_KEY=...
+YTDLP_COOKIES_FILE=/data/neuroad/cookies.txt
 ```
 
-Environment variable:
+### Manual Docker Backend
+
+If not using Render:
 
 ```bash
-NEXT_PUBLIC_API_BASE=https://your-api-domain.com
+docker build -t neuroad-api ./apps/api
+docker run --rm -p 8000:8000 \
+  -e CORS_ORIGINS=http://localhost:3000 \
+  -e NEUROAD_STORAGE_DIR=/data/neuroad/storage \
+  -e NEUROAD_DB_PATH=/data/neuroad/neuroad.db \
+  -v neuroad-data:/data \
+  neuroad-api
 ```
 
-### 3. Update backend CORS
-
-Make sure the backend allows the Vercel frontend origin.
-
-Recommended CORS values:
+Verify:
 
 ```bash
-https://your-vercel-domain.vercel.app
-http://localhost:3000
+curl http://localhost:8000/health
+curl http://localhost:8000/api/system/dependencies
 ```
 
-## Phase 2: Stable Public Demo
+### Local Docker Compose
 
-Move beyond local MVP storage:
+For local container testing, run the full API plus web stack:
 
-- Replace SQLite with PostgreSQL
-- Replace local file storage with Cloudflare R2, AWS S3, or Supabase Storage
-- Add Redis queue for processing jobs
-- Run video processing in a separate worker
-- Keep FastAPI only for API requests and job orchestration
+```bash
+npm run docker:up
+```
 
-Recommended architecture:
+This uses `docker-compose.yml`, exposes the web app on `http://localhost:3000`, exposes the API on `http://localhost:8000`, and stores API data in the `neuroad-api-data` named volume.
+
+Vosk and MobileNet-SSD are enabled by default:
+
+```bash
+docker compose build api --no-cache
+docker compose up
+```
+
+To opt back into Whisper transcription in Docker:
+
+```bash
+docker compose build api --build-arg INSTALL_WHISPER=1
+NEUROAD_ENABLE_TRANSCRIPTION=1 docker compose up
+```
+
+To opt back into YOLO object detection in Docker:
+
+```bash
+docker compose build api --build-arg INSTALL_YOLO=1
+NEUROAD_ENABLE_OBJECT_DETECTION=1 docker compose up
+```
+
+## Netlify Frontend Deployment
+
+Netlify uses the root `netlify.toml`.
+
+Build settings:
 
 ```text
-Vercel Web
+Base directory: repository root
+Build command: npm --workspace apps/web run build
+Publish directory: apps/web/.next
+```
+
+Environment variables:
+
+```bash
+NEXT_PUBLIC_API_BASE=https://your-api-host
+NETLIFY_NEXT_SKEW_PROTECTION=true
+NODE_VERSION=22
+```
+
+After the API deploys, set `NEXT_PUBLIC_API_BASE` to the backend HTTPS URL, then trigger a Netlify redeploy.
+
+## Deployment Order
+
+1. Push the deployment files to GitHub.
+2. Deploy the API with Render Blueprint or another Docker host.
+3. Confirm `https://your-api-host/health` returns `ready: true`.
+4. Create the Netlify site from the same repo.
+5. Set `NEXT_PUBLIC_API_BASE` in Netlify.
+6. Deploy the frontend.
+7. Copy the Netlify URL into backend `CORS_ORIGINS`.
+8. Restart/redeploy the backend.
+9. Run the smoke test checklist.
+
+## Smoke Test Checklist
+
+- Netlify app opens.
+- API health endpoint responds.
+- `/api/system/dependencies` shows FFmpeg and FFprobe available.
+- Upload a short MP4 under 200 MB.
+- Processing page progresses through job steps.
+- Dashboard renders the trend graph and segment data.
+- CSV export downloads.
+- JSON export downloads.
+- Direct MP4 URL analysis works.
+- YouTube ingestion either works or shows a clear permission/403 fallback.
+
+## MVP Limits
+
+- Upload limit defaults to 200 MB.
+- Source duration limit defaults to 10 minutes in the Docker deployment.
+- Analysis is capped to the first 3 minutes by default.
+- Jobs run in-process with one worker.
+- SQLite and local file storage are acceptable for a controlled demo, not multi-instance production.
+
+## Production Upgrade Path
+
+For a public product:
+
+- Move SQLite to PostgreSQL.
+- Move media and reports to Cloudflare R2, S3, or Supabase Storage.
+- Add Redis and a separate Python worker process.
+- Add retries, cleanup, and retention jobs.
+- Add auth, workspaces, rate limiting, and upload scanning.
+- Use GPU-backed workers for longer videos or faster turnaround.
+
+Recommended production architecture:
+
+```text
+Netlify Web
   -> FastAPI API Service
   -> PostgreSQL
   -> Redis Queue
   -> Python Worker
   -> S3/R2 Storage
 ```
-
-This prevents one long Whisper/YOLO job from blocking the API service.
-
-## Phase 3: Production-Grade AI Processing
-
-For faster and more reliable analysis:
-
-- Run workers on GPU-backed infrastructure
-- Use Modal, RunPod, Replicate, Lambda Labs, or a GPU VPS
-- Cache model weights during build or worker startup
-- Store extracted frames/audio in object storage
-- Add job retries and failure step visibility
-
-Recommended model execution plan:
-
-- CPU demo: short videos only, first 3 minutes capped
-- GPU demo: 5-10 minute videos
-- Production: queue-based GPU workers with concurrency limits
-
-## Deployment Blockers To Fix Before Public Launch
-
-### Must fix
-
-- Move SQLite path into a configurable env var.
-- Move storage directory into a configurable env var.
-- Add upload cleanup/retention policy.
-- Add max duration checks before full processing.
-- Add request limits and basic abuse protection.
-- Add CORS env configuration if not already configurable.
-
-### Should fix
-
-- Add Dockerfile for `apps/api`.
-- Add health endpoint, for example `GET /health`.
-- Add persistent report links.
-- Add structured logging for job steps.
-- Add PostgreSQL migration path.
-
-### Nice to have
-
-- Auth/workspaces
-- Signed upload URLs
-- Cloud storage
-- Separate worker service
-- GPU worker option
-
-## Suggested First Deployment Target
-
-For the fastest credible demo:
-
-1. Deploy API on Render with Docker and persistent disk.
-2. Deploy frontend on Vercel.
-3. Use direct upload and direct MP4 URL as the reliable demo path.
-4. Keep YouTube ingestion as beta because YouTube may return 403 from cloud IPs.
-5. Add PostgreSQL/R2 only after the public demo works end-to-end.
-
-## Demo Readiness Checklist
-
-- Frontend opens from Vercel.
-- API health endpoint responds.
-- Upload a short MP4 under 200 MB.
-- Processing page shows step progress.
-- Dashboard renders trend graph and report sections.
-- CSV export downloads.
-- JSON export downloads.
-- Direct MP4 URL analysis works.
-- YouTube ingestion either works or shows a clear permission/403 fallback message.

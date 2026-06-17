@@ -1,0 +1,13 @@
+.venv
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.db
+*.log
+*.pt
+*.onnx
+
+storage/*
+!storage/.gitkeep
+!storage/**/.gitkeep
