@@ -1,0 +1,58 @@
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+      args:
+        INSTALL_VOSK: "1"
+        INSTALL_MOBILENET_SSD: "1"
+    image: neuroad-api:prod
+    restart: unless-stopped
+    environment:
+      PORT: "8000"
+      NEUROAD_STORAGE_DIR: /data/neuroad/storage
+      NEUROAD_DB_PATH: /data/neuroad/neuroad.db
+      NEUROAD_WORKERS: "1"
+      NEUROAD_MAX_UPLOAD_MB: "${NEUROAD_MAX_UPLOAD_MB:-200}"
+      NEUROAD_MAX_SOURCE_SECONDS: "${NEUROAD_MAX_SOURCE_SECONDS:-600}"
+      NEUROAD_MAX_ANALYSIS_SECONDS: "${NEUROAD_MAX_ANALYSIS_SECONDS:-180}"
+      NEUROAD_MODEL_DIR: /opt/neuroad/models
+      NEUROAD_ENABLE_TRANSCRIPTION: "1"
+      NEUROAD_TRANSCRIPTION_ENGINE: vosk
+      NEUROAD_ENABLE_OBJECT_DETECTION: "1"
+      NEUROAD_OBJECT_DETECTION_ENGINE: mobilenet_ssd
+      VOSK_MODEL_DIR: /opt/neuroad/models/vosk-model-small-en-us-0.15
+      MOBILENET_SSD_GRAPH: /opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
+      MOBILENET_SSD_CONFIG: /opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
+      CORS_ORIGINS: "${CORS_ORIGINS}"
+      YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+      YTDLP_COOKIES_FILE: "${YTDLP_COOKIES_FILE:-}"
+    volumes:
+      - neuroad-api-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  caddy:
+    image: caddy:2.9
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: "${API_DOMAIN}"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  neuroad-api-data:
+  caddy-data:
+  caddy-config:

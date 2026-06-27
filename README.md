@@ -799,11 +799,11 @@ Recommended MVP deployment:
 Netlify:
   Next.js frontend
 
-Render/Railway/Fly.io/VPS:
+Railway:
   FastAPI backend
   FFmpeg/FFprobe
-  Python AI dependencies
-  persistent disk
+  Vosk + OpenCV MobileNet-SSD
+  Railway volume mounted at /data
 
 Later:
   PostgreSQL

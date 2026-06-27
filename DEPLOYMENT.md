@@ -2,7 +2,7 @@
 
 ## Target Architecture
 
-Use Netlify for the Next.js frontend and a separate container host for the FastAPI/video backend.
+Use Netlify for the Next.js frontend and Railway for the FastAPI/video backend.
 
 ```text
 Netlify
@@ -10,12 +10,11 @@ Netlify
   NEXT_PUBLIC_API_BASE=https://your-api-host
       |
       v
-Render/Railway/Fly.io/VPS
+Railway
   apps/api FastAPI service
   FFmpeg/FFprobe
-  OpenCV, yt-dlp
-  Optional Whisper and YOLO model dependencies
-  persistent disk for SQLite, uploads, frames, audio, and reports
+  Vosk, OpenCV MobileNet-SSD, yt-dlp
+  volume mounted at /data for SQLite, uploads, frames, audio, and reports
 ```
 
 Do not put the Python analysis backend on Netlify Functions. This app needs system packages, large Python/model dependencies, local media writes, and long-running video jobs.
@@ -26,32 +25,45 @@ Do not put the Python analysis backend on Netlify Functions. This app needs syst
 - `.nvmrc`: Node 22 for local and hosted builds.
 - `apps/api/Dockerfile`: containerized FastAPI backend with FFmpeg.
 - `apps/api/.dockerignore`: keeps generated media/model files out of Docker builds.
-- `render.yaml`: Render blueprint for the backend service and persistent disk.
+- `apps/api/railway.toml`: Railway backend deploy config.
+- `RAILWAY_DEPLOYMENT.md`: step-by-step Railway + Netlify deployment guide.
 - `apps/api/.env.example`: backend deployment variables.
 - `apps/web/.env.example`: frontend deployment variables.
 
 ## Backend Deployment
 
-The repo includes a Render blueprint because it is the fastest MVP path for a persistent Docker service.
+Railway is the recommended backend host for the current MVP. Follow:
 
-### Render Blueprint
+[RAILWAY_DEPLOYMENT.md](./RAILWAY_DEPLOYMENT.md)
 
-1. Push this repo to GitHub.
-2. In Render, create a Blueprint from the repo.
-3. Render will read `render.yaml`.
-4. Set the prompted `CORS_ORIGINS` value after the Netlify site exists.
+Key Railway settings:
 
-The blueprint creates:
+```text
+Git branch: V1.0
+Service source/root directory: apps/api
+Builder: Dockerfile
+Dockerfile: apps/api/Dockerfile
+Health check path: /health
+Volume mount path: /data
+```
 
-- Docker web service named `neuroad-api`
-- persistent disk mounted at `/data`
-- health check path: `/health`
-- storage path: `/data/neuroad/storage`
-- SQLite path: `/data/neuroad/neuroad.db`
+The source/root directory matters because Railway looks for a `Dockerfile` at the root of the service source directory.
 
-Default backend env:
+Recommended Railway resources for this MVP:
 
-```bash
+```text
+Hobby plan
+1 backend service
+1 volume mounted at /data
+Short videos only
+```
+
+### Railway Backend Variables
+
+Set these on the Railway backend service:
+
+```text
+PORT=8000
 NEUROAD_STORAGE_DIR=/data/neuroad/storage
 NEUROAD_DB_PATH=/data/neuroad/neuroad.db
 NEUROAD_WORKERS=1
@@ -85,25 +97,11 @@ YOUTUBE_API_KEY=...
 YTDLP_COOKIES_FILE=/data/neuroad/cookies.txt
 ```
 
-### Manual Docker Backend
-
-If not using Render:
-
-```bash
-docker build -t neuroad-api ./apps/api
-docker run --rm -p 8000:8000 \
-  -e CORS_ORIGINS=http://localhost:3000 \
-  -e NEUROAD_STORAGE_DIR=/data/neuroad/storage \
-  -e NEUROAD_DB_PATH=/data/neuroad/neuroad.db \
-  -v neuroad-data:/data \
-  neuroad-api
-```
-
 Verify:
 
 ```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/api/system/dependencies
+curl https://your-railway-domain.up.railway.app/health
+curl https://your-railway-domain.up.railway.app/api/system/dependencies
 ```
 
 ### Local Docker Compose
@@ -162,14 +160,15 @@ After the API deploys, set `NEXT_PUBLIC_API_BASE` to the backend HTTPS URL, then
 ## Deployment Order
 
 1. Push the deployment files to GitHub.
-2. Deploy the API with Render Blueprint or another Docker host.
-3. Confirm `https://your-api-host/health` returns `ready: true`.
-4. Create the Netlify site from the same repo.
-5. Set `NEXT_PUBLIC_API_BASE` in Netlify.
-6. Deploy the frontend.
-7. Copy the Netlify URL into backend `CORS_ORIGINS`.
-8. Restart/redeploy the backend.
-9. Run the smoke test checklist.
+2. Create the Railway backend from `apps/api`.
+3. Add a Railway volume mounted at `/data`.
+4. Confirm `https://your-railway-domain.up.railway.app/health` returns `ready: true`.
+5. Create the Netlify site from the same repo.
+6. Set `NEXT_PUBLIC_API_BASE=https://your-railway-domain.up.railway.app` in Netlify.
+7. Deploy the frontend.
+8. Copy the Netlify URL into Railway `CORS_ORIGINS`.
+9. Restart/redeploy the Railway backend.
+10. Run the smoke test checklist.
 
 ## Smoke Test Checklist
 
