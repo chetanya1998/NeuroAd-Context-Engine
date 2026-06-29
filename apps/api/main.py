@@ -251,7 +251,7 @@ COCO_LABELS = [
 
 def ensure_storage_dirs() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    for directory in [UPLOAD_DIR, FRAME_DIR, AUDIO_DIR, REPORT_DIR, STORAGE_DIR / "samples", MODEL_DIR]:
+    for directory in [UPLOAD_DIR, FRAME_DIR, AUDIO_DIR, REPORT_DIR, MODEL_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -310,10 +310,6 @@ class YouTubeIngestRequest(BaseModel):
 
 class VideoUrlRequest(BaseModel):
     url: str
-
-
-class SampleRequest(BaseModel):
-    sample_id: str = "ugc"
 
 
 def utc_now() -> str:
@@ -804,11 +800,6 @@ def create_video_from_url(payload: VideoUrlRequest) -> dict[str, Any]:
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": 0}
 
 
-@app.post("/api/videos/sample")
-def create_sample_video(payload: SampleRequest) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="Sample/mock analysis has been disabled. Upload a video or use a direct video file URL.")
-
-
 @app.post("/api/videos/{video_id}/analyze")
 def analyze_video(video_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     video = get_video_or_404(video_id)
@@ -889,16 +880,6 @@ def update_job(job_id: str, status: str, progress: int, step: str, error: str | 
     )
 
 
-def complete_demo_job(job_id: str, video_id: str) -> None:
-    for index, (step, _) in enumerate(PROCESSING_STEPS, start=1):
-        update_job(job_id, "processing", int(index / len(PROCESSING_STEPS) * 95), step)
-    if not query_all("select * from segments where video_id = ?", (video_id,)):
-        create_demo_segments(video_id)
-    execute("update videos set status = 'completed' where id = ?", (video_id,))
-    generate_exports(video_id)
-    update_job(job_id, "completed", 100, "report")
-
-
 def process_upload_job(job_id: str, video_id: str) -> None:
     video = query_one("select * from videos where id = ?", (video_id,))
     if not video:
@@ -914,8 +895,10 @@ def process_upload_job(job_id: str, video_id: str) -> None:
                 source, _, metadata = download_youtube_video(video["source_url"], video_id)
             except Exception as exc:
                 if is_youtube_media_blocked(exc):
-                    complete_youtube_metadata_fallback(job_id, video)
-                    return
+                    raise RuntimeError(
+                        "YouTube blocked server-side media access, so a real media analysis cannot be generated. "
+                        "Upload the video file directly to produce the report card and analysis from actual frames, audio, transcript, and objects."
+                    ) from exc
                 raise
             duration = probe_duration(source) or int(metadata.get("duration_seconds") or 0)
             execute(
@@ -996,82 +979,6 @@ def is_youtube_media_blocked(exc: Exception) -> bool:
         "confirm you're not a bot",
     ]
     return any(marker in message for marker in blocked_markers)
-
-
-def complete_youtube_metadata_fallback(job_id: str, video: sqlite3.Row) -> None:
-    update_job(job_id, "processing", 24, "metadata", "YouTube blocked media access; using metadata-only analysis.")
-    segments = build_metadata_fallback_segments(video)
-    write_analysis(video["id"], segments)
-    update_job(job_id, "processing", 82, "attention")
-    execute("update videos set status = 'completed' where id = ?", (video["id"],))
-    generate_exports(video["id"])
-    update_job(job_id, "completed", 100, "report")
-
-
-def build_metadata_fallback_segments(video: sqlite3.Row) -> list[dict[str, Any]]:
-    duration = int(video["duration_seconds"] or 60)
-    if duration <= 0:
-        duration = 60
-    segment_count = 4
-    window = min(max(duration / segment_count, 8), 30)
-    metadata_text = " ".join([video["title"] or "", video["description"] or ""]).strip()
-    topics = classify_topics(metadata_text)
-    base_attention = int(round((max([topic["confidence"] for topic in topics], default=0.38) * 0.45 + 0.28) * 100))
-    thumbnail_url = video["thumbnail_url"]
-
-    segment_templates = [
-        (
-            "Metadata context extracted from the YouTube title, description, thumbnail, and duration.",
-            "Use this as a directional context read; upload the file for frame, speech, and audio scoring.",
-            base_attention,
-        ),
-        (
-            "Topic fit is estimated from available YouTube metadata because full media ingestion was blocked.",
-            "Validate this moment with direct upload before making placement decisions.",
-            max(35, base_attention - 8),
-        ),
-        (
-            "Ad categories are matched to title and description language rather than detected video objects.",
-            "Treat ad-fit recommendations as a planning draft until media analysis is available.",
-            min(82, base_attention + 6),
-        ),
-        (
-            "Limited analysis completed without transcript, frame extraction, or audio energy signals.",
-            "Upload the video file to unlock timestamp-level attention scoring.",
-            max(30, base_attention - 14),
-        ),
-    ]
-
-    output: list[dict[str, Any]] = []
-    for index, (summary, recommendation, attention) in enumerate(segment_templates, start=1):
-        start = (index - 1) * window
-        end = min(start + window, duration)
-        fallback_objects = [
-            {
-                "label": "youtube metadata",
-                "confidence": 0.52,
-                "bbox": [0.0, 0.0, 1.0, 1.0],
-                "frame_timestamp": start,
-            }
-        ]
-        ad_matches = score_ad_matches(fallback_objects, topics, metadata_text, attention)
-        output.append(
-            {
-                "start": start,
-                "end": end,
-                "attention_score": attention,
-                "ad_fit_score": max([match["ad_fit_score"] for match in ad_matches], default=35),
-                "label": "Metadata estimate",
-                "summary": summary,
-                "transcript": metadata_text[:500],
-                "recommendation": recommendation,
-                "thumbnail_url": thumbnail_url,
-                "objects": fallback_objects,
-                "topics": topics,
-                "ad_matches": ad_matches,
-            }
-        )
-    return output
 
 
 def probe_duration(path: Path) -> int:
@@ -1865,7 +1772,7 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
         "overall_attention_score": overall,
         "monetization_opportunity_score": monetization,
         "best_hook": compact_segment(best_hook),
-        "best_ad_slot": {**compact_segment(best_ad), "category": best_ad["ad_matches"][0]["ad_category"] if best_ad["ad_matches"] else "Test contextual ad"},
+        "best_ad_slot": {**compact_segment(best_ad), "category": best_ad["ad_matches"][0]["ad_category"] if best_ad["ad_matches"] else "No strong ad match"},
         "weakest_segment": compact_segment(weakest),
         "top_ad_category": top_category,
     }
@@ -1959,67 +1866,6 @@ def generate_exports(video_id: str) -> dict[str, Path]:
         (report_id, video_id, json.dumps(payload["summary"]), str(csv_path), str(json_path), utc_now()),
     )
     return {"csv": csv_path, "json": json_path}
-
-
-def seed_sample_analysis(sample_id: str) -> str:
-    video_id = new_id("video")
-    titles = {
-        "ugc": "UGC Productivity Desk Setup",
-        "podcast": "Podcast Clip: Startup Lessons",
-        "vlog": "Creator Vlog: Morning Workflow",
-    }
-    execute(
-        """
-        insert into videos
-        (id, source_type, source_url, title, description, thumbnail_url, duration_seconds, status, file_path, embed_url, created_at)
-        values (?, 'sample', ?, ?, 'Bundled demo fixture for fast exploration.', null, 60, 'completed', null, null, ?)
-        """,
-        (video_id, sample_id, titles.get(sample_id, titles["ugc"]), utc_now()),
-    )
-    create_demo_segments(video_id)
-    execute("update videos set status = 'completed' where id = ?", (video_id,))
-    generate_exports(video_id)
-    return video_id
-
-
-def create_demo_segments(video_id: str) -> None:
-    demo = [
-        (0, 5, 84, 62, "High attention", "Strong hook with face presence and direct promise.", "Today I will show you the dashboard I use every morning.", ["person", "phone"], ["intro", "productivity"]),
-        (5, 10, 58, 44, "Neutral", "Context setup with moderate energy.", "Before this, my workflow was scattered across five tools.", ["laptop"], ["productivity", "startup"]),
-        (10, 15, 78, 81, "Good attention", "Productivity topic and desk objects align.", "This dashboard keeps the team focused on the next action.", ["laptop", "cup"], ["productivity", "technology"]),
-        (15, 20, 88, 92, "High attention", "Best ad moment with clear object and work intent.", "I check notes, tasks, and meetings in one place.", ["laptop", "cell phone", "cup"], ["productivity", "technology"]),
-        (20, 25, 34, 28, "Drop risk", "Lower novelty and less specific speech.", "Then I usually move on to the next part of my day.", ["person"], ["lifestyle"]),
-        (25, 30, 72, 79, "Good attention", "Good comparison moment for SaaS or creator gear.", "The biggest change is that I can see what actually matters.", ["laptop", "keyboard"], ["productivity", "startup"]),
-        (30, 35, 26, 21, "Drop risk", "Silent transition with low ad fit.", "", [], ["entertainment"]),
-        (35, 40, 80, 75, "High attention", "CTA language and visible laptop lift the score.", "Try this workflow if your team is drowning in updates.", ["laptop"], ["productivity"]),
-    ]
-    enriched = []
-    for start, end, attention, ad_fit, label, summary, transcript, objects, topics in demo:
-        topic_items = [{"label": topic, "confidence": 0.85 if index == 0 else 0.66} for index, topic in enumerate(topics)]
-        object_items = [
-            {"label": obj, "confidence": 0.88 - index * 0.08, "bbox": None, "frame_timestamp": (start + end) / 2}
-            for index, obj in enumerate(objects)
-        ]
-        ad_matches = score_ad_matches(object_items, topic_items, "", attention)
-        if ad_fit and ad_matches:
-            ad_matches[0]["ad_fit_score"] = ad_fit
-        enriched.append(
-            {
-                "start": start,
-                "end": end,
-                "attention_score": attention,
-                "ad_fit_score": ad_fit,
-                "label": label,
-                "summary": summary,
-                "transcript": transcript,
-                "recommendation": build_recommendation(start, attention, ad_fit, object_items, topic_items),
-                "thumbnail_url": None,
-                "objects": object_items,
-                "topics": topic_items,
-                "ad_matches": ad_matches,
-            }
-        )
-    write_analysis(video_id, enriched)
 
 
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:

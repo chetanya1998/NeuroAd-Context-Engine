@@ -61,8 +61,6 @@ export default function DashboardPage() {
     );
   }
 
-  const isMetadataOnlyYouTube = analysis.video.source_type === "youtube_ingest" && !analysis.video.file_url;
-
   return (
     <AppShell>
       <div className="mx-auto max-w-7xl px-5 py-8 lg:px-10">
@@ -88,16 +86,6 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        {isMetadataOnlyYouTube ? (
-          <Card className="mt-6 border-amber-400/20 bg-amber-400/10 p-4">
-            <p className="text-sm font-semibold text-amber-100">Limited YouTube analysis</p>
-            <p className="mt-2 text-sm leading-6 text-amber-50/75">
-              YouTube blocked direct media access for this link, so this report uses available metadata, thumbnail context, and topic matching. Upload the video file to unlock frame,
-              audio, transcript, and object-level scoring.
-            </p>
-          </Card>
-        ) : null}
-
         <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
           <OverallVideoTrend segments={analysis.segments} />
 
@@ -109,7 +97,7 @@ export default function DashboardPage() {
             <Card className="p-5 sm:col-span-2">
               <p className="text-sm text-slate-400">Top Ad Category</p>
               <p className="mt-2 text-2xl font-semibold">{analysis.summary.top_ad_category}</p>
-              <p className="mt-3 text-sm text-slate-500">Research Mode is disabled in this build; reports come only from analyzed media files.</p>
+              <p className="mt-3 text-sm text-slate-500">Reports are generated only from processed media frames, audio, transcripts, and detected visual context.</p>
             </Card>
           </div>
         </section>

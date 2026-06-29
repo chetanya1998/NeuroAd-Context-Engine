@@ -43,7 +43,7 @@ export type AnalysisPayload = {
     description?: string;
     duration: number;
     thumbnail?: string | null;
-    source_type: "upload" | "url" | "youtube" | "youtube_ingest" | "sample";
+    source_type: "upload" | "url" | "youtube" | "youtube_ingest";
     source_url?: string | null;
     file_url?: string | null;
     embed_url?: string | null;
