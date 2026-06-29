@@ -73,6 +73,17 @@ MAX_UPLOAD_BYTES = int_from_env("NEUROAD_MAX_UPLOAD_MB", 200) * 1024 * 1024
 MAX_SOURCE_SECONDS = int_from_env("NEUROAD_MAX_SOURCE_SECONDS", 0)
 MAX_ANALYSIS_SECONDS = int_from_env("NEUROAD_MAX_ANALYSIS_SECONDS", 180)
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
+CONVERTIBLE_VIDEO_EXTENSIONS = ALLOWED_EXTENSIONS | {
+    ".avi",
+    ".mkv",
+    ".flv",
+    ".wmv",
+    ".mpg",
+    ".mpeg",
+    ".3gp",
+    ".3g2",
+    ".ogv",
+}
 EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS", 1)))
 VOSK_MODEL_CACHE: Any | None = None
 MOBILENET_SSD_NET_CACHE: Any | None = None
@@ -448,6 +459,11 @@ def video_suffix_from_url(url: str) -> str | None:
     return suffix if suffix in ALLOWED_EXTENSIONS else None
 
 
+def convertible_video_suffix_from_url(url: str) -> str | None:
+    suffix = Path(urlparse(url).path).suffix.lower()
+    return suffix if suffix in CONVERTIBLE_VIDEO_EXTENSIONS else None
+
+
 def download_remote_video(url: str, video_id: str | None = None) -> tuple[Path, str]:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"}:
@@ -455,12 +471,18 @@ def download_remote_video(url: str, video_id: str | None = None) -> tuple[Path, 
     if parse_youtube_id(url):
         raise HTTPException(
             status_code=400,
-            detail="FFmpeg is ready, but a YouTube watch link is a web page, not a direct video file. Upload the video file you own, or paste a direct .mp4, .mov, .webm, or .m4v URL.",
+            detail="FFmpeg is ready, but a YouTube watch link is a web page, not a direct video file. Upload the video file you own, use the YouTube permission path, or paste a direct video file URL.",
         )
 
-    suffix = video_suffix_from_url(url)
+    suffix = convertible_video_suffix_from_url(url)
     if not suffix:
-        raise HTTPException(status_code=400, detail="Paste a direct video file URL ending in .mp4, .mov, .webm, or .m4v.")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Paste a direct video file URL ending in .mp4, .mov, .webm, .m4v, .avi, .mkv, .flv, "
+                ".wmv, .mpg, .mpeg, .3gp, .3g2, or .ogv."
+            ),
+        )
 
     video_id = video_id or new_id("video")
     target = UPLOAD_DIR / f"{video_id}{suffix}"
@@ -760,8 +782,14 @@ def create_video_from_url(payload: VideoUrlRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Use an http(s) video file URL.")
     if parse_youtube_id(payload.url):
         raise HTTPException(status_code=400, detail="Use the YouTube permission checkbox path for YouTube URLs.")
-    if not video_suffix_from_url(payload.url):
-        raise HTTPException(status_code=400, detail="Paste a direct video file URL ending in .mp4, .mov, .webm, or .m4v.")
+    if not convertible_video_suffix_from_url(payload.url):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Paste a direct video file URL ending in .mp4, .mov, .webm, .m4v, .avi, .mkv, .flv, "
+                ".wmv, .mpg, .mpeg, .3gp, .3g2, or .ogv."
+            ),
+        )
 
     video_id = new_id("video")
     title = Path(urlparse(payload.url).path).name or "Remote video"
@@ -882,7 +910,13 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         if video["source_type"] == "youtube_ingest" and not video["file_path"]:
             if not video["source_url"]:
                 raise RuntimeError("Missing YouTube URL for ingestion.")
-            source, _, metadata = download_youtube_video(video["source_url"], video_id)
+            try:
+                source, _, metadata = download_youtube_video(video["source_url"], video_id)
+            except Exception as exc:
+                if is_youtube_media_blocked(exc):
+                    complete_youtube_metadata_fallback(job_id, video)
+                    return
+                raise
             duration = probe_duration(source) or int(metadata.get("duration_seconds") or 0)
             execute(
                 """
@@ -912,6 +946,10 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             raise RuntimeError("No analyzable media file is attached.")
 
         source = Path(video["file_path"])
+        source = normalize_video_for_analysis(source, video_id)
+        if str(source) != video["file_path"]:
+            execute("update videos set file_path = ? where id = ?", (str(source), video_id))
+            video = query_one("select * from videos where id = ?", (video_id,))
         duration = probe_duration_or_raise(source)
         enforce_source_duration(duration)
         update_job(job_id, "processing", 8, "metadata")
@@ -948,11 +986,154 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "failed", 100, "failed", str(exc))
 
 
+def is_youtube_media_blocked(exc: Exception) -> bool:
+    message = str(exc).lower()
+    blocked_markers = [
+        "sign in to confirm",
+        "not a bot",
+        "captcha",
+        "cookies",
+        "confirm you're not a bot",
+    ]
+    return any(marker in message for marker in blocked_markers)
+
+
+def complete_youtube_metadata_fallback(job_id: str, video: sqlite3.Row) -> None:
+    update_job(job_id, "processing", 24, "metadata", "YouTube blocked media access; using metadata-only analysis.")
+    segments = build_metadata_fallback_segments(video)
+    write_analysis(video["id"], segments)
+    update_job(job_id, "processing", 82, "attention")
+    execute("update videos set status = 'completed' where id = ?", (video["id"],))
+    generate_exports(video["id"])
+    update_job(job_id, "completed", 100, "report")
+
+
+def build_metadata_fallback_segments(video: sqlite3.Row) -> list[dict[str, Any]]:
+    duration = int(video["duration_seconds"] or 60)
+    if duration <= 0:
+        duration = 60
+    segment_count = 4
+    window = min(max(duration / segment_count, 8), 30)
+    metadata_text = " ".join([video["title"] or "", video["description"] or ""]).strip()
+    topics = classify_topics(metadata_text)
+    base_attention = int(round((max([topic["confidence"] for topic in topics], default=0.38) * 0.45 + 0.28) * 100))
+    thumbnail_url = video["thumbnail_url"]
+
+    segment_templates = [
+        (
+            "Metadata context extracted from the YouTube title, description, thumbnail, and duration.",
+            "Use this as a directional context read; upload the file for frame, speech, and audio scoring.",
+            base_attention,
+        ),
+        (
+            "Topic fit is estimated from available YouTube metadata because full media ingestion was blocked.",
+            "Validate this moment with direct upload before making placement decisions.",
+            max(35, base_attention - 8),
+        ),
+        (
+            "Ad categories are matched to title and description language rather than detected video objects.",
+            "Treat ad-fit recommendations as a planning draft until media analysis is available.",
+            min(82, base_attention + 6),
+        ),
+        (
+            "Limited analysis completed without transcript, frame extraction, or audio energy signals.",
+            "Upload the video file to unlock timestamp-level attention scoring.",
+            max(30, base_attention - 14),
+        ),
+    ]
+
+    output: list[dict[str, Any]] = []
+    for index, (summary, recommendation, attention) in enumerate(segment_templates, start=1):
+        start = (index - 1) * window
+        end = min(start + window, duration)
+        fallback_objects = [
+            {
+                "label": "youtube metadata",
+                "confidence": 0.52,
+                "bbox": [0.0, 0.0, 1.0, 1.0],
+                "frame_timestamp": start,
+            }
+        ]
+        ad_matches = score_ad_matches(fallback_objects, topics, metadata_text, attention)
+        output.append(
+            {
+                "start": start,
+                "end": end,
+                "attention_score": attention,
+                "ad_fit_score": max([match["ad_fit_score"] for match in ad_matches], default=35),
+                "label": "Metadata estimate",
+                "summary": summary,
+                "transcript": metadata_text[:500],
+                "recommendation": recommendation,
+                "thumbnail_url": thumbnail_url,
+                "objects": fallback_objects,
+                "topics": topics,
+                "ad_matches": ad_matches,
+            }
+        )
+    return output
+
+
 def probe_duration(path: Path) -> int:
     try:
         return int(probe_duration_or_raise(path))
     except Exception:
         return 0
+
+
+def normalize_video_for_analysis(source: Path, video_id: str) -> Path:
+    if source.suffix.lower() == ".mp4":
+        return source
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is required to convert this video before analysis.")
+
+    target = UPLOAD_DIR / f"{video_id}.mp4"
+    if target == source:
+        return source
+
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(source),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+faststart",
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        target.unlink(missing_ok=True)
+        message = (exc.stderr or exc.stdout or str(exc)).strip().splitlines()
+        detail = message[-1] if message else "FFmpeg could not convert this video."
+        raise RuntimeError(f"Could not convert this video into MP4 for analysis: {detail}") from exc
+    if target.stat().st_size > MAX_UPLOAD_BYTES:
+        target.unlink(missing_ok=True)
+        raise RuntimeError("Converted video exceeds the 200 MB MVP limit.")
+    source.unlink(missing_ok=True)
+    return target
 
 
 def probe_duration_or_raise(path: Path) -> float:

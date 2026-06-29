@@ -61,6 +61,8 @@ export default function DashboardPage() {
     );
   }
 
+  const isMetadataOnlyYouTube = analysis.video.source_type === "youtube_ingest" && !analysis.video.file_url;
+
   return (
     <AppShell>
       <div className="mx-auto max-w-7xl px-5 py-8 lg:px-10">
@@ -85,6 +87,16 @@ export default function DashboardPage() {
             </a>
           </div>
         </header>
+
+        {isMetadataOnlyYouTube ? (
+          <Card className="mt-6 border-amber-400/20 bg-amber-400/10 p-4">
+            <p className="text-sm font-semibold text-amber-100">Limited YouTube analysis</p>
+            <p className="mt-2 text-sm leading-6 text-amber-50/75">
+              YouTube blocked direct media access for this link, so this report uses available metadata, thumbnail context, and topic matching. Upload the video file to unlock frame,
+              audio, transcript, and object-level scoring.
+            </p>
+          </Card>
+        ) : null}
 
         <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
           <OverallVideoTrend segments={analysis.segments} />

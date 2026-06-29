@@ -100,7 +100,9 @@ export default function HomePage() {
   function isDirectVideoUrl(value: string) {
     try {
       const pathname = new URL(value).pathname.toLowerCase();
-      return [".mp4", ".mov", ".webm", ".m4v"].some((extension) => pathname.endsWith(extension));
+      return [".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv", ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".3g2", ".ogv"].some(
+        (extension) => pathname.endsWith(extension)
+      );
     } catch {
       return false;
     }
@@ -128,7 +130,7 @@ export default function HomePage() {
       return;
     }
     if (!isDirectVideoUrl(trimmedUrl)) {
-      setError("Paste a YouTube URL, or a direct video file URL ending in .mp4, .mov, .webm, or .m4v.");
+      setError("Paste a YouTube URL, or a direct video file URL ending in .mp4, .mov, .webm, .m4v, .avi, .mkv, .flv, .wmv, .mpg, .mpeg, .3gp, .3g2, or .ogv.");
       return;
     }
     urlMutation.mutate(trimmedUrl);
@@ -154,7 +156,7 @@ export default function HomePage() {
                 </div>
                 <div>
                   <h2 className="text-lg font-semibold text-white">Paste a video link</h2>
-                  <p className="text-sm text-zinc-500">Use a YouTube watch link or a direct video file URL ending in .mp4, .mov, .webm, or .m4v.</p>
+                  <p className="text-sm text-zinc-500">Use a YouTube watch link or a direct video file URL such as MP4, MOV, WebM, M4V, AVI, MKV, or FLV.</p>
                 </div>
               </div>
 
@@ -166,7 +168,7 @@ export default function HomePage() {
                 <input
                   value={videoUrl}
                   onChange={(event) => setVideoUrl(event.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4"
+                  placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mkv"
                   className="min-h-12 flex-1 rounded-lg border border-white/10 bg-zinc-950 px-4 text-sm text-white outline-none ring-white/20 transition placeholder:text-zinc-700 focus:ring-2"
                 />
                 <Button onClick={handleVideoUrl} disabled={busy}>
