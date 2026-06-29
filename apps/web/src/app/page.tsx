@@ -154,23 +154,12 @@ export default function HomePage() {
                 </div>
                 <div>
                   <h2 className="text-lg font-semibold text-white">Paste a video link</h2>
-                  <p className="text-sm text-zinc-500">Direct MP4, MOV, WebM, and M4V links are the most reliable. YouTube is beta and may be blocked by YouTube.</p>
+                  <p className="text-sm text-zinc-500">Use a YouTube watch link or a direct video file URL ending in .mp4, .mov, .webm, or .m4v.</p>
                 </div>
               </div>
 
-              <div className="mt-5 grid gap-3 text-sm sm:grid-cols-3">
-                <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 p-3">
-                  <p className="font-medium text-emerald-200">Best</p>
-                  <p className="mt-1 text-emerald-50/70">Upload an MP4/MOV file.</p>
-                </div>
-                <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 p-3">
-                  <p className="font-medium text-cyan-200">Reliable</p>
-                  <p className="mt-1 text-cyan-50/70">Paste a direct video file URL.</p>
-                </div>
-                <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3">
-                  <p className="font-medium text-amber-200">Beta</p>
-                  <p className="mt-1 text-amber-50/70">YouTube may require upload fallback.</p>
-                </div>
+              <div className="mt-5 rounded-lg border border-white/10 bg-zinc-950 p-4 text-sm leading-6 text-zinc-400">
+                The engine extracts frames and audio, transcribes speech, identifies visual context, scores attention by timestamp, and produces ad-fit recommendations with exportable reports.
               </div>
 
               <div className="mt-5 flex flex-col gap-3 lg:flex-row">
