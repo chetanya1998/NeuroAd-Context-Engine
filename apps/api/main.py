@@ -463,22 +463,16 @@ def convertible_video_suffix_from_url(url: str) -> str | None:
 def download_remote_video(url: str, video_id: str | None = None) -> tuple[Path, str]:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"}:
-        raise HTTPException(status_code=400, detail="Use an http(s) video file URL.")
+        raise HTTPException(status_code=400, detail="Use an http(s) video URL.")
     if parse_youtube_id(url):
         raise HTTPException(
             status_code=400,
-            detail="FFmpeg is ready, but a YouTube watch link is a web page, not a direct video file. Upload the video file you own, use the YouTube permission path, or paste a direct video file URL.",
+            detail="Use the YouTube permission path for YouTube URLs.",
         )
 
     suffix = convertible_video_suffix_from_url(url)
     if not suffix:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Paste a direct video file URL ending in .mp4, .mov, .webm, .m4v, .avi, .mkv, .flv, "
-                ".wmv, .mpg, .mpeg, .3gp, .3g2, or .ogv."
-            ),
-        )
+        return download_extractable_video(url, video_id)
 
     video_id = video_id or new_id("video")
     target = UPLOAD_DIR / f"{video_id}{suffix}"
@@ -507,24 +501,11 @@ def download_remote_video(url: str, video_id: str | None = None) -> tuple[Path, 
     return target, video_id
 
 
-def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path, str, dict[str, Any]]:
-    youtube_id = parse_youtube_id(url)
-    if not youtube_id:
-        raise HTTPException(status_code=400, detail="Use a valid public YouTube URL.")
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        raise HTTPException(status_code=400, detail="FFmpeg and FFprobe are required before YouTube ingestion can run.")
-
-    try:
-        import yt_dlp
-    except ImportError as exc:
-        raise HTTPException(status_code=500, detail="yt-dlp is not installed in the API environment.") from exc
-
-    video_id = video_id or new_id("video")
-    output_template = str(UPLOAD_DIR / f"{video_id}.%(ext)s")
-    options = {
+def ytdlp_base_options(video_id: str) -> dict[str, Any]:
+    options: dict[str, Any] = {
         "format": "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/best[height<=720]/best",
         "merge_output_format": "mp4",
-        "outtmpl": output_template,
+        "outtmpl": str(UPLOAD_DIR / f"{video_id}.%(ext)s"),
         "noplaylist": True,
         "max_filesize": MAX_UPLOAD_BYTES,
         "quiet": True,
@@ -544,12 +525,6 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
                 "Chrome/126.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.youtube.com/",
-        },
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android", "web_safari", "web"],
-            }
         },
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
     }
@@ -562,6 +537,66 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
         browser = parts[0]
         profile = parts[1] if len(parts) > 1 and parts[1] else None
         options["cookiesfrombrowser"] = (browser, profile, None, None)
+    return options
+
+
+def find_downloaded_media(video_id: str, before: set[Path]) -> Path:
+    downloaded = [path for path in UPLOAD_DIR.glob(f"{video_id}.*") if path not in before and path.suffix.lower() in CONVERTIBLE_VIDEO_EXTENSIONS]
+    if not downloaded:
+        downloaded = [path for path in UPLOAD_DIR.glob(f"{video_id}.*") if path.suffix.lower() in CONVERTIBLE_VIDEO_EXTENSIONS]
+    if not downloaded:
+        raise HTTPException(status_code=400, detail="The URL was reachable, but no downloadable video file was produced.")
+
+    target = max(downloaded, key=lambda path: path.stat().st_size)
+    if target.stat().st_size > MAX_UPLOAD_BYTES:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Downloaded video exceeds the 200 MB MVP limit.")
+    return target
+
+
+def download_extractable_video(url: str, video_id: str | None = None) -> tuple[Path, str]:
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise HTTPException(status_code=400, detail="FFmpeg and FFprobe are required before URL extraction can run.")
+    try:
+        import yt_dlp
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="yt-dlp is not installed in the API environment.") from exc
+
+    video_id = video_id or new_id("video")
+    before = set(UPLOAD_DIR.glob(f"{video_id}.*"))
+    try:
+        with yt_dlp.YoutubeDL(ytdlp_base_options(video_id)) as downloader:
+            downloader.extract_info(url, download=True)
+    except Exception as exc:
+        for path in UPLOAD_DIR.glob(f"{video_id}.*"):
+            path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not extract a real video file from this URL. Paste a direct video file URL, use a supported public media page, "
+                "or upload the file directly."
+            ),
+        ) from exc
+
+    return find_downloaded_media(video_id, before), video_id
+
+
+def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path, str, dict[str, Any]]:
+    youtube_id = parse_youtube_id(url)
+    if not youtube_id:
+        raise HTTPException(status_code=400, detail="Use a valid public YouTube URL.")
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise HTTPException(status_code=400, detail="FFmpeg and FFprobe are required before YouTube ingestion can run.")
+
+    try:
+        import yt_dlp
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="yt-dlp is not installed in the API environment.") from exc
+
+    video_id = video_id or new_id("video")
+    options = ytdlp_base_options(video_id)
+    options["http_headers"]["Referer"] = "https://www.youtube.com/"
+    options["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "web_safari", "web"]}}
 
     before = set(UPLOAD_DIR.glob(f"{video_id}.*"))
     try:
@@ -581,16 +616,7 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
             detail = f"Could not ingest this YouTube URL: {message}"
         raise HTTPException(status_code=400, detail=detail) from exc
 
-    downloaded = [path for path in UPLOAD_DIR.glob(f"{video_id}.*") if path not in before and path.suffix.lower() in ALLOWED_EXTENSIONS]
-    if not downloaded:
-        downloaded = [path for path in UPLOAD_DIR.glob(f"{video_id}.*") if path.suffix.lower() in ALLOWED_EXTENSIONS]
-    if not downloaded:
-        raise HTTPException(status_code=400, detail="YouTube download completed but no supported MP4/MOV/WebM/M4V file was produced.")
-
-    target = max(downloaded, key=lambda path: path.stat().st_size)
-    if target.stat().st_size > MAX_UPLOAD_BYTES:
-        target.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Downloaded YouTube video exceeds the 200 MB MVP limit.")
+    target = find_downloaded_media(video_id, before)
 
     metadata = {
         "youtube_id": youtube_id,
@@ -775,27 +801,24 @@ def ingest_youtube_video(payload: YouTubeIngestRequest) -> dict[str, Any]:
 def create_video_from_url(payload: VideoUrlRequest) -> dict[str, Any]:
     parsed = urlparse(payload.url.strip())
     if parsed.scheme not in {"http", "https"}:
-        raise HTTPException(status_code=400, detail="Use an http(s) video file URL.")
+        raise HTTPException(status_code=400, detail="Use an http(s) video URL.")
     if parse_youtube_id(payload.url):
         raise HTTPException(status_code=400, detail="Use the YouTube permission checkbox path for YouTube URLs.")
-    if not convertible_video_suffix_from_url(payload.url):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Paste a direct video file URL ending in .mp4, .mov, .webm, .m4v, .avi, .mkv, .flv, "
-                ".wmv, .mpg, .mpeg, .3gp, .3g2, or .ogv."
-            ),
-        )
 
     video_id = new_id("video")
-    title = Path(urlparse(payload.url).path).name or "Remote video"
+    title = Path(parsed.path).name or parsed.netloc or "Remote video"
+    description = (
+        "Direct video URL queued for real media analysis."
+        if convertible_video_suffix_from_url(payload.url)
+        else "Media page URL queued for real extraction and analysis."
+    )
     execute(
         """
         insert into videos
         (id, source_type, source_url, title, description, thumbnail_url, duration_seconds, status, file_path, embed_url, created_at)
-        values (?, 'url', ?, ?, 'Direct video URL queued for real local analysis.', null, 0, 'uploaded', null, null, ?)
+        values (?, 'url', ?, ?, ?, null, 0, 'uploaded', null, null, ?)
         """,
-        (video_id, payload.url, title, utc_now()),
+        (video_id, payload.url, title, description, utc_now()),
     )
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": 0}
 

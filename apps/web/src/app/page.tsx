@@ -30,7 +30,7 @@ const conceptSteps = [
   {
     icon: FileVideo,
     title: "Start with media",
-    copy: "Upload a file, paste a direct video URL, or analyze a YouTube video you have permission to process."
+    copy: "Upload a file, paste a video page URL, paste a direct video URL, or analyze a YouTube video you have permission to process."
   },
   {
     icon: ScanSearch,
@@ -97,12 +97,10 @@ export default function HomePage() {
     }
   }
 
-  function isDirectVideoUrl(value: string) {
+  function isHttpUrl(value: string) {
     try {
-      const pathname = new URL(value).pathname.toLowerCase();
-      return [".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv", ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".3g2", ".ogv"].some(
-        (extension) => pathname.endsWith(extension)
-      );
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
     } catch {
       return false;
     }
@@ -129,8 +127,8 @@ export default function HomePage() {
       youtubeMutation.mutate({ url: trimmedUrl, hasPermission: hasYouTubePermission });
       return;
     }
-    if (!isDirectVideoUrl(trimmedUrl)) {
-      setError("Paste a YouTube URL, or a direct video file URL ending in .mp4, .mov, .webm, .m4v, .avi, .mkv, .flv, .wmv, .mpg, .mpeg, .3gp, .3g2, or .ogv.");
+    if (!isHttpUrl(trimmedUrl)) {
+      setError("Paste a valid http(s) video URL.");
       return;
     }
     urlMutation.mutate(trimmedUrl);
@@ -156,7 +154,7 @@ export default function HomePage() {
                 </div>
                 <div>
                   <h2 className="text-lg font-semibold text-white">Paste a video link</h2>
-                  <p className="text-sm text-zinc-500">Use a YouTube watch link or a direct video file URL such as MP4, MOV, WebM, M4V, AVI, MKV, or FLV.</p>
+                  <p className="text-sm text-zinc-500">Use a YouTube watch link, a supported public media page, or a direct video file URL such as MP4, MOV, WebM, AVI, MKV, or FLV.</p>
                 </div>
               </div>
 
@@ -168,7 +166,7 @@ export default function HomePage() {
                 <input
                   value={videoUrl}
                   onChange={(event) => setVideoUrl(event.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mkv"
+                  placeholder="https://www.youtube.com/watch?v=... or https://example.com/video"
                   className="min-h-12 flex-1 rounded-lg border border-white/10 bg-zinc-950 px-4 text-sm text-white outline-none ring-white/20 transition placeholder:text-zinc-700 focus:ring-2"
                 />
                 <Button onClick={handleVideoUrl} disabled={busy}>
@@ -320,9 +318,9 @@ export default function HomePage() {
 
           <div className="mt-6 rounded-lg border border-white/10 bg-black p-5 text-sm leading-6 text-zinc-500">
             {dependencyQuery.data?.youtube_ingest_ready
-              ? "FFmpeg, FFprobe, and yt-dlp are ready. YouTube links, direct video URLs, and uploads can enter the real local analysis pipeline."
+              ? "FFmpeg, FFprobe, and yt-dlp are ready. YouTube links, supported media pages, direct video URLs, and uploads can enter the real analysis pipeline."
               : dependencyQuery.data?.ready
-                ? "FFmpeg and FFprobe are ready. Uploads and direct video URLs can be analyzed; install yt-dlp for YouTube ingestion."
+                ? "FFmpeg and FFprobe are ready. Uploads and direct video URLs can be analyzed; install yt-dlp for media-page and YouTube extraction."
                 : "Install FFmpeg/FFprobe before real video analysis. The processing page will surface missing runtime details clearly."}
           </div>
         </section>

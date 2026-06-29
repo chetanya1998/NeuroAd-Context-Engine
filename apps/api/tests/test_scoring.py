@@ -8,6 +8,8 @@ from main import (
     attention_label,
     convertible_video_suffix_from_url,
     cors_origins_from_env,
+    create_video_from_url,
+    download_remote_video,
     health,
     is_youtube_media_blocked,
     make_segments,
@@ -48,6 +50,37 @@ def test_convertible_video_suffixes_include_common_container_formats():
     assert convertible_video_suffix_from_url("https://cdn.example.com/video.mkv") == ".mkv"
     assert convertible_video_suffix_from_url("https://cdn.example.com/video.avi") == ".avi"
     assert convertible_video_suffix_from_url("https://cdn.example.com/video.pdf") is None
+
+
+def test_video_url_endpoint_accepts_extractable_media_page_urls(monkeypatch):
+    inserted = {}
+    monkeypatch.setattr(main, "new_id", lambda prefix: f"{prefix}_test")
+
+    def fake_execute(sql, params=()):
+        inserted["params"] = params
+
+    monkeypatch.setattr(main, "execute", fake_execute)
+
+    payload = main.VideoUrlRequest(url="https://media.example.com/watch/abc123")
+    response = create_video_from_url(payload)
+
+    assert response["video_id"] == "video_test"
+    assert response["status"] == "uploaded"
+    assert inserted["params"][3] == "Media page URL queued for real extraction and analysis."
+
+
+def test_remote_video_without_file_extension_uses_extractor(monkeypatch):
+    expected = Path("/tmp/extracted.mp4")
+
+    def fake_extract(url, video_id=None):
+        return expected, video_id or "video_generated"
+
+    monkeypatch.setattr(main, "download_extractable_video", fake_extract)
+
+    path, video_id = download_remote_video("https://media.example.com/watch/abc123", "video_test")
+
+    assert path == expected
+    assert video_id == "video_test"
 
 
 def test_health_reports_deployment_limits():
