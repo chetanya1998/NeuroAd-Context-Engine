@@ -60,22 +60,30 @@ export default function HomePage() {
     refetchInterval: 15000
   });
 
+  function showActionError(err: Error) {
+    if (err.message.toLowerCase().includes("sign in to confirm")) {
+      setError("YouTube blocked server-side access for this video. Upload the video file directly for reliable analysis.");
+      return;
+    }
+    setError(err.message);
+  }
+
   const uploadMutation = useMutation({
     mutationFn: uploadVideo,
     onSuccess: (payload) => router.push(`/analyze/${payload.video_id}`),
-    onError: (err) => setError(err.message)
+    onError: showActionError
   });
 
   const urlMutation = useMutation({
     mutationFn: createVideoFromUrl,
     onSuccess: (payload) => router.push(`/analyze/${payload.video_id}`),
-    onError: (err) => setError(err.message)
+    onError: showActionError
   });
 
   const youtubeMutation = useMutation({
     mutationFn: ({ url, hasPermission }: { url: string; hasPermission: boolean }) => ingestYouTubeVideo(url, hasPermission),
     onSuccess: (payload) => router.push(`/analyze/${payload.video_id}`),
-    onError: (err) => setError(err.message)
+    onError: showActionError
   });
 
   const busy = uploadMutation.isPending || urlMutation.isPending || youtubeMutation.isPending;
@@ -146,7 +154,22 @@ export default function HomePage() {
                 </div>
                 <div>
                   <h2 className="text-lg font-semibold text-white">Paste a video link</h2>
-                  <p className="text-sm text-zinc-500">YouTube links move to processing first; media ingestion runs on the next page.</p>
+                  <p className="text-sm text-zinc-500">Direct MP4, MOV, WebM, and M4V links are the most reliable. YouTube is beta and may be blocked by YouTube.</p>
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 text-sm sm:grid-cols-3">
+                <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 p-3">
+                  <p className="font-medium text-emerald-200">Best</p>
+                  <p className="mt-1 text-emerald-50/70">Upload an MP4/MOV file.</p>
+                </div>
+                <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 p-3">
+                  <p className="font-medium text-cyan-200">Reliable</p>
+                  <p className="mt-1 text-cyan-50/70">Paste a direct video file URL.</p>
+                </div>
+                <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3">
+                  <p className="font-medium text-amber-200">Beta</p>
+                  <p className="mt-1 text-amber-50/70">YouTube may require upload fallback.</p>
                 </div>
               </div>
 
@@ -169,7 +192,7 @@ export default function HomePage() {
                   onChange={(event) => setHasYouTubePermission(event.target.checked)}
                   className="mt-1 h-4 w-4 accent-white"
                 />
-                <span>I own this YouTube video or have permission to download and analyze it.</span>
+                <span>I own this YouTube video or have permission to download and analyze it. If YouTube blocks server access, upload the video file directly.</span>
               </label>
 
               <div className="mt-5 flex items-center gap-3 text-sm text-zinc-600">
