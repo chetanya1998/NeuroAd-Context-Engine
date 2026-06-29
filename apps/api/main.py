@@ -1326,14 +1326,27 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
     if os.getenv("NEUROAD_ENABLE_OBJECT_DETECTION", "1").lower() in {"0", "false", "no", "off"}:
         return detect_lightweight_visual_context(frames)
     engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
-    if engine == "mobilenet_ssd":
-        return detect_mobilenet_ssd_objects(frames)
-    if engine != "yolo":
+    try:
+        if engine == "mobilenet_ssd":
+            return detect_mobilenet_ssd_objects(frames)
+        if engine != "yolo":
+            return detect_lightweight_visual_context(frames)
+        return detect_yolo_objects(frames)
+    except Exception:
+        if object_detection_required():
+            raise
         return detect_lightweight_visual_context(frames)
+
+
+def object_detection_required() -> bool:
+    return os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
     try:
         from ultralytics import YOLO
     except ImportError as exc:
-        if os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}:
+        if object_detection_required():
             raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
         return detect_lightweight_visual_context(frames)
     model_name = os.getenv("YOLO_MODEL", "yolov8n.pt")
@@ -1365,16 +1378,21 @@ def get_mobilenet_ssd_net() -> Any | None:
     if MOBILENET_SSD_NET_CACHE is not None:
         return MOBILENET_SSD_NET_CACHE
     if not MOBILENET_SSD_GRAPH.exists() or not MOBILENET_SSD_CONFIG.exists():
-        if os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}:
+        if object_detection_required():
             raise RuntimeError("MobileNet-SSD model files are missing.")
         return None
     try:
         import cv2
     except ImportError as exc:
-        if os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}:
+        if object_detection_required():
             raise RuntimeError("opencv-python is required for MobileNet-SSD object detection.") from exc
         return None
-    MOBILENET_SSD_NET_CACHE = cv2.dnn.readNetFromTensorflow(str(MOBILENET_SSD_GRAPH), str(MOBILENET_SSD_CONFIG))
+    try:
+        MOBILENET_SSD_NET_CACHE = cv2.dnn.readNetFromTensorflow(str(MOBILENET_SSD_GRAPH), str(MOBILENET_SSD_CONFIG))
+    except Exception:
+        if object_detection_required():
+            raise
+        return None
     return MOBILENET_SSD_NET_CACHE
 
 

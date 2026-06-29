@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import main
 from main import (
     attention_label,
     build_metadata_fallback_segments,
@@ -75,3 +76,15 @@ def test_youtube_metadata_fallback_builds_limited_segments():
     assert segments[0]["label"] == "Metadata estimate"
     assert segments[0]["thumbnail_url"] == video["thumbnail_url"]
     assert segments[0]["topics"]
+
+
+def test_object_detection_falls_back_when_model_loading_fails(monkeypatch):
+    monkeypatch.delenv("NEUROAD_REQUIRE_OBJECT_DETECTION", raising=False)
+
+    def broken_detector(frames):
+        raise RuntimeError("OpenCV could not import MobileNet graph")
+
+    monkeypatch.setattr(main, "detect_mobilenet_ssd_objects", broken_detector)
+    monkeypatch.setattr(main, "detect_lightweight_visual_context", lambda frames: {1: []})
+
+    assert main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}}) == {1: []}
