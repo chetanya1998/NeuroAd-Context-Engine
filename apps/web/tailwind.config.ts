@@ -38,7 +38,9 @@ const config: Config = {
         "spin-slow": "spin 8s linear infinite",
         "grid-drift": "grid-drift 15s linear infinite",
         "node-pulse": "node-pulse 2s ease-in-out infinite",
-        "stagger-fade": "fade-in-up 0.5s ease-out forwards"
+        "stagger-fade": "fade-in-up 0.5s ease-out forwards",
+        "scrub": "scrub 8s ease-in-out infinite",
+        "pulse-ring": "pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite"
       },
       keyframes: {
         "float": {
@@ -94,6 +96,14 @@ const config: Config = {
         "node-pulse": {
           "0%, 100%": { transform: "scale(1)", opacity: "0.8" },
           "50%": { transform: "scale(1.08)", opacity: "1" }
+        },
+        "scrub": {
+          "0%": { left: "0%" },
+          "100%": { left: "100%" }
+        },
+        "pulse-ring": {
+          "0%": { transform: "scale(0.8)", opacity: "0.5" },
+          "80%, 100%": { transform: "scale(2.5)", opacity: "0" }
         }
       }
     }

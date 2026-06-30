@@ -35,14 +35,6 @@ import {
 
 /* ─── Static data ─── */
 
-const previewSegments = [
-  { time: "00:00", score: 72, label: "Hook", tone: "bg-white" },
-  { time: "00:05", score: 38, label: "Drop risk", tone: "bg-red-500" },
-  { time: "00:10", score: 81, label: "Object visible", tone: "bg-emerald-400" },
-  { time: "00:15", score: 91, label: "Best ad slot", tone: "bg-white" },
-  { time: "00:20", score: 64, label: "Topic shift", tone: "bg-amber-300" },
-  { time: "00:25", score: 47, label: "Neutral", tone: "bg-zinc-500" }
-];
 
 const conceptSteps = [
   {
@@ -67,13 +59,6 @@ const conceptSteps = [
   }
 ];
 
-const pipelineStages = [
-  { icon: UploadCloud, label: "Ingest", desc: "Video, audio, frames" },
-  { icon: Video, label: "Frames", desc: "Scene extraction" },
-  { icon: AudioLines, label: "Audio & NLP", desc: "Speech, tone, topics" },
-  { icon: Brain, label: "Scoring", desc: "Attention proxy" },
-  { icon: Sparkles, label: "Output", desc: "Reports & ads" }
-];
 
 const reportRows = [
   { t: "00:15 – 00:20", score: 91, cat: "Productivity", fit: "High" as const },
@@ -518,254 +503,336 @@ export default function HomePage() {
         {/* ═══════════════════════════════════════════════════════════
             SECTION 5 — PIPELINE VISUALIZATION
          ═══════════════════════════════════════════════════════════ */}
-        <section id="section-pipeline" className="border-t border-white/10 py-24">
+        <section id="section-pipeline" className="border-t border-white/10 py-32">
           <Reveal>
-            <div className="mb-16 text-center">
-              <Badge tone="success">Step 2 · Pipeline</Badge>
-              <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">
-                The Context Engine
+            <div className="mb-20 text-center">
+              <Badge tone="success">Step 2 · Context Engine</Badge>
+              <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white md:text-5xl">
+                Parallel Data Processing
               </h2>
-              <p className="mx-auto mt-4 max-w-2xl text-zinc-400">
-                Raw signals flow through our AI models to calculate the Attention
-                Proxy Score and ad-fit metrics.
+              <p className="mx-auto mt-5 max-w-xl text-lg text-zinc-400">
+                Raw media is split into synchronized visual and audio streams,
+                processed by specialized AI models, and synthesized into a final score.
               </p>
             </div>
           </Reveal>
 
-          <div className="mx-auto max-w-5xl">
-            {/* Desktop pipeline */}
-            <div className="hidden md:block">
-              <div className="relative flex items-center justify-between">
-                {/* Connector line behind nodes */}
-                <div className="absolute left-[10%] right-[10%] top-1/2 h-px -translate-y-1/2 bg-white/10" />
-                {/* Traveling particles */}
-                <div className="pipeline-connector absolute left-[10%] right-[10%] top-1/2 h-px -translate-y-1/2" />
-                <div
-                  className="pipeline-connector absolute left-[10%] right-[10%] top-1/2 h-px -translate-y-1/2"
-                  style={{ animationDelay: "1.2s" }}
-                />
+          <div className="mx-auto max-w-5xl px-4">
+            <Reveal delay={200}>
+              <div className="relative rounded-2xl border border-white/10 bg-black/50 p-8 shadow-2xl md:p-16">
+                {/* Background grid lines */}
+                <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)]" />
 
-                {pipelineStages.map((stage, i) => {
-                  const Icon = stage.icon;
-                  return (
-                    <Reveal key={stage.label} delay={i * 120}>
-                      <div className="relative z-10 flex flex-col items-center gap-3">
-                        <div
-                          className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/15 bg-zinc-950 shadow-glow animate-node-pulse"
-                          style={{ animationDelay: `${i * 0.4}s` }}
-                        >
-                          <Icon className="h-7 w-7 text-white" />
-                        </div>
-                        <span className="text-sm font-medium text-white">
-                          {stage.label}
-                        </span>
-                        <span className="text-xs text-zinc-600">
-                          {stage.desc}
-                        </span>
-                      </div>
-                    </Reveal>
-                  );
-                })}
-              </div>
-            </div>
+                <div className="relative flex flex-col items-center justify-between gap-12 md:flex-row md:gap-4">
+                  {/* Node 1: Ingest */}
+                  <div className="group z-10 flex w-48 flex-col items-center gap-4 text-center">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-white/20 bg-zinc-950 shadow-glow transition-all duration-500 group-hover:scale-110 group-hover:border-white/40">
+                      <UploadCloud className="h-8 w-8 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-white">Ingest</h3>
+                      <p className="mt-1 text-sm text-zinc-500">Video & Audio</p>
+                    </div>
+                  </div>
 
-            {/* Mobile pipeline (vertical) */}
-            <div className="flex flex-col items-center gap-2 md:hidden">
-              {pipelineStages.map((stage, i) => {
-                const Icon = stage.icon;
-                return (
-                  <Reveal key={stage.label} delay={i * 100}>
-                    <div className="flex items-center gap-4 rounded-xl border border-white/10 bg-zinc-950 p-4">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black">
-                        <Icon className="h-6 w-6 text-white" />
+                  {/* Split branches (Desktop) */}
+                  <div className="absolute left-[12%] right-[12%] top-10 hidden h-48 md:block">
+                    {/* Top branch */}
+                    <svg className="absolute inset-0 h-full w-full" preserveAspectRatio="none">
+                      <path
+                        d="M 60 20 C 150 20, 200 -60, 300 -60"
+                        fill="none"
+                        stroke="rgba(255,255,255,0.15)"
+                        strokeWidth="2"
+                        className="translate-y-[100px]"
+                      />
+                      <path
+                        d="M 60 20 C 150 20, 200 -60, 300 -60"
+                        fill="none"
+                        stroke="url(#data-flow-top)"
+                        strokeWidth="3"
+                        className="translate-y-[100px]"
+                      />
+                      {/* Bottom branch */}
+                      <path
+                        d="M 60 20 C 150 20, 200 100, 300 100"
+                        fill="none"
+                        stroke="rgba(255,255,255,0.15)"
+                        strokeWidth="2"
+                        className="translate-y-[100px]"
+                      />
+                      <path
+                        d="M 60 20 C 150 20, 200 100, 300 100"
+                        fill="none"
+                        stroke="url(#data-flow-bottom)"
+                        strokeWidth="3"
+                        className="translate-y-[100px]"
+                      />
+                      {/* Merge back top */}
+                      <path
+                        d="M 520 -60 C 620 -60, 670 20, 760 20"
+                        fill="none"
+                        stroke="rgba(255,255,255,0.15)"
+                        strokeWidth="2"
+                        className="translate-y-[100px]"
+                      />
+                      <path
+                        d="M 520 -60 C 620 -60, 670 20, 760 20"
+                        fill="none"
+                        stroke="url(#data-flow-merge)"
+                        strokeWidth="3"
+                        className="translate-y-[100px]"
+                      />
+                      {/* Merge back bottom */}
+                      <path
+                        d="M 520 100 C 620 100, 670 20, 760 20"
+                        fill="none"
+                        stroke="rgba(255,255,255,0.15)"
+                        strokeWidth="2"
+                        className="translate-y-[100px]"
+                      />
+                      <path
+                        d="M 520 100 C 620 100, 670 20, 760 20"
+                        fill="none"
+                        stroke="url(#data-flow-merge)"
+                        strokeWidth="3"
+                        className="translate-y-[100px]"
+                      />
+                      
+                      <defs>
+                        <linearGradient id="data-flow-top" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="transparent" />
+                          <stop offset="50%" stopColor="#22C55E">
+                            <animate attributeName="stop-color" values="#22C55E;#3B82F6;#22C55E" dur="3s" repeatCount="indefinite" />
+                          </stop>
+                          <stop offset="100%" stopColor="transparent" />
+                        </linearGradient>
+                        <linearGradient id="data-flow-bottom" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="transparent" />
+                          <stop offset="50%" stopColor="#F59E0B">
+                            <animate attributeName="stop-color" values="#F59E0B;#EF4444;#F59E0B" dur="3s" repeatCount="indefinite" />
+                          </stop>
+                          <stop offset="100%" stopColor="transparent" />
+                        </linearGradient>
+                        <linearGradient id="data-flow-merge" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="transparent" />
+                          <stop offset="50%" stopColor="#E5E7EB" />
+                          <stop offset="100%" stopColor="transparent" />
+                        </linearGradient>
+                      </defs>
+                    </svg>
+                  </div>
+
+                  {/* Parallel Tracks */}
+                  <div className="z-10 flex flex-col gap-16 md:gap-32">
+                    {/* Vision Track */}
+                    <div className="group flex w-48 flex-col items-center gap-4 text-center">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-white/20 bg-zinc-950 shadow-[0_0_30px_rgba(34,197,94,0.15)] transition-all duration-500 group-hover:scale-110 group-hover:border-green-500/50">
+                        <Video className="h-8 w-8 text-green-400" />
                       </div>
                       <div>
-                        <p className="font-medium text-white">{stage.label}</p>
-                        <p className="text-xs text-zinc-500">{stage.desc}</p>
+                        <h3 className="font-semibold text-white">Vision AI</h3>
+                        <p className="mt-1 text-sm text-zinc-500">Objects & Scenes</p>
                       </div>
                     </div>
-                    {i < pipelineStages.length - 1 && (
-                      <div className="mx-auto h-6 w-px bg-white/10" />
-                    )}
-                  </Reveal>
-                );
-              })}
-            </div>
+
+                    {/* Audio Track */}
+                    <div className="group flex w-48 flex-col items-center gap-4 text-center">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-white/20 bg-zinc-950 shadow-[0_0_30px_rgba(245,158,11,0.15)] transition-all duration-500 group-hover:scale-110 group-hover:border-amber-500/50">
+                        <AudioLines className="h-8 w-8 text-amber-400" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-white">Audio AI</h3>
+                        <p className="mt-1 text-sm text-zinc-500">Speech & Tone</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Node 3: Synthesis */}
+                  <div className="group z-10 flex w-48 flex-col items-center gap-4 text-center">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-white/20 bg-white shadow-[0_0_40px_rgba(255,255,255,0.2)] transition-all duration-500 group-hover:scale-110 group-hover:shadow-[0_0_60px_rgba(255,255,255,0.4)]">
+                      <Brain className="h-8 w-8 text-black" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-white">Scoring Engine</h3>
+                      <p className="mt-1 text-sm text-zinc-500">Attention Proxy</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mobile connectors (vertical line) */}
+                <div className="absolute bottom-[20%] top-[10%] left-1/2 -ml-px w-px bg-gradient-to-b from-white/0 via-white/20 to-white/0 md:hidden" />
+              </div>
+            </Reveal>
           </div>
         </section>
 
         {/* ═══════════════════════════════════════════════════════════
             SECTION 6 — LIVE OUTPUT PREVIEW
          ═══════════════════════════════════════════════════════════ */}
-        <section className="border-t border-white/10 py-24">
+        <section className="border-t border-white/10 py-32">
           <Reveal>
-            <div className="mb-12 text-center">
+            <div className="mb-20 text-center">
               <Badge tone="cyan">Live Preview</Badge>
-              <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">
-                Attention Proxy Score
+              <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white md:text-5xl">
+                Real-Time Analysis
               </h2>
-              <p className="mx-auto mt-4 max-w-2xl text-zinc-400">
-                A dashboard-style visualization appears after analysis with
-                attention, objects, topics, and ad-fit markers per timestamp.
+              <p className="mx-auto mt-5 max-w-2xl text-lg text-zinc-400">
+                Watch the Context Engine parse your media in real-time, mapping
+                attention proxy scores to precise, frame-accurate timestamps.
               </p>
             </div>
           </Reveal>
 
           <Reveal delay={200}>
-            <Card className="mx-auto max-w-4xl overflow-hidden border-white/10 bg-black p-0">
-              <div className="border-b border-white/10 p-6">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-sm uppercase tracking-[0.22em] text-zinc-500">
-                      Live output preview
-                    </p>
-                    <h3 className="mt-2 text-2xl font-semibold text-white">
-                      Attention Timeline
-                    </h3>
-                  </div>
-                  <AudioLines className="h-7 w-7 text-zinc-400" />
+            {/* Mock OS Window Frame */}
+            <div className="mx-auto max-w-6xl overflow-hidden rounded-2xl border border-white/10 bg-black shadow-glow-lg">
+              {/* Window Header */}
+              <div className="flex h-12 items-center border-b border-white/10 bg-white/[0.02] px-4">
+                <div className="flex gap-2">
+                  <div className="h-3 w-3 rounded-full bg-red-500/80" />
+                  <div className="h-3 w-3 rounded-full bg-amber-500/80" />
+                  <div className="h-3 w-3 rounded-full bg-green-500/80" />
+                </div>
+                <div className="mx-auto flex items-center gap-2 text-xs text-zinc-500">
+                  <Activity className="h-3.5 w-3.5" />
+                  <span>project_alpha_final.mp4 — Analyzing</span>
                 </div>
               </div>
 
-              <div className="p-6">
-                <div className="rounded-lg border border-white/10 bg-zinc-950 p-5">
-                  <div className="h-56">
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr]">
+                {/* Left Col: Media Player Mock */}
+                <div className="border-b border-white/10 bg-zinc-950 p-6 md:border-b-0 md:border-r">
+                  <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-white/10 bg-black">
+                    {/* Shimmer background */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 bg-[length:200%_100%] animate-shimmer opacity-30" />
+                    
+                    {/* Scanning Line */}
+                    <div className="absolute bottom-0 top-0 w-px bg-white/50 shadow-[0_0_10px_#fff] animate-scrub" />
+
+                    {/* Pop-up Tags */}
+                    <div className="absolute bottom-4 left-4 flex flex-col gap-2">
+                      <div className="flex items-center gap-2 rounded-full border border-green-500/30 bg-green-500/10 px-3 py-1 text-xs font-medium text-green-400 backdrop-blur-sm animate-pulse-slow">
+                        <ScanSearch className="h-3 w-3" />
+                        Object: Laptop (98%)
+                      </div>
+                      <div className="flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-400 backdrop-blur-sm animate-pulse-slow" style={{ animationDelay: '1s' }}>
+                        <AudioLines className="h-3 w-3" />
+                        Tone: Upbeat
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex items-center justify-between rounded-lg border border-white/5 bg-white/[0.02] px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="relative flex h-2 w-2 items-center justify-center">
+                        <div className="absolute h-full w-full rounded-full bg-cyan-400 animate-pulse-ring" />
+                        <div className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                      </div>
+                      <span className="text-sm font-medium text-zinc-300">Live Analysis</span>
+                    </div>
+                    <span className="font-mono text-xs text-zinc-500">00:14 / 00:30</span>
+                  </div>
+                </div>
+
+                {/* Right Col: Timeline & Chart */}
+                <div className="p-6">
+                  <div className="flex items-center justify-between mb-8">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Attention Timeline</h3>
+                      <p className="text-sm text-zinc-500">Proxy score mapped to semantic segments</p>
+                    </div>
+                    <Badge tone="success">Optimal ad slot found</Badge>
+                  </div>
+
+                  {/* SVG Chart with Scrubber */}
+                  <div className="relative h-48 w-full rounded-xl border border-white/5 bg-white/[0.01] p-4">
+                    {/* The animated scrubber line */}
+                    <div className="absolute bottom-4 top-4 z-10 w-px bg-white/30 animate-scrub">
+                      <div className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-white shadow-[0_0_8px_#fff]" />
+                    </div>
+
                     <svg
-                      viewBox="0 0 640 220"
-                      className="h-full w-full"
-                      role="img"
-                      aria-label="Attention score visualization preview"
+                      viewBox="0 0 640 160"
+                      className="h-full w-full overflow-visible"
+                      preserveAspectRatio="none"
                     >
                       <defs>
-                        <linearGradient
-                          id="line-grad"
-                          x1="0"
-                          x2="1"
-                          y1="0"
-                          y2="0"
-                        >
-                          <stop offset="0%" stopColor="#ffffff" />
-                          <stop offset="55%" stopColor="#22c55e" />
+                        <linearGradient id="line-grad" x1="0" x2="1" y1="0" y2="0">
+                          <stop offset="0%" stopColor="#ef4444" />
+                          <stop offset="50%" stopColor="#22c55e" />
                           <stop offset="100%" stopColor="#f59e0b" />
                         </linearGradient>
-                        <linearGradient
-                          id="area-grad"
-                          x1="0"
-                          x2="0"
-                          y1="0"
-                          y2="1"
-                        >
-                          <stop
-                            offset="0%"
-                            stopColor="rgba(255,255,255,0.06)"
-                          />
-                          <stop
-                            offset="100%"
-                            stopColor="rgba(255,255,255,0)"
-                          />
+                        <linearGradient id="area-grad" x1="0" x2="0" y1="0" y2="1">
+                          <stop offset="0%" stopColor="rgba(34,197,94,0.2)" />
+                          <stop offset="100%" stopColor="rgba(34,197,94,0)" />
                         </linearGradient>
                       </defs>
-                      {[40, 80, 120, 160, 200].map((y) => (
-                        <line
-                          key={y}
-                          x1="24"
-                          x2="616"
-                          y1={y}
-                          y2={y}
-                          stroke="rgba(255,255,255,0.06)"
-                        />
+
+                      {/* Grid Lines */}
+                      {[20, 60, 100, 140].map((y) => (
+                        <line key={y} x1="0" x2="640" y1={y} y2={y} stroke="rgba(255,255,255,0.05)" strokeDasharray="4 4" />
                       ))}
+
+                      {/* The Curve */}
                       <path
-                        d="M 28 156 C 86 68, 118 82, 166 116 S 244 196, 296 90 S 386 32, 450 62 S 536 150, 610 82"
+                        d="M 0 120 C 80 120, 120 40, 200 40 S 300 140, 400 60 S 520 80, 640 20"
                         fill="none"
                         stroke="url(#line-grad)"
+                        strokeWidth="4"
                         strokeLinecap="round"
-                        strokeWidth="5"
                       />
                       <path
-                        d="M 28 156 C 86 68, 118 82, 166 116 S 244 196, 296 90 S 386 32, 450 62 S 536 150, 610 82 L 610 206 L 28 206 Z"
+                        d="M 0 120 C 80 120, 120 40, 200 40 S 300 140, 400 60 S 520 80, 640 20 L 640 160 L 0 160 Z"
                         fill="url(#area-grad)"
                       />
-                      {(
-                        [
-                          [88, 77, "Hook"],
-                          [294, 90, "Product"],
-                          [450, 62, "Best ad"]
-                        ] as const
-                      ).map(([x, y, label]) => (
-                        <g key={label}>
-                          <circle
-                            cx={x}
-                            cy={y}
-                            r="8"
-                            fill="none"
-                            stroke="rgba(255,255,255,0.3)"
-                            strokeWidth="2"
-                          >
-                            <animate
-                              attributeName="r"
-                              values="8;14;8"
-                              dur="2s"
-                              repeatCount="indefinite"
-                            />
-                            <animate
-                              attributeName="opacity"
-                              values="1;0;1"
-                              dur="2s"
-                              repeatCount="indefinite"
-                            />
-                          </circle>
-                          <circle cx={x} cy={y} r="5" fill="#ffffff" />
-                          <text
-                            x={x + 14}
-                            y={y - 10}
-                            fill="#a1a1aa"
-                            fontSize="12"
-                            fontWeight="500"
-                          >
-                            {label}
-                          </text>
-                        </g>
-                      ))}
+
+                      {/* Plot Points */}
+                      <g className="animate-pulse-slow">
+                        <circle cx="200" cy="40" r="5" fill="#fff" stroke="#22c55e" strokeWidth="2" />
+                        <text x="190" y="25" fill="#a1a1aa" fontSize="12" fontWeight="500">Hook Peak</text>
+                      </g>
+                      <g className="animate-pulse-slow" style={{ animationDelay: '1s' }}>
+                        <circle cx="400" cy="60" r="5" fill="#fff" stroke="#22c55e" strokeWidth="2" />
+                        <text x="390" y="45" fill="#a1a1aa" fontSize="12" fontWeight="500">Ad Target</text>
+                      </g>
                     </svg>
                   </div>
 
-                  <div className="mt-5 grid grid-cols-6 gap-2">
-                    {previewSegments.map((segment) => (
-                      <div key={segment.time} className="min-w-0">
-                        <div className="flex h-24 items-end rounded-md border border-white/10 bg-black p-2">
-                          <div
-                            className={`w-full rounded-sm ${segment.tone} transition-all duration-1000`}
-                            style={{ height: `${segment.score}%` }}
-                          />
-                        </div>
-                        <p className="mt-2 text-xs text-zinc-500">
-                          {segment.time}
-                        </p>
-                        <p className="truncate text-xs text-zinc-300">
-                          {segment.label}
-                        </p>
+                  {/* Segment Blocks */}
+                  <div className="mt-4 grid grid-cols-5 gap-2">
+                    <div className="space-y-1">
+                      <div className="h-6 w-full rounded border border-red-500/20 bg-red-500/10" />
+                      <div className="flex justify-between text-[10px] text-zinc-500 font-mono"><span>0s</span><span>6s</span></div>
+                      <div className="text-xs text-zinc-400">Intro / Drop</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="h-6 w-full rounded border border-green-500/20 bg-green-500/10" />
+                      <div className="flex justify-between text-[10px] text-zinc-500 font-mono"><span>6s</span><span>12s</span></div>
+                      <div className="text-xs text-zinc-400">Hook</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="h-6 w-full rounded border border-zinc-500/20 bg-zinc-500/10" />
+                      <div className="flex justify-between text-[10px] text-zinc-500 font-mono"><span>12s</span><span>18s</span></div>
+                      <div className="text-xs text-zinc-400">Context Build</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="h-6 w-full rounded border border-green-500/40 bg-green-500/20 relative overflow-hidden">
+                        <div className="absolute inset-0 bg-white/10 animate-pulse" />
                       </div>
-                    ))}
+                      <div className="flex justify-between text-[10px] text-green-500 font-mono"><span>18s</span><span>24s</span></div>
+                      <div className="text-xs font-semibold text-green-400">Best Ad Slot</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="h-6 w-full rounded border border-amber-500/20 bg-amber-500/10" />
+                      <div className="flex justify-between text-[10px] text-zinc-500 font-mono"><span>24s</span><span>30s</span></div>
+                      <div className="text-xs text-zinc-400">Outro</div>
+                    </div>
                   </div>
-                </div>
 
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
-                    <p className="text-sm text-zinc-500">Best ad slot</p>
-                    <p className="mt-2 text-2xl font-semibold text-white">
-                      00:15-00:20
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
-                    <p className="text-sm text-zinc-500">Top category</p>
-                    <p className="mt-2 text-2xl font-semibold text-white">
-                      Productivity
-                    </p>
-                  </div>
                 </div>
               </div>
-            </Card>
+            </div>
           </Reveal>
         </section>
 
