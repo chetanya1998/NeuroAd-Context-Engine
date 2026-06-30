@@ -1060,12 +1060,15 @@ def process_upload_job(job_id: str, video_id: str) -> None:
 
 
 def is_youtube_media_blocked(exc: Exception) -> bool:
+    if isinstance(exc, HTTPException):
+        # We've already explicitly formatted this error message in the ingest endpoints.
+        return False
+        
     message = str(exc).lower()
     blocked_markers = [
         "sign in to confirm",
         "not a bot",
         "captcha",
-        "cookies",
         "confirm you're not a bot",
     ]
     return any(marker in message for marker in blocked_markers)
