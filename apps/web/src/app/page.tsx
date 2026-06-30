@@ -15,7 +15,6 @@ import {
   LayoutDashboard,
   Link2,
   ScanSearch,
-  Sparkles,
   UploadCloud,
   Video,
   WandSparkles
@@ -313,9 +312,9 @@ export default function HomePage() {
                 <p className="mt-1 text-xs text-zinc-400 leading-relaxed">
                   If YouTube blocks access, you can bypass it using browser cookies. Install the 
                   <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpocnjdlpihdn" target="_blank" rel="noreferrer" className="text-white hover:underline mx-1">
-                    "Get cookies.txt LOCALLY"
+                    &quot;Get cookies.txt LOCALLY&quot;
                   </a> 
-                  Chrome extension, export your cookies for YouTube, and upload the `cookies.txt` file here.
+                  Chrome extension, export your cookies for YouTube, and upload the cookies.txt file here.
                 </p>
                 <div className="mt-3 flex items-center gap-3">
                   <label className="cursor-pointer rounded border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/10">
