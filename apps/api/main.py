@@ -530,8 +530,16 @@ def ytdlp_base_options(video_id: str) -> dict[str, Any]:
     }
     cookies_file = os.getenv("YTDLP_COOKIES_FILE")
     cookies_browser = os.getenv("YTDLP_COOKIES_BROWSER")
+    
+    default_storage_cookies = STORAGE_DIR / "cookies.txt"
+    default_app_cookies = APP_DIR / "cookies.txt"
+
     if cookies_file:
         options["cookiefile"] = cookies_file
+    elif default_storage_cookies.exists():
+        options["cookiefile"] = str(default_storage_cookies)
+    elif default_app_cookies.exists():
+        options["cookiefile"] = str(default_app_cookies)
     elif cookies_browser:
         parts = cookies_browser.split(":", 1)
         browser = parts[0]
@@ -606,11 +614,12 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
         for path in UPLOAD_DIR.glob(f"{video_id}.*"):
             path.unlink(missing_ok=True)
         message = str(exc)
-        if "403" in message or "Forbidden" in message:
+        if "403" in message or "Forbidden" in message or "Sign in to confirm" in message:
             detail = (
                 "YouTube blocked the video stream with HTTP 403. Try a video you own that is public/unlisted, "
-                "or configure browser cookies with YTDLP_COOKIES_BROWSER=chrome or YTDLP_COOKIES_FILE=/path/to/cookies.txt, "
-                "then restart the API. You can also upload the video file directly."
+                "or export cookies from your browser using an extension like 'Get cookies.txt' and save them "
+                "to 'cookies.txt' in the storage directory, or configure YTDLP_COOKIES_BROWSER=chrome. "
+                "You can also upload the video file directly."
             )
         else:
             detail = f"Could not ingest this YouTube URL: {message}"
