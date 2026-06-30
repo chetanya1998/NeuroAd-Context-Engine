@@ -536,67 +536,59 @@ export default function HomePage() {
                   </div>
 
                   {/* Split branches (Desktop) */}
-                  <div className="absolute left-[12%] right-[12%] top-10 hidden h-48 md:block">
-                    {/* Top branch */}
-                    <svg className="absolute inset-0 h-full w-full" preserveAspectRatio="none">
+                  <div className="absolute inset-0 hidden md:block">
+                    <svg className="h-full w-full" viewBox="0 0 1000 500" preserveAspectRatio="none">
+                      {/* Top branch */}
                       <path
-                        d="M 60 20 C 150 20, 200 -60, 300 -60"
+                        d="M 220 250 C 350 250, 350 150, 480 150"
                         fill="none"
                         stroke="rgba(255,255,255,0.15)"
                         strokeWidth="2"
-                        className="translate-y-[100px]"
                       />
                       <path
-                        d="M 60 20 C 150 20, 200 -60, 300 -60"
+                        d="M 220 250 C 350 250, 350 150, 480 150"
                         fill="none"
                         stroke="url(#data-flow-top)"
                         strokeWidth="3"
-                        className="translate-y-[100px]"
                       />
                       {/* Bottom branch */}
                       <path
-                        d="M 60 20 C 150 20, 200 100, 300 100"
+                        d="M 220 250 C 350 250, 350 350, 480 350"
                         fill="none"
                         stroke="rgba(255,255,255,0.15)"
                         strokeWidth="2"
-                        className="translate-y-[100px]"
                       />
                       <path
-                        d="M 60 20 C 150 20, 200 100, 300 100"
+                        d="M 220 250 C 350 250, 350 350, 480 350"
                         fill="none"
                         stroke="url(#data-flow-bottom)"
                         strokeWidth="3"
-                        className="translate-y-[100px]"
                       />
                       {/* Merge back top */}
                       <path
-                        d="M 520 -60 C 620 -60, 670 20, 760 20"
+                        d="M 520 150 C 650 150, 650 250, 780 250"
                         fill="none"
                         stroke="rgba(255,255,255,0.15)"
                         strokeWidth="2"
-                        className="translate-y-[100px]"
                       />
                       <path
-                        d="M 520 -60 C 620 -60, 670 20, 760 20"
+                        d="M 520 150 C 650 150, 650 250, 780 250"
                         fill="none"
                         stroke="url(#data-flow-merge)"
                         strokeWidth="3"
-                        className="translate-y-[100px]"
                       />
                       {/* Merge back bottom */}
                       <path
-                        d="M 520 100 C 620 100, 670 20, 760 20"
+                        d="M 520 350 C 650 350, 650 250, 780 250"
                         fill="none"
                         stroke="rgba(255,255,255,0.15)"
                         strokeWidth="2"
-                        className="translate-y-[100px]"
                       />
                       <path
-                        d="M 520 100 C 620 100, 670 20, 760 20"
+                        d="M 520 350 C 650 350, 650 250, 780 250"
                         fill="none"
                         stroke="url(#data-flow-merge)"
                         strokeWidth="3"
-                        className="translate-y-[100px]"
                       />
                       
                       <defs>
