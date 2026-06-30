@@ -604,7 +604,13 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
     video_id = video_id or new_id("video")
     options = ytdlp_base_options(video_id)
     options["http_headers"]["Referer"] = "https://www.youtube.com/"
-    options["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "web_safari", "web"]}}
+    
+    # If using browser cookies, avoid iOS/Android clients because desktop cookies
+    # combined with mobile clients immediately trigger a 403 bot detection ban.
+    if "cookiefile" in options or "cookiesfrombrowser" in options:
+        options["extractor_args"] = {"youtube": {"player_client": ["web_safari", "web", "web_creator"]}}
+    else:
+        options["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "web_safari", "web"]}}
 
     before = set(UPLOAD_DIR.glob(f"{video_id}.*"))
     try:
