@@ -602,36 +602,68 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
         raise HTTPException(status_code=500, detail="yt-dlp is not installed in the API environment.") from exc
 
     video_id = video_id or new_id("video")
-    options = ytdlp_base_options(video_id)
-    options["http_headers"]["Referer"] = "https://www.youtube.com/"
+    base_opts = ytdlp_base_options(video_id)
+    has_cookies = "cookiefile" in base_opts or "cookiesfrombrowser" in base_opts
     
-    # If using browser cookies, avoid iOS/Android clients because desktop cookies
-    # combined with mobile clients immediately trigger a 403 bot detection ban.
-    if "cookiefile" in options or "cookiesfrombrowser" in options:
-        options["extractor_args"] = {"youtube": {"player_client": ["web_safari", "web", "web_creator"]}}
+    if has_cookies:
+        # When cookies are present, try web clients first, then fallbacks.
+        strategies = [
+            ["web_safari", "web", "web_creator"],
+            ["mweb", "tv"],
+            ["tv_embedded", "web"]
+        ]
     else:
-        options["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "web_safari", "web"]}}
+        # Without cookies, try ios first (often bypasses bot checks), then tv/mweb.
+        strategies = [
+            ["ios", "android", "web_safari", "web"],
+            ["tv", "mweb"],
+            ["web_creator", "web"]
+        ]
 
-    before = set(UPLOAD_DIR.glob(f"{video_id}.*"))
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(url, download=True)
-    except Exception as exc:
-        for path in UPLOAD_DIR.glob(f"{video_id}.*"):
-            path.unlink(missing_ok=True)
-        message = str(exc)
+    last_exc = None
+    info = None
+    target = None
+
+    for clients in strategies:
+        options = ytdlp_base_options(video_id)
+        options["http_headers"]["Referer"] = "https://www.youtube.com/"
+        options["extractor_args"] = {"youtube": {"player_client": clients}}
+        
+        before = set(UPLOAD_DIR.glob(f"{video_id}.*"))
+        try:
+            with yt_dlp.YoutubeDL(options) as downloader:
+                info = downloader.extract_info(url, download=True)
+            target = find_downloaded_media(video_id, before)
+            break  # Success!
+        except Exception as exc:
+            for path in UPLOAD_DIR.glob(f"{video_id}.*"):
+                path.unlink(missing_ok=True)
+            last_exc = exc
+            message = str(exc)
+            if "The downloaded file is empty" not in message and "403" not in message and "Forbidden" not in message and "Sign in to confirm" not in message:
+                # If it's a completely different error (e.g. video not found), stop retrying
+                break
+    else:
+        # If we exhausted all strategies and still failed
+        message = str(last_exc) if last_exc else "Unknown error"
         if "403" in message or "Forbidden" in message or "Sign in to confirm" in message:
             detail = (
                 "YouTube blocked the video stream with HTTP 403. Try a video you own that is public/unlisted, "
                 "or export cookies from your browser using an extension like 'Get cookies.txt' and save them "
-                "to 'cookies.txt' in the storage directory, or configure YTDLP_COOKIES_BROWSER=chrome. "
-                "You can also upload the video file directly."
+                "to 'cookies.txt' in the storage directory. You can also upload the video file directly."
+            )
+        elif "The downloaded file is empty" in message:
+            detail = (
+                "YouTube blocked the stream chunks, resulting in an empty file. This usually means your cookies are "
+                "expired, or YouTube is blocking this server's IP via anti-bot checks. "
+                "Try exporting a fresh cookies.txt file, or upload the MP4 video file directly."
             )
         else:
             detail = f"Could not ingest this YouTube URL: {message}"
-        raise HTTPException(status_code=400, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from last_exc
 
-    target = find_downloaded_media(video_id, before)
+    if not info or not target:
+        raise HTTPException(status_code=400, detail="Failed to fetch video information or file.")
 
     metadata = {
         "youtube_id": youtube_id,
