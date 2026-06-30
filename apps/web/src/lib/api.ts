@@ -30,6 +30,14 @@ export async function uploadVideo(file: File) {
   );
 }
 
+export async function uploadCookies(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  return parseResponse<{ status: string; message: string }>(
+    await fetch(`${API_BASE}/api/system/cookies`, { method: "POST", body: form })
+  );
+}
+
 export async function createVideoFromUrl(url: string) {
   return parseResponse<{ video_id: string; status: string }>(
     await fetch(`${API_BASE}/api/videos/url`, {

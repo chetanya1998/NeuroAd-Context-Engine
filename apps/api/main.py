@@ -883,12 +883,32 @@ def get_system_dependencies() -> dict[str, Any]:
     ffmpeg_available = dependencies["ffmpeg"]["available"]
     ffprobe_available = dependencies["ffprobe"]["available"]
     yt_dlp_available = dependencies["yt_dlp"]["available"]
+    
+    cookies_configured = bool(
+        os.getenv("YTDLP_COOKIES_FILE") or 
+        os.getenv("YTDLP_COOKIES_BROWSER") or 
+        (STORAGE_DIR / "cookies.txt").exists()
+    )
+    
     return {
         "ready": bool(ffmpeg_available and ffprobe_available),
         "youtube_ingest_ready": bool(ffmpeg_available and ffprobe_available and yt_dlp_available),
-        "youtube_cookies_configured": bool(os.getenv("YTDLP_COOKIES_FILE") or os.getenv("YTDLP_COOKIES_BROWSER")),
+        "youtube_cookies_configured": cookies_configured,
         "dependencies": dependencies,
     }
+
+
+@app.post("/api/system/cookies")
+async def upload_cookies(file: UploadFile = File(...)) -> dict[str, Any]:
+    target = STORAGE_DIR / "cookies.txt"
+    content = await file.read()
+    if not content.startswith(b"# Netscape HTTP Cookie File"):
+        raise HTTPException(status_code=400, detail="Invalid cookies.txt file format. Must be a Netscape HTTP Cookie File.")
+    
+    with target.open("wb") as output:
+        output.write(content)
+        
+    return {"status": "ok", "message": "Cookies uploaded successfully"}
 
 
 @app.get("/api/videos/{video_id}/analysis")

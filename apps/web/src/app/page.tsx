@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   ArrowDown,
@@ -30,7 +30,8 @@ import {
   createVideoFromUrl,
   getSystemDependencies,
   ingestYouTubeVideo,
-  uploadVideo
+  uploadVideo,
+  uploadCookies
 } from "@/lib/api";
 
 /* ─── Static data ─── */
@@ -97,6 +98,7 @@ function useCounter(target: number, active: boolean) {
 
 export default function HomePage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [videoUrl, setVideoUrl] = useState("");
   const [hasYouTubePermission, setHasYouTubePermission] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -135,8 +137,17 @@ export default function HomePage() {
     onError: showActionError
   });
 
+  const cookiesMutation = useMutation({
+    mutationFn: uploadCookies,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["system-dependencies"] });
+      setError("Cookies uploaded successfully. You can now analyze YouTube videos.");
+    },
+    onError: showActionError
+  });
+
   const busy =
-    uploadMutation.isPending || urlMutation.isPending || youtubeMutation.isPending;
+    uploadMutation.isPending || urlMutation.isPending || youtubeMutation.isPending || cookiesMutation.isPending;
 
   function isYouTubePageUrl(value: string) {
     try {
@@ -295,6 +306,39 @@ export default function HomePage() {
                   file directly.
                 </span>
               </label>
+
+              {/* Cookies Upload Section */}
+              <div className="mt-4 rounded-lg border border-white/10 bg-zinc-950 p-4">
+                <h3 className="text-sm font-semibold text-white">YouTube Bot Detection Fallback</h3>
+                <p className="mt-1 text-xs text-zinc-400 leading-relaxed">
+                  If YouTube blocks access, you can bypass it using browser cookies. Install the 
+                  <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpocnjdlpihdn" target="_blank" rel="noreferrer" className="text-white hover:underline mx-1">
+                    "Get cookies.txt LOCALLY"
+                  </a> 
+                  Chrome extension, export your cookies for YouTube, and upload the `cookies.txt` file here.
+                </p>
+                <div className="mt-3 flex items-center gap-3">
+                  <label className="cursor-pointer rounded border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/10">
+                    {cookiesMutation.isPending ? "Uploading..." : "Upload cookies.txt"}
+                    <input 
+                      type="file" 
+                      accept=".txt" 
+                      className="sr-only" 
+                      disabled={cookiesMutation.isPending}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) cookiesMutation.mutate(file);
+                      }} 
+                    />
+                  </label>
+                  {dependencyQuery.data?.youtube_cookies_configured && (
+                    <span className="text-xs text-green-400 flex items-center gap-1">
+                      <div className="h-2 w-2 rounded-full bg-green-400" />
+                      Cookies configured
+                    </span>
+                  )}
+                </div>
+              </div>
 
               <div className="mt-5 flex items-center gap-3 text-sm text-zinc-600">
                 <span className="h-px flex-1 bg-white/10" />
