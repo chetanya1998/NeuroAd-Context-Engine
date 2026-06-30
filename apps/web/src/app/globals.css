@@ -6,6 +6,10 @@
   color-scheme: dark;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -28,4 +32,98 @@ input {
 .timeline-grid {
   background-image: linear-gradient(to right, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
   background-size: 64px 100%;
+}
+
+/* ─── Animated dot-grid hero background ─── */
+.dot-grid {
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.12) 1px, transparent 1px);
+  background-size: 32px 32px;
+  animation: grid-drift 15s linear infinite;
+}
+
+/* ─── Gradient shimmer text ─── */
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    #f8fafc 0%,
+    rgba(255, 255, 255, 0.4) 25%,
+    #f8fafc 50%,
+    rgba(255, 255, 255, 0.4) 75%,
+    #f8fafc 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+/* ─── Glowing card border ─── */
+.glow-border {
+  animation: glow-pulse 3s ease-in-out infinite;
+}
+
+/* ─── Pipeline connector with traveling particle ─── */
+.pipeline-connector {
+  position: relative;
+  overflow: hidden;
+}
+
+.pipeline-connector::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -5%;
+  width: 24px;
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  transform: translateY(-50%);
+  animation: travel 2.5s linear infinite;
+}
+
+/* ─── Scroll reveal base ─── */
+.reveal-hidden {
+  opacity: 0;
+  transform: translateY(32px);
+  transition: opacity 0.7s ease-out, transform 0.7s ease-out;
+}
+
+.reveal-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ─── Typing cursor ─── */
+.typing-cursor {
+  border-right: 2px solid rgba(255, 255, 255, 0.6);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes grid-drift {
+  0% { background-position: 0 0; }
+  100% { background-position: 64px 64px; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(255,255,255,0.04), 0 0 0 1px rgba(255,255,255,0.08); }
+  50% { box-shadow: 0 0 40px rgba(255,255,255,0.08), 0 0 0 1px rgba(255,255,255,0.15); }
+}
+
+@keyframes travel {
+  0% { left: -5%; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { left: 100%; opacity: 0; }
+}
+
+@keyframes blink {
+  0%, 100% { border-color: rgba(255,255,255,0.6); }
+  50% { border-color: transparent; }
 }
