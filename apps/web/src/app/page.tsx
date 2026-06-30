@@ -2,13 +2,20 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  Activity,
   ArrowRight,
   AudioLines,
   BarChart3,
+  Brain,
+  FileText,
   FileVideo,
+  Layers,
+  LayoutDashboard,
   Link2,
   ScanSearch,
+  Settings2,
   UploadCloud,
+  Video,
   WandSparkles
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -295,6 +302,143 @@ export default function HomePage() {
               </div>
             </div>
           </Card>
+        </section>
+
+        {/* --- NEW SECTIONS --- */}
+        {/* 1. Analyze Section */}
+        <section className="border-t border-white/10 py-24">
+          <div className="mb-12 text-center">
+            <Badge tone="cyan">Step 1: Analyze</Badge>
+            <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">Deep Frame-by-Frame Extraction</h2>
+            <p className="mx-auto mt-4 max-w-2xl text-zinc-400">
+              We separate video, audio, and speech to analyze every micro-moment of your content.
+            </p>
+          </div>
+          <div className="grid gap-6 md:grid-cols-3">
+            <Card className="border-white/10 bg-black p-6">
+              <div className="mb-6 flex items-center justify-between">
+                <h3 className="font-semibold text-white">Visual Frames</h3>
+                <Video className="h-5 w-5 text-zinc-400" />
+              </div>
+              <div className="relative h-32 overflow-hidden rounded-lg bg-zinc-950">
+                <div className="absolute inset-y-0 left-0 flex w-[200%] animate-scroll-left items-center gap-2 px-2">
+                  {[...Array(10)].map((_, i) => (
+                    <div key={i} className="h-24 w-16 shrink-0 rounded border border-white/20 bg-zinc-900 shadow-glow" />
+                  ))}
+                </div>
+              </div>
+            </Card>
+            <Card className="border-white/10 bg-black p-6">
+              <div className="mb-6 flex items-center justify-between">
+                <h3 className="font-semibold text-white">Audio Energy</h3>
+                <Activity className="h-5 w-5 text-success" />
+              </div>
+              <div className="flex h-32 items-end justify-center gap-1 rounded-lg bg-zinc-950 p-4">
+                {[...Array(24)].map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-2 rounded-full bg-success/80 animate-wave"
+                    style={{ animationDelay: `${i * 0.1}s`, height: `${Math.max(20, Math.random() * 100)}%` }}
+                  />
+                ))}
+              </div>
+            </Card>
+            <Card className="border-white/10 bg-black p-6">
+              <div className="mb-6 flex items-center justify-between">
+                <h3 className="font-semibold text-white">Transcript & NLP</h3>
+                <FileText className="h-5 w-5 text-warning" />
+              </div>
+              <div className="relative h-32 rounded-lg bg-zinc-950 p-4">
+                <div className="space-y-3">
+                  <div className="h-2 w-3/4 rounded bg-white/10" />
+                  <div className="h-2 w-full rounded bg-white/10" />
+                  <div className="h-2 w-5/6 rounded bg-white/10" />
+                  <div className="absolute bottom-4 right-4 animate-pulse-slow rounded bg-warning/20 px-2 py-1 text-xs text-warning">
+                    Extracting context...
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* 2. Pipeline Section */}
+        <section className="border-t border-white/10 py-24">
+          <div className="mb-12 text-center">
+            <Badge tone="success">Step 2: Pipeline</Badge>
+            <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">The Context Engine</h2>
+            <p className="mx-auto mt-4 max-w-2xl text-zinc-400">
+              Raw signals flow through our proprietary AI models to calculate the Attention Proxy Score and ad-fit metrics.
+            </p>
+          </div>
+          <div className="relative flex min-h-[300px] flex-col items-center justify-center gap-8 md:flex-row md:gap-16">
+            <div className="absolute top-1/2 -z-10 hidden h-0.5 w-full -translate-y-1/2 bg-white/10 md:block overflow-hidden">
+              <div className="h-full w-1/3 animate-scroll-left bg-gradient-to-r from-transparent via-success to-transparent" />
+            </div>
+
+            <div className="flex h-24 w-24 animate-float flex-col items-center justify-center rounded-2xl border border-white/10 bg-zinc-950 shadow-glow" style={{ animationDelay: "0s" }}>
+              <Layers className="h-8 w-8 text-zinc-400" />
+              <span className="mt-2 text-xs text-zinc-500">Raw Data</span>
+            </div>
+
+            <div className="flex h-24 w-24 animate-float flex-col items-center justify-center rounded-2xl border border-success/30 bg-success/10 shadow-glow" style={{ animationDelay: "0.5s" }}>
+              <Brain className="h-8 w-8 text-success" />
+              <span className="mt-2 text-xs text-success">Scoring</span>
+            </div>
+
+            <div className="flex h-24 w-24 animate-float flex-col items-center justify-center rounded-2xl border border-white/40 bg-white/5 shadow-glow" style={{ animationDelay: "1s" }}>
+              <Settings2 className="h-8 w-8 text-white" />
+              <span className="mt-2 text-xs text-white">Vectors</span>
+            </div>
+          </div>
+        </section>
+
+        {/* 3. Reports Section */}
+        <section className="border-t border-white/10 py-24">
+          <div className="mb-12 text-center">
+            <Badge tone="warning">Step 3: Reports</Badge>
+            <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">Actionable Insights</h2>
+            <p className="mx-auto mt-4 max-w-2xl text-zinc-400">
+              Export precise timestamps, scores, and context tags directly to your ad-serving platform.
+            </p>
+          </div>
+          <div className="mx-auto max-w-4xl animate-slide-up">
+            <Card className="relative overflow-hidden border-white/10 bg-black p-0 shadow-glow">
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-warning/5 to-transparent" />
+              <div className="flex items-center gap-4 border-b border-white/10 bg-zinc-950/50 p-4">
+                <LayoutDashboard className="h-5 w-5 text-zinc-400" />
+                <div className="text-sm font-medium text-white">Campaign Report.csv</div>
+                <Badge tone="success">Ready</Badge>
+              </div>
+              <div className="p-6">
+                <div className="space-y-4">
+                  {[
+                    { t: "00:15 - 00:20", score: "91", cat: "Productivity", fit: "High" },
+                    { t: "01:10 - 01:15", score: "88", cat: "Lifestyle", fit: "High" },
+                    { t: "03:45 - 03:50", score: "74", cat: "Tech", fit: "Medium" }
+                  ].map((row, i) => (
+                    <div key={i} className="flex items-center justify-between rounded-lg border border-white/5 bg-zinc-950 p-4 transition hover:bg-white/[0.02]">
+                      <div className="flex gap-8">
+                        <div>
+                          <p className="text-xs text-zinc-500">Timestamp</p>
+                          <p className="mt-1 font-mono text-sm text-white">{row.t}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-zinc-500">Score</p>
+                          <p className="mt-1 text-sm text-success">{row.score}</p>
+                        </div>
+                        <div className="hidden sm:block">
+                          <p className="text-xs text-zinc-500">Category</p>
+                          <p className="mt-1 text-sm text-zinc-300">{row.cat}</p>
+                        </div>
+                      </div>
+                      <Badge tone={row.fit === "High" ? "success" : "warning"}>{row.fit} Fit</Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Card>
+          </div>
         </section>
 
         <section className="border-t border-white/10 py-12">
