@@ -23,3 +23,6 @@ apps/api/storage/samples/*
 
 *.pt
 *.onnx
+
+# Local Netlify folder
+.netlify

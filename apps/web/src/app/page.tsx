@@ -418,7 +418,7 @@ export default function HomePage() {
         {/* ═══════════════════════════════════════════════════════════
             SECTION 4 — ANALYZE DEEP-DIVE
          ═══════════════════════════════════════════════════════════ */}
-        <section className="border-t border-white/10 py-24">
+        <section id="section-analyze" className="border-t border-white/10 py-24">
           <Reveal>
             <div className="mb-12 text-center">
               <Badge tone="cyan">Step 1 · Analyze</Badge>
@@ -518,7 +518,7 @@ export default function HomePage() {
         {/* ═══════════════════════════════════════════════════════════
             SECTION 5 — PIPELINE VISUALIZATION
          ═══════════════════════════════════════════════════════════ */}
-        <section className="border-t border-white/10 py-24">
+        <section id="section-pipeline" className="border-t border-white/10 py-24">
           <Reveal>
             <div className="mb-16 text-center">
               <Badge tone="success">Step 2 · Pipeline</Badge>
@@ -772,7 +772,7 @@ export default function HomePage() {
         {/* ═══════════════════════════════════════════════════════════
             SECTION 7 — REPORTS PREVIEW
          ═══════════════════════════════════════════════════════════ */}
-        <section className="border-t border-white/10 py-24">
+        <section id="section-reports" className="border-t border-white/10 py-24">
           <Reveal>
             <div className="mb-12 text-center">
               <Badge tone="warning">Step 3 · Reports</Badge>
