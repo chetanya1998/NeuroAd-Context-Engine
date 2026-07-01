@@ -640,30 +640,51 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
                 path.unlink(missing_ok=True)
             last_exc = exc
             message = str(exc)
-            if "The downloaded file is empty" not in message and "403" not in message and "Forbidden" not in message and "Sign in to confirm" not in message:
-                # If it's a completely different error (e.g. video not found), stop retrying
+            if "video not found" in message.lower() or "private video" in message.lower():
+                # For definitive structural errors, stop retrying yt-dlp
                 break
     else:
-        # If we exhausted all strategies and still failed
-        message = str(last_exc) if last_exc else "Unknown error"
-        if "403" in message or "Forbidden" in message or "Sign in to confirm" in message:
-            detail = (
-                "YouTube blocked the video stream with HTTP 403. Try a video you own that is public/unlisted, "
-                "or export cookies from your browser using an extension like 'Get cookies.txt' and save them "
-                "to 'cookies.txt' in the storage directory. You can also upload the video file directly."
-            )
-        elif "The downloaded file is empty" in message:
-            detail = (
-                "YouTube blocked the stream chunks, resulting in an empty file. This usually means your cookies are "
-                "expired, or YouTube is blocking this server's IP via anti-bot checks. "
-                "Try exporting a fresh cookies.txt file, or upload the MP4 video file directly."
-            )
-        else:
-            detail = f"Could not ingest this YouTube URL: {message}"
-        raise HTTPException(status_code=400, detail=detail) from last_exc
+        # If we exhausted all yt-dlp strategies and still failed, try pytubefix as the ultimate fallback
+        try:
+            from pytubefix import YouTube
+            import pytubefix.exceptions
+            
+            yt = YouTube(url)
+            stream = yt.streams.get_highest_resolution()
+            if not stream:
+                raise Exception("No suitable video stream found by pytubefix.")
+            
+            target = UPLOAD_DIR / f"{video_id}.mp4"
+            stream.download(output_path=str(UPLOAD_DIR), filename=f"{video_id}.mp4")
+            
+            metadata = {
+                "youtube_id": yt.video_id,
+                "title": yt.title or f"YouTube Video {yt.video_id}",
+                "description": yt.description or "",
+                "thumbnail_url": yt.thumbnail_url or f"https://img.youtube.com/vi/{yt.video_id}/hqdefault.jpg",
+                "duration_seconds": int(yt.length or 0),
+                "embed_url": f"https://www.youtube.com/embed/{yt.video_id}",
+            }
+            return target, video_id, metadata
+            
+        except Exception as p_exc:
+            message = str(last_exc) if last_exc else "Unknown error"
+            if "403" in message or "Forbidden" in message or "Sign in to confirm" in message:
+                detail = (
+                    "YouTube blocked the video stream on both yt-dlp and pytubefix. "
+                    "Try a video you own that is public/unlisted, or upload the video file directly."
+                )
+            elif "The downloaded file is empty" in message:
+                detail = (
+                    "YouTube blocked the stream chunks. This usually means your server's IP is blocked via anti-bot checks. "
+                    "Try uploading the MP4 video file directly."
+                )
+            else:
+                detail = f"Could not ingest this YouTube URL. yt-dlp error: {message}. pytubefix error: {str(p_exc)}"
+            raise HTTPException(status_code=400, detail=detail) from p_exc
 
     if not info or not target:
-        raise HTTPException(status_code=400, detail="Failed to fetch video information or file.")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch video information or file. {last_exc or ''}")
 
     metadata = {
         "youtube_id": youtube_id,
