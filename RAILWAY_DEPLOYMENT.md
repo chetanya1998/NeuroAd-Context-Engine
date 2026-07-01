@@ -41,6 +41,17 @@ apps/api
 6. Do not set a custom start command.
 7. Use `/health` as the health check path if Railway asks.
 
+## 2.5. Create Railway Cobalt Service
+To bypass YouTube download blocks, you also need to deploy the Cobalt API alongside your backend.
+
+1. In your Railway project, click **New** -> **Docker Image**.
+2. Enter the image name: `ghcr.io/imputnet/cobalt:latest`
+3. Once deployed, go to the Cobalt service **Settings** -> **Networking** and enable **Private Networking** (note down its internal `.railway.internal` domain).
+4. In the Cobalt service **Variables**, add:
+```bash
+API_URL=http://<cobalt-internal-domain>:9000/
+```
+
 ## 3. Add Railway Volume
 
 Add one volume to the backend service.
@@ -79,6 +90,7 @@ VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+COBALT_API_URL=http://<cobalt-internal-domain>:9000
 ```
 
 After Netlify deploys, update `CORS_ORIGINS` with your Netlify URL.

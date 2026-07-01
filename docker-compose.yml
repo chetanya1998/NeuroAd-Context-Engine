@@ -28,6 +28,7 @@ services:
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       WHISPER_MODEL: tiny
       YOLO_MODEL: yolov8n.pt
+      COBALT_API_URL: http://cobalt-api:9000
     volumes:
       - neuroad-api-data:/data
     healthcheck:
@@ -52,6 +53,14 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  cobalt-api:
+    image: ghcr.io/imputnet/cobalt:latest
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      API_URL: "http://localhost:9000/"
 
 volumes:
   neuroad-api-data:

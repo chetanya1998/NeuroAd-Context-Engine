@@ -602,6 +602,50 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
         raise HTTPException(status_code=500, detail="yt-dlp is not installed in the API environment.") from exc
 
     video_id = video_id or new_id("video")
+    
+    # 1. Try Cobalt API first
+    cobalt_url = os.getenv("COBALT_API_URL")
+    cobalt_target = None
+    if cobalt_url:
+        cobalt_endpoint = cobalt_url.rstrip("/") + "/"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        data = json.dumps({
+            "url": url,
+            "videoQuality": "720"
+        }).encode("utf-8")
+        req = Request(cobalt_endpoint, data=data, headers=headers)
+        
+        try:
+            with urlopen(req, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                
+            if payload.get("status") in ("redirect", "stream", "success", "tunnel") and payload.get("url"):
+                download_url = payload["url"]
+                target_path = UPLOAD_DIR / f"{video_id}.mp4"
+                req_file = Request(download_url, headers={"User-Agent": "NeuroAdContextEngine/0.1"})
+                size = 0
+                with urlopen(req_file, timeout=60) as response_file, target_path.open("wb") as output:
+                    while True:
+                        chunk = response_file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > MAX_UPLOAD_BYTES:
+                            target_path.unlink(missing_ok=True)
+                            raise ValueError("Exceeds max upload bytes")
+                        output.write(chunk)
+                cobalt_target = target_path
+        except Exception as exc:
+            print(f"Cobalt API download failed: {exc}")
+
+    if cobalt_target and cobalt_target.exists():
+        metadata = fetch_youtube_metadata(url, youtube_id)
+        return cobalt_target, video_id, metadata
+
+    # 2. Fallback to yt-dlp if Cobalt is not available or fails
     base_opts = ytdlp_base_options(video_id)
     has_cookies = "cookiefile" in base_opts or "cookiesfrombrowser" in base_opts
     
