@@ -639,7 +639,8 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
         headers = {
             "X-RapidAPI-Key": rapidapi_key,
             "X-RapidAPI-Host": rapidapi_host,
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         req = Request(fetch_url, headers=headers)
         
