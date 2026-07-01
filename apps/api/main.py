@@ -607,6 +607,10 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
     cobalt_url = os.getenv("COBALT_API_URL")
     cobalt_target = None
     if cobalt_url:
+        cobalt_url = cobalt_url.strip()
+        if not cobalt_url.startswith("http://") and not cobalt_url.startswith("https://"):
+            cobalt_url = f"https://{cobalt_url}"
+            
         cobalt_endpoint = cobalt_url.rstrip("/") + "/"
         headers = {
             "Accept": "application/json",
