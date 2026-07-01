@@ -40,22 +40,26 @@ const conceptSteps = [
   {
     icon: FileVideo,
     title: "Start with media",
-    copy: "Upload a file, paste a video page URL, paste a direct video URL, or analyze a YouTube video you have permission to process."
+    copy: "Upload a file, paste a video page URL, paste a direct video URL, or analyze a YouTube video you have permission to process.",
+    image: "/assets/concept_media_1782928119161.png"
   },
   {
     icon: ScanSearch,
     title: "Read the moment",
-    copy: "Frames, audio energy, transcript, objects, and topics are extracted segment by segment."
+    copy: "Frames, audio energy, transcript, objects, and topics are extracted segment by segment.",
+    image: "/assets/concept_read_1782928131178.png"
   },
   {
     icon: BarChart3,
     title: "Score context",
-    copy: "Attention Proxy Score and ad-fit scoring turn the raw signals into useful decisions."
+    copy: "Attention Proxy Score and ad-fit scoring turn the raw signals into useful decisions.",
+    image: "/assets/concept_score_1782928147048.png"
   },
   {
     icon: WandSparkles,
     title: "Act on it",
-    copy: "Open the dashboard, inspect exact timestamps, and export CSV or JSON reports."
+    copy: "Open the dashboard, inspect exact timestamps, and export CSV or JSON reports.",
+    image: "/assets/concept_act_1782928157810.png"
   }
 ];
 
@@ -400,25 +404,28 @@ export default function HomePage() {
                 step: "01",
                 title: "Analyze",
                 desc: "We extract every frame, every word, every sound — building a complete sensory map of your content.",
-                icon: ScanSearch
+                icon: ScanSearch,
+                image: "/assets/step_analyze_1782927847137.png"
               },
               {
                 step: "02",
                 title: "Pipeline",
                 desc: "Raw signals flow through our AI scoring engine to compute Attention Proxy and ad-fit metrics.",
-                icon: Cpu
+                icon: Cpu,
+                image: "/assets/step_pipeline_1782927857593.png"
               },
               {
                 step: "03",
                 title: "Reports",
                 desc: "Get timestamped scores, context tags, and ad recommendations — exported as CSV or JSON.",
-                icon: LayoutDashboard
+                icon: LayoutDashboard,
+                image: "/assets/step_reports_1782927871630.png"
               }
             ].map((item, i) => {
               const Icon = item.icon;
               return (
-                <Reveal key={item.step} delay={i * 150}>
-                  <Card className="relative border-white/10 bg-black p-6 transition hover:border-white/20">
+                <Reveal key={item.step} delay={i * 150} className="h-full">
+                  <Card className="relative flex h-full flex-col border-white/10 bg-black p-6 transition hover:border-white/20">
                     <div className="flex items-center justify-between">
                       <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/20 bg-white text-black">
                         <Icon className="h-6 w-6" />
@@ -427,6 +434,11 @@ export default function HomePage() {
                         {item.step}
                       </span>
                     </div>
+                    
+                    <div className="mt-6 relative h-40 w-full overflow-hidden rounded-lg border border-white/10">
+                      <img src={item.image} alt={item.title} className="absolute inset-0 h-full w-full object-cover" />
+                    </div>
+
                     <h3 className="mt-5 text-xl font-semibold text-white">
                       {item.title}
                     </h3>
@@ -470,20 +482,30 @@ export default function HomePage() {
                 </div>
                 <div className="relative h-36 overflow-hidden rounded-lg border border-white/5 bg-zinc-950">
                   <div className="absolute inset-y-0 left-0 flex w-[200%] animate-scroll-left items-center gap-2 px-2">
-                    {[...Array(12)].map((_, i) => (
-                      <div
-                        key={i}
-                        className="relative h-28 w-20 shrink-0 overflow-hidden rounded border border-white/10 bg-zinc-900"
-                      >
+                    {[...Array(12)].map((_, i) => {
+                      const images = [
+                        "/assets/video_frame_1_1782927764126.png",
+                        "/assets/video_frame_2_1782927775890.png",
+                        "/assets/video_frame_3_1782927788664.png",
+                        "/assets/video_frame_4_1782927802480.png",
+                      ];
+                      const imgSrc = images[i % images.length];
+                      return (
                         <div
-                          className="absolute inset-0 bg-gradient-to-br from-white/[0.06] to-transparent"
-                          style={{ animationDelay: `${i * 0.3}s` }}
-                        />
-                        <div className="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[9px] text-zinc-400">
-                          {String(i).padStart(2, "0")}:{String((i * 5) % 60).padStart(2, "0")}
+                          key={i}
+                          className="relative h-28 w-20 shrink-0 overflow-hidden rounded border border-white/10 bg-zinc-900"
+                        >
+                          <img src={imgSrc} alt="frame" className="absolute inset-0 h-full w-full object-cover opacity-80" />
+                          <div
+                            className="absolute inset-0 bg-gradient-to-br from-white/[0.06] to-transparent"
+                            style={{ animationDelay: `${i * 0.3}s` }}
+                          />
+                          <div className="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[9px] text-zinc-300 font-medium">
+                            {String(i).padStart(2, "0")}:{String((i * 5) % 60).padStart(2, "0")}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </Card>
@@ -739,8 +761,9 @@ export default function HomePage() {
                 {/* Left Col: Media Player Mock */}
                 <div className="border-b border-white/10 bg-zinc-950 p-6 md:border-b-0 md:border-r">
                   <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-white/10 bg-black">
+                    <img src="/assets/dashboard_video_1782927812679.png" alt="Live analysis feed" className="absolute inset-0 h-full w-full object-cover opacity-75" />
                     {/* Shimmer background */}
-                    <div className="absolute inset-0 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 bg-[length:200%_100%] animate-shimmer opacity-30" />
+                    <div className="absolute inset-0 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 bg-[length:200%_100%] animate-shimmer opacity-40 mix-blend-overlay" />
                     
                     {/* Scanning Line */}
                     <div className="absolute bottom-0 top-0 w-px bg-white/50 shadow-[0_0_10px_#fff] animate-scrub" />
@@ -965,8 +988,8 @@ export default function HomePage() {
             {conceptSteps.map((step, index) => {
               const Icon = step.icon;
               return (
-                <Reveal key={step.title} delay={index * 100}>
-                  <Card className="border-white/10 bg-black p-5 transition hover:border-white/20">
+                <Reveal key={step.title} delay={index * 100} className="h-full">
+                  <Card className="flex h-full flex-col border-white/10 bg-black p-5 transition hover:border-white/20">
                     <div className="flex items-center justify-between">
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-black">
                         <Icon className="h-5 w-5" />
@@ -975,6 +998,11 @@ export default function HomePage() {
                         0{index + 1}
                       </span>
                     </div>
+
+                    <div className="mt-5 relative h-32 w-full overflow-hidden rounded-lg border border-white/10">
+                      <img src={step.image} alt={step.title} className="absolute inset-0 h-full w-full object-cover" />
+                    </div>
+
                     <h3 className="mt-5 text-lg font-semibold text-white">
                       {step.title}
                     </h3>
