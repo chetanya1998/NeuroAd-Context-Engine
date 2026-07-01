@@ -47,10 +47,13 @@ To bypass YouTube download blocks, you also need to deploy the Cobalt API alongs
 1. In your Railway project, click **New** -> **Docker Image**.
 2. Enter the image name: `ghcr.io/imputnet/cobalt:latest`
 3. Once deployed, go to the Cobalt service **Settings** -> **Networking** and enable **Private Networking** (note down its internal `.railway.internal` domain).
-4. In the Cobalt service **Variables**, add:
+4. **CRITICAL**: Railway needs to know which port Cobalt uses. Go to the Cobalt service **Variables** and add:
 ```bash
-API_URL=http://<cobalt-internal-domain>:9000/
+PORT=9000
+API_PORT=9000
+API_URL=https://<your-cobalt-public-domain-or-internal-url>
 ```
+*(If you are using the public `.up.railway.app` URL for Cobalt, use that as the `API_URL`. If you are using the internal networking, use `http://<internal-domain>:9000`).*
 
 ## 3. Add Railway Volume
 
