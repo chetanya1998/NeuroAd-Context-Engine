@@ -606,6 +606,7 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
     # 1. Try Cobalt API first
     cobalt_url = os.getenv("COBALT_API_URL")
     cobalt_target = None
+    cobalt_error_msg = None
     if cobalt_url:
         cobalt_url = cobalt_url.strip()
         if not cobalt_url.startswith("http://") and not cobalt_url.startswith("https://"):
@@ -643,7 +644,15 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
                         output.write(chunk)
                 cobalt_target = target_path
         except Exception as exc:
-            print(f"Cobalt API download failed: {exc}")
+            import urllib.error
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    cobalt_error_msg = f"HTTP {exc.code} - {exc.read().decode()}"
+                except Exception:
+                    cobalt_error_msg = f"HTTP {exc.code}"
+            else:
+                cobalt_error_msg = str(exc)
+            print(f"Cobalt API download failed: {cobalt_error_msg}")
 
     if cobalt_target and cobalt_target.exists():
         metadata = fetch_youtube_metadata(url, youtube_id)
@@ -729,6 +738,10 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
                 )
             else:
                 detail = f"Could not ingest this YouTube URL. yt-dlp error: {message}. pytubefix error: {str(p_exc)}"
+            
+            if cobalt_error_msg:
+                detail = f"Cobalt API failed with: {cobalt_error_msg}. Fallback also failed: {detail}"
+                
             raise HTTPException(status_code=400, detail=detail) from p_exc
 
     if not info or not target:
