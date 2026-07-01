@@ -460,6 +460,25 @@ def convertible_video_suffix_from_url(url: str) -> str | None:
     return suffix if suffix in CONVERTIBLE_VIDEO_EXTENSIONS else None
 
 
+def extract_video_url_from_json(data: Any) -> str | None:
+    """Recursively search for a valid video download URL in a generic JSON response."""
+    if isinstance(data, dict):
+        for key in ["link", "url", "downloadUrl", "download_url", "dlink"]:
+            val = data.get(key)
+            if isinstance(val, str) and val.startswith("http"):
+                if "googlevideo.com" in val or ".mp4" in val:
+                    return val
+        for val in data.values():
+            result = extract_video_url_from_json(val)
+            if result:
+                return result
+    elif isinstance(data, list):
+        for item in data:
+            result = extract_video_url_from_json(item)
+            if result:
+                return result
+    return None
+
 def download_remote_video(url: str, video_id: str | None = None) -> tuple[Path, str]:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"}:
@@ -603,34 +622,35 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
 
     video_id = video_id or new_id("video")
     
-    # 1. Try Cobalt API first
-    cobalt_url = os.getenv("COBALT_API_URL")
-    cobalt_target = None
-    cobalt_error_msg = None
-    if cobalt_url:
-        cobalt_url = cobalt_url.strip()
-        if not cobalt_url.startswith("http://") and not cobalt_url.startswith("https://"):
-            cobalt_url = f"https://{cobalt_url}"
+    # 1. Try RapidAPI Proxy first
+    rapidapi_key = os.getenv("RAPIDAPI_KEY")
+    rapidapi_host = os.getenv("RAPIDAPI_HOST")
+    rapidapi_url = os.getenv("RAPIDAPI_URL")
+    proxy_target = None
+    proxy_error_msg = None
+
+    if rapidapi_key and rapidapi_host and rapidapi_url:
+        # Some APIs expect ?id=, others ?url= or ?videoId=
+        # We append all of them to be safe if the user didn't specify query params
+        fetch_url = rapidapi_url
+        if "?" not in fetch_url:
+            fetch_url += f"?id={youtube_id}&url={url}&videoId={youtube_id}"
             
-        cobalt_endpoint = cobalt_url.rstrip("/") + "/"
         headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
+            "X-RapidAPI-Key": rapidapi_key,
+            "X-RapidAPI-Host": rapidapi_host,
+            "Accept": "application/json"
         }
-        data = json.dumps({
-            "url": url,
-            "videoQuality": "720"
-        }).encode("utf-8")
-        req = Request(cobalt_endpoint, data=data, headers=headers)
+        req = Request(fetch_url, headers=headers)
         
         try:
             with urlopen(req, timeout=30) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 
-            if payload.get("status") in ("redirect", "stream", "success", "tunnel") and payload.get("url"):
-                download_url = payload["url"]
+            download_url = extract_video_url_from_json(payload)
+            if download_url:
                 target_path = UPLOAD_DIR / f"{video_id}.mp4"
-                req_file = Request(download_url, headers={"User-Agent": "NeuroAdContextEngine/0.1"})
+                req_file = Request(download_url, headers={"User-Agent": "Mozilla/5.0"})
                 size = 0
                 with urlopen(req_file, timeout=60) as response_file, target_path.open("wb") as output:
                     while True:
@@ -642,23 +662,25 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
                             target_path.unlink(missing_ok=True)
                             raise ValueError("Exceeds max upload bytes")
                         output.write(chunk)
-                cobalt_target = target_path
+                proxy_target = target_path
+            else:
+                proxy_error_msg = "RapidAPI returned success, but no MP4/Video link was found in the JSON."
         except Exception as exc:
             import urllib.error
             if isinstance(exc, urllib.error.HTTPError):
                 try:
-                    cobalt_error_msg = f"HTTP {exc.code} - {exc.read().decode()}"
+                    proxy_error_msg = f"HTTP {exc.code} - {exc.read().decode()}"
                 except Exception:
-                    cobalt_error_msg = f"HTTP {exc.code}"
+                    proxy_error_msg = f"HTTP {exc.code}"
             else:
-                cobalt_error_msg = str(exc)
-            print(f"Cobalt API download failed: {cobalt_error_msg}")
+                proxy_error_msg = str(exc)
+            print(f"RapidAPI download failed: {proxy_error_msg}")
 
-    if cobalt_target and cobalt_target.exists():
+    if proxy_target and proxy_target.exists():
         metadata = fetch_youtube_metadata(url, youtube_id)
-        return cobalt_target, video_id, metadata
+        return proxy_target, video_id, metadata
 
-    # 2. Fallback to yt-dlp if Cobalt is not available or fails
+    # 2. Fallback to yt-dlp if proxy fails or is unconfigured
     base_opts = ytdlp_base_options(video_id)
     has_cookies = "cookiefile" in base_opts or "cookiesfrombrowser" in base_opts
     
@@ -739,8 +761,8 @@ def download_youtube_video(url: str, video_id: str | None = None) -> tuple[Path,
             else:
                 detail = f"Could not ingest this YouTube URL. yt-dlp error: {message}. pytubefix error: {str(p_exc)}"
             
-            if cobalt_error_msg:
-                detail = f"Cobalt API failed with: {cobalt_error_msg}. Fallback also failed: {detail}"
+            if proxy_error_msg:
+                detail = f"RapidAPI failed with: {proxy_error_msg}. Fallback also failed: {detail}"
                 
             raise HTTPException(status_code=400, detail=detail) from p_exc
 

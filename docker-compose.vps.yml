@@ -27,7 +27,9 @@ services:
       CORS_ORIGINS: "${CORS_ORIGINS}"
       YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
       YTDLP_COOKIES_FILE: "${YTDLP_COOKIES_FILE:-}"
-      COBALT_API_URL: http://cobalt-api:9000
+      RAPIDAPI_KEY: "${RAPIDAPI_KEY:-}"
+      RAPIDAPI_HOST: "${RAPIDAPI_HOST:-}"
+      RAPIDAPI_URL: "${RAPIDAPI_URL:-}"
     volumes:
       - neuroad-api-data:/data
     healthcheck:
@@ -52,12 +54,6 @@ services:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-
-  cobalt-api:
-    image: ghcr.io/imputnet/cobalt:latest
-    restart: unless-stopped
-    environment:
-      API_URL: "http://cobalt-api:9000/"
 
 volumes:
   neuroad-api-data:

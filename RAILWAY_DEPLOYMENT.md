@@ -38,22 +38,18 @@ apps/api
 ```
 
 5. Railway should detect `Dockerfile`.
-6. Do not set a custom start command.
-7. Use `/health` as the health check path if Railway asks.
+## 2.5. YouTube Download Bypassing
+If your Railway IP gets blocked by YouTube (HTTP 400 or empty chunks), you need to route traffic through a RapidAPI service. 
+You do not need an extra service; just add the following variables to your **API Service Variables**:
 
-## 2.5. Create Railway Cobalt Service
-To bypass YouTube download blocks, you also need to deploy the Cobalt API alongside your backend.
-
-1. In your Railway project, click **New** -> **Docker Image**.
-2. Enter the image name: `ghcr.io/imputnet/cobalt:latest`
-3. Once deployed, go to the Cobalt service **Settings** -> **Networking** and enable **Private Networking** (note down its internal `.railway.internal` domain).
-4. **CRITICAL**: Railway needs to know which port Cobalt uses. Go to the Cobalt service **Variables** and add:
+1. Create a free account on [RapidAPI.com](https://rapidapi.com/).
+2. Subscribe to a free tier YouTube downloader API (e.g., "YouTube Video and Shorts Downloader" or similar that returns JSON with a video URL).
+3. Add these variables to your Railway API service:
 ```bash
-PORT=9000
-API_PORT=9000
-API_URL=https://<your-cobalt-public-domain-or-internal-url>
+RAPIDAPI_KEY=your_rapidapi_key_here
+RAPIDAPI_HOST=the_api_host_here
+RAPIDAPI_URL=https://the-api-host-here/endpoint
 ```
-*(If you are using the public `.up.railway.app` URL for Cobalt, use that as the `API_URL`. If you are using the internal networking, use `http://<internal-domain>:9000`).*
 
 ## 3. Add Railway Volume
 
@@ -93,7 +89,9 @@ VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-COBALT_API_URL=http://<cobalt-internal-domain>:9000
+RAPIDAPI_KEY=your_key_here
+RAPIDAPI_HOST=your_host_here
+RAPIDAPI_URL=your_endpoint_here
 ```
 
 After Netlify deploys, update `CORS_ORIGINS` with your Netlify URL.
