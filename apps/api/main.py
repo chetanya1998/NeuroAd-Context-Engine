@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 import importlib.util
 import json
 import math
@@ -85,6 +86,8 @@ CONVERTIBLE_VIDEO_EXTENSIONS = ALLOWED_EXTENSIONS | {
     ".ogv",
 }
 EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS", 1)))
+FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "1.0") or "1.0")
+MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 6))
 VOSK_MODEL_CACHE: Any | None = None
 MOBILENET_SSD_NET_CACHE: Any | None = None
 
@@ -120,7 +123,7 @@ TOPIC_KEYWORDS = {
     "automobiles": ["car", "vehicle", "drive", "engine", "auto"],
 }
 
-AD_CATALOG = [
+BASE_AD_CATALOG = [
     {
         "category": "Productivity SaaS",
         "keywords": ["workflow", "team", "dashboard", "automation", "productivity", "focus"],
@@ -152,6 +155,89 @@ AD_CATALOG = [
         "objects": ["shoe", "handbag", "tie", "backpack", "suitcase"],
     },
 ]
+
+AD_AUDIENCE_TERMS = {
+    "Productivity SaaS": ["team", "founder", "office", "workflow", "meeting", "dashboard"],
+    "AI Note-taking App": ["meeting", "notes", "summary", "call", "student", "team"],
+    "Coffee Brand": ["morning", "routine", "energy", "work", "break", "lifestyle"],
+    "Fitness Product": ["workout", "gym", "protein", "training", "health", "wellness"],
+    "Creator Gear": ["creator", "camera", "video", "studio", "recording", "editing"],
+    "Fashion / Apparel": ["outfit", "style", "fashion", "shoes", "clothing", "look"],
+}
+
+AD_VERTICALS = {
+    "Productivity": {"keywords": ["workflow", "focus", "tasks", "team", "dashboard"], "objects": ["laptop", "keyboard", "cell phone"], "audience": ["founder", "team", "office"]},
+    "AI Software": {"keywords": ["ai", "automation", "summary", "assistant", "model"], "objects": ["laptop", "cell phone"], "audience": ["creator", "founder", "developer"]},
+    "Finance": {"keywords": ["money", "budget", "invest", "saving", "profit"], "objects": ["laptop", "cell phone", "book"], "audience": ["investor", "student", "founder"]},
+    "Banking": {"keywords": ["bank", "card", "payment", "account", "saving"], "objects": ["cell phone", "laptop"], "audience": ["shopper", "family", "professional"]},
+    "Insurance": {"keywords": ["protect", "safe", "family", "health", "coverage"], "objects": ["person", "car", "house"], "audience": ["family", "parent", "owner"]},
+    "Fitness": {"keywords": ["workout", "gym", "training", "protein", "health"], "objects": ["person", "sports ball", "bottle"], "audience": ["athlete", "coach", "wellness"]},
+    "Nutrition": {"keywords": ["protein", "meal", "healthy", "diet", "vitamin"], "objects": ["bottle", "bowl", "cup"], "audience": ["fitness", "parent", "wellness"]},
+    "Beauty": {"keywords": ["makeup", "beauty", "glow", "hair", "routine"], "objects": ["person", "mirror", "hair brush"], "audience": ["style", "beauty", "creator"]},
+    "Skincare": {"keywords": ["skin", "serum", "spf", "acne", "moisturizer"], "objects": ["person", "bottle", "mirror"], "audience": ["beauty", "wellness", "lifestyle"]},
+    "Fashion": {"keywords": ["outfit", "style", "shoes", "clothing", "look"], "objects": ["shoe", "handbag", "tie"], "audience": ["style", "shopping", "lifestyle"]},
+    "Luxury": {"keywords": ["luxury", "premium", "designer", "watch", "exclusive"], "objects": ["watch", "handbag", "tie"], "audience": ["premium", "fashion", "travel"]},
+    "Travel": {"keywords": ["travel", "flight", "hotel", "trip", "city"], "objects": ["suitcase", "backpack", "airplane"], "audience": ["traveler", "family", "creator"]},
+    "Hospitality": {"keywords": ["hotel", "stay", "restaurant", "service", "booking"], "objects": ["bed", "dining table", "cup"], "audience": ["traveler", "couple", "family"]},
+    "Food": {"keywords": ["food", "recipe", "cook", "restaurant", "taste"], "objects": ["bowl", "plate", "pizza", "sandwich"], "audience": ["home", "family", "foodie"]},
+    "Coffee": {"keywords": ["coffee", "morning", "energy", "routine", "break"], "objects": ["cup", "bottle", "dining table"], "audience": ["student", "professional", "creator"]},
+    "Gaming": {"keywords": ["game", "stream", "console", "player", "level"], "objects": ["tv", "laptop", "keyboard", "mouse"], "audience": ["gamer", "streamer", "student"]},
+    "Entertainment": {"keywords": ["show", "music", "movie", "story", "fun"], "objects": ["tv", "person", "cell phone"], "audience": ["fan", "creator", "viewer"]},
+    "Education": {"keywords": ["learn", "course", "student", "lesson", "explain"], "objects": ["book", "laptop", "desk"], "audience": ["student", "teacher", "professional"]},
+    "Parenting": {"keywords": ["kid", "child", "family", "baby", "parent"], "objects": ["person", "book", "chair"], "audience": ["parent", "family", "home"]},
+    "Home": {"keywords": ["home", "clean", "setup", "room", "decor"], "objects": ["chair", "couch", "bed", "potted plant"], "audience": ["family", "owner", "lifestyle"]},
+    "Automotive": {"keywords": ["car", "drive", "vehicle", "engine", "auto"], "objects": ["car", "truck", "motorcycle"], "audience": ["driver", "traveler", "family"]},
+    "Mobility": {"keywords": ["ride", "commute", "bike", "scooter", "transport"], "objects": ["bicycle", "motorcycle", "car"], "audience": ["commuter", "student", "city"]},
+    "Creator Tools": {"keywords": ["camera", "video", "recording", "studio", "content"], "objects": ["camera", "laptop", "cell phone"], "audience": ["creator", "editor", "streamer"]},
+    "Camera Gear": {"keywords": ["camera", "lens", "shoot", "photo", "studio"], "objects": ["camera", "tripod", "cell phone"], "audience": ["creator", "photographer", "traveler"]},
+    "Audio Gear": {"keywords": ["audio", "mic", "sound", "podcast", "recording"], "objects": ["microphone", "headphones", "laptop"], "audience": ["podcaster", "creator", "musician"]},
+    "Mobile Apps": {"keywords": ["app", "phone", "download", "mobile", "notification"], "objects": ["cell phone", "laptop"], "audience": ["student", "creator", "shopper"]},
+    "Ecommerce": {"keywords": ["shop", "buy", "deal", "product", "cart"], "objects": ["cell phone", "laptop", "handbag"], "audience": ["shopper", "style", "family"]},
+    "Retail": {"keywords": ["store", "sale", "shopping", "brand", "product"], "objects": ["handbag", "shoe", "backpack"], "audience": ["shopper", "family", "style"]},
+    "Health": {"keywords": ["health", "doctor", "sleep", "stress", "wellness"], "objects": ["person", "bed", "bottle"], "audience": ["wellness", "family", "professional"]},
+    "Mental Wellness": {"keywords": ["stress", "sleep", "focus", "calm", "mind"], "objects": ["person", "bed", "book"], "audience": ["student", "professional", "wellness"]},
+    "Pets": {"keywords": ["pet", "dog", "cat", "care", "animal"], "objects": ["dog", "cat", "person"], "audience": ["pet owner", "family", "home"]},
+    "Sports": {"keywords": ["sport", "team", "match", "training", "player"], "objects": ["sports ball", "person", "tennis racket"], "audience": ["athlete", "fan", "coach"]},
+    "Outdoor": {"keywords": ["outdoor", "hike", "camp", "travel", "adventure"], "objects": ["backpack", "bottle", "person"], "audience": ["traveler", "fitness", "creator"]},
+    "Sustainability": {"keywords": ["green", "eco", "recycle", "sustainable", "clean"], "objects": ["potted plant", "bottle", "person"], "audience": ["family", "student", "home"]},
+    "Real Estate": {"keywords": ["home", "rent", "property", "room", "mortgage"], "objects": ["house", "bed", "couch"], "audience": ["buyer", "family", "owner"]},
+    "Careers": {"keywords": ["career", "job", "interview", "resume", "work"], "objects": ["laptop", "book", "desk"], "audience": ["student", "professional", "founder"]},
+}
+
+AD_INTENTS = [
+    "Awareness", "Tutorial", "Review", "Comparison", "Demo", "Routine", "Challenge", "Launch",
+    "Discount", "Premium", "Beginner", "Professional", "Family", "Student", "Creator", "Travel",
+]
+
+
+def build_ad_catalog() -> list[dict[str, Any]]:
+    catalog = [dict(item) for item in BASE_AD_CATALOG]
+    for vertical, signals in AD_VERTICALS.items():
+        for intent in AD_INTENTS:
+            catalog.append(
+                {
+                    "category": f"{vertical} - {intent}",
+                    "keywords": list(dict.fromkeys(signals["keywords"] + [vertical.lower(), intent.lower()])),
+                    "objects": signals["objects"],
+                    "audience": list(dict.fromkeys(signals["audience"] + [intent.lower()])),
+                }
+            )
+    return catalog
+
+
+AD_CATALOG = build_ad_catalog()
+
+HOOK_TERMS = ["how", "why", "what if", "today", "before", "after", "mistake", "secret", "show you", "watch"]
+CTA_TERMS = ["subscribe", "try", "buy", "click", "comment", "save", "share", "check out", "download", "follow"]
+CLAIM_TERMS = ["guaranteed", "cure", "best", "number one", "risk free", "instant", "always", "never", "proven"]
+RISK_TERMS = {
+    "profanity": ["damn", "hell", "shit", "fuck"],
+    "hate_or_abuse": ["hate", "kill", "attack", "idiot", "stupid"],
+    "sexual_content": ["sex", "nude", "explicit"],
+    "violence": ["weapon", "gun", "blood", "fight", "violent"],
+    "drug_alcohol": ["drugs", "weed", "cocaine", "alcohol", "drunk"],
+    "political_sensitive": ["election", "politics", "government", "party"],
+}
 
 COCO_LABELS = [
     "background",
@@ -389,9 +475,14 @@ def init_db() -> None:
               end_time real not null,
               attention_score real not null,
               ad_fit_score real not null,
+              drop_risk_score real default 0,
+              brand_safety_score real default 100,
               label text not null,
               summary text not null,
               transcript text,
+              transcript_insights text,
+              visual_evidence text,
+              score_reasons text,
               recommendation text,
               thumbnail_url text,
               created_at text not null
@@ -435,7 +526,25 @@ def init_db() -> None:
             );
             """
         )
+        ensure_table_columns(
+            conn,
+            "segments",
+            {
+                "drop_risk_score": "real default 0",
+                "brand_safety_score": "real default 100",
+                "transcript_insights": "text",
+                "visual_evidence": "text",
+                "score_reasons": "text",
+            },
+        )
         conn.commit()
+
+
+def ensure_table_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
+    for column, definition in columns.items():
+        if column not in existing:
+            conn.execute(f"alter table {table} add column {column} {definition}")
 
 
 def parse_youtube_id(url: str) -> str | None:
@@ -1268,6 +1377,38 @@ def make_segments(duration: float) -> list[dict[str, Any]]:
     return segments
 
 
+def sample_timestamps(start: float, end: float) -> list[float]:
+    duration = max(0.1, end - start)
+    interval = 1.0 / max(0.1, FRAME_SAMPLE_RATE)
+    count = max(1, min(MAX_FRAMES_PER_SEGMENT, int(math.ceil(duration / interval))))
+    if count == 1:
+        return [(start + end) / 2]
+    step = duration / count
+    return [min(end - 0.05, start + step * index + step / 2) for index in range(count)]
+
+
+def colorfulness_score(frame: Any) -> float:
+    red, green, blue = frame[:, :, 2].astype(np.float32), frame[:, :, 1].astype(np.float32), frame[:, :, 0].astype(np.float32)
+    rg = np.abs(red - green)
+    yb = np.abs(0.5 * (red + green) - blue)
+    value = math.sqrt(float(np.std(rg)) ** 2 + float(np.std(yb)) ** 2) + 0.3 * math.sqrt(float(np.mean(rg)) ** 2 + float(np.mean(yb)) ** 2)
+    return clamp(value / 120)
+
+
+def frame_metric_snapshot(frame: Any) -> dict[str, float]:
+    try:
+        import cv2
+    except ImportError:
+        return {"brightness": 0.5, "contrast": 0.0, "sharpness": 0.0, "colorfulness": 0.0}
+    grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return {
+        "brightness": float(np.mean(grayscale) / 255),
+        "contrast": float(np.std(grayscale) / 90),
+        "sharpness": clamp(float(cv2.Laplacian(grayscale, cv2.CV_64F).var()) / 500),
+        "colorfulness": colorfulness_score(frame),
+    }
+
+
 def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     try:
         import cv2
@@ -1281,22 +1422,56 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
     output_dir = FRAME_DIR / video_id
     output_dir.mkdir(parents=True, exist_ok=True)
     frame_data: dict[int, dict[str, Any]] = {}
+    previous_gray_small: Any | None = None
 
     for segment in segments:
-        timestamp = (segment["start"] + segment["end"]) / 2
-        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-        ok, frame = cap.read()
-        if not ok:
+        timestamps = sample_timestamps(segment["start"], segment["end"])
+        snapshots: list[dict[str, float]] = []
+        motion_values: list[float] = []
+        representative_frame: Any | None = None
+        representative_timestamp = (segment["start"] + segment["end"]) / 2
+        representative_gray_small: Any | None = None
+
+        for index, timestamp in enumerate(timestamps):
+            cap.set(cv2.CAP_PROP_POS_MSEC, max(0, timestamp) * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            if representative_frame is None or index == len(timestamps) // 2:
+                representative_frame = frame
+                representative_timestamp = timestamp
+
+            grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray_small = cv2.resize(grayscale, (160, 90))
+            if representative_gray_small is None or index == len(timestamps) // 2:
+                representative_gray_small = gray_small
+            if previous_gray_small is not None:
+                motion_values.append(float(np.mean(np.abs(gray_small.astype(np.float32) - previous_gray_small.astype(np.float32))) / 255))
+            previous_gray_small = gray_small
+            snapshots.append(frame_metric_snapshot(frame))
+
+        if representative_frame is None or not snapshots:
             continue
         frame_path = output_dir / f"frame_{segment['index']:03d}.jpg"
-        cv2.imwrite(str(frame_path), frame)
-        grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        cv2.imwrite(str(frame_path), representative_frame)
+        grayscale = cv2.cvtColor(representative_frame, cv2.COLOR_BGR2GRAY)
+        averaged = {
+            key: float(np.mean([snapshot[key] for snapshot in snapshots]))
+            for key in ["brightness", "contrast", "sharpness", "colorfulness"]
+        }
         frame_data[segment["index"]] = {
             "path": frame_path,
-            "timestamp": timestamp,
+            "timestamp": representative_timestamp,
             "mean": float(np.mean(grayscale)),
             "std": float(np.std(grayscale)),
-            "shape": frame.shape,
+            "shape": representative_frame.shape,
+            "sampled_frames": len(snapshots),
+            "brightness": averaged["brightness"],
+            "contrast": clamp(averaged["contrast"]),
+            "sharpness": averaged["sharpness"],
+            "colorfulness": averaged["colorfulness"],
+            "motion": clamp(float(np.mean(motion_values)) if motion_values else 0.0),
+            "visual_quality": clamp(averaged["sharpness"] * 0.6 + (1 - abs(averaged["brightness"] - 0.5) * 2) * 0.4),
         }
     cap.release()
     return frame_data
@@ -1611,7 +1786,7 @@ def assemble_segments(
     audio_metrics: dict[int, float],
     video: sqlite3.Row,
 ) -> list[dict[str, Any]]:
-    previous_mean: float | None = None
+    previous_frame: dict[str, Any] | None = None
     enriched = []
     metadata_text = " ".join([video["title"] or "", video["description"] or ""])
 
@@ -1621,18 +1796,21 @@ def assemble_segments(
         objects = detections.get(idx, [])
         topics = classify_topics(" ".join([transcript, metadata_text, " ".join(obj["label"] for obj in objects)]))
         frame = frames.get(idx)
-        visual_novelty = 0.3
-        scene_change = 0.3
-        if frame and previous_mean is not None:
-            visual_novelty = clamp(abs(frame["mean"] - previous_mean) / 70)
-            scene_change = visual_novelty
+        visual_novelty = compute_visual_novelty(frame, previous_frame)
+        motion = float(frame.get("motion", 0.0)) if frame else 0.0
+        visual_quality = float(frame.get("visual_quality", 0.45)) if frame else 0.35
+        scene_change = clamp(visual_novelty * 0.7 + motion * 0.3)
         if frame:
-            previous_mean = frame["mean"]
+            previous_frame = frame
         object_clarity = compute_object_clarity(objects, frame)
         audio_energy = audio_metrics.get(idx, 0.0)
+        segment_duration = segment["end"] - segment["start"]
         speech_density = compute_speech_density(transcript, segment["end"] - segment["start"])
         topic_clarity = max([topic["confidence"] for topic in topics], default=0.2)
         hook_cta_signal = compute_hook_cta_signal(transcript, segment["start"])
+        transcript_insights = analyze_transcript_segment(transcript, segment_duration, segment["start"], speech_density)
+        brand_safety_score = compute_brand_safety_score(transcript_insights)
+        visual_evidence = build_visual_evidence(frame, objects, visual_novelty, motion, visual_quality)
         attention = score_attention(
             visual_novelty,
             object_clarity,
@@ -1641,8 +1819,25 @@ def assemble_segments(
             scene_change,
             topic_clarity,
             hook_cta_signal,
+            motion=motion,
+            visual_quality=visual_quality,
+            silence_penalty=transcript_insights["silence_penalty"],
+            repetition_penalty=transcript_insights["repetition_penalty"],
+            blur_penalty=visual_evidence["blur_penalty"],
         )
-        ad_matches = score_ad_matches(objects, topics, metadata_text, attention)
+        drop_risk = score_drop_risk(attention, transcript_insights, visual_evidence)
+        score_reasons = build_score_reasons(
+            visual_novelty,
+            motion,
+            object_clarity,
+            audio_energy,
+            speech_density,
+            topic_clarity,
+            hook_cta_signal,
+            visual_quality,
+            drop_risk,
+        )
+        ad_matches = score_ad_matches(objects, topics, metadata_text, attention, transcript, brand_safety_score, drop_risk)
         ad_fit = max([match["ad_fit_score"] for match in ad_matches], default=0)
         label = attention_label(attention)
         enriched.append(
@@ -1651,10 +1846,15 @@ def assemble_segments(
                 "end": segment["end"],
                 "attention_score": attention,
                 "ad_fit_score": ad_fit,
+                "drop_risk_score": drop_risk,
+                "brand_safety_score": brand_safety_score,
                 "label": label,
                 "summary": build_segment_summary(attention, objects, topics, audio_energy),
                 "transcript": transcript,
-                "recommendation": build_recommendation(segment["start"], attention, ad_fit, objects, topics),
+                "transcript_insights": transcript_insights,
+                "visual_evidence": visual_evidence,
+                "score_reasons": score_reasons,
+                "recommendation": build_recommendation(segment["start"], attention, ad_fit, objects, topics, drop_risk, transcript_insights),
                 "thumbnail_url": media_url(frame["path"]) if frame else None,
                 "objects": objects,
                 "topics": topics,
@@ -1683,6 +1883,18 @@ def classify_topics(text: str) -> list[dict[str, Any]]:
     if not scores:
         scores.append({"label": "entertainment", "confidence": 0.38})
     return sorted(scores, key=lambda item: item["confidence"], reverse=True)[:3]
+
+
+def compute_visual_novelty(frame: dict[str, Any] | None, previous_frame: dict[str, Any] | None) -> float:
+    if not frame:
+        return 0.2
+    if not previous_frame:
+        return 0.55
+    brightness_delta = abs(float(frame.get("brightness", 0.5)) - float(previous_frame.get("brightness", 0.5)))
+    contrast_delta = abs(float(frame.get("contrast", 0.0)) - float(previous_frame.get("contrast", 0.0)))
+    color_delta = abs(float(frame.get("colorfulness", 0.0)) - float(previous_frame.get("colorfulness", 0.0)))
+    mean_delta = abs(float(frame.get("mean", 0.0)) - float(previous_frame.get("mean", 0.0))) / 70
+    return clamp(mean_delta * 0.35 + brightness_delta * 0.20 + contrast_delta * 0.20 + color_delta * 0.25)
 
 
 def compute_object_clarity(objects: list[dict[str, Any]], frame: dict[str, Any] | None) -> float:
@@ -1716,10 +1928,132 @@ def compute_speech_density(transcript: str, duration: float) -> float:
 
 
 def compute_hook_cta_signal(transcript: str, start: float) -> float:
-    terms = ["today", "show", "learn", "try", "click", "subscribe", "buy", "save", "before", "after"]
+    terms = sorted(set(HOOK_TERMS + CTA_TERMS))
     hits = sum(1 for term in terms if term in transcript.lower())
     intro_bonus = 0.25 if start < 10 else 0
     return clamp(intro_bonus + hits * 0.18)
+
+
+def analyze_transcript_segment(transcript: str, duration: float, start: float, speech_density: float) -> dict[str, Any]:
+    lowered = transcript.lower()
+    words = re.findall(r"\b[a-zA-Z][a-zA-Z']+\b", lowered)
+    filler_terms = ["um", "uh", "like", "basically", "actually", "literally"]
+    filler_count = sum(1 for word in words if word in filler_terms)
+    keyword_counts = Counter(word for word in words if len(word) > 3)
+    repetition_ratio = max(keyword_counts.values(), default=0) / max(1, len(words))
+    hook_terms = [term for term in HOOK_TERMS if term in lowered]
+    cta_terms = [term for term in CTA_TERMS if term in lowered]
+    claim_terms = [term for term in CLAIM_TERMS if term in lowered]
+    risk_flags = {
+        label: [term for term in terms if term in lowered]
+        for label, terms in RISK_TERMS.items()
+        if any(term in lowered for term in terms)
+    }
+    silence_penalty = 1.0 if not words else 0.0
+    if transcript.strip() and duration > 0 and len(words) / duration < 0.8:
+        silence_penalty = 0.45
+    specificity = clamp(len({word for word in words if len(word) > 4}) / max(1, len(words)))
+    clarity_score = int(
+        round(
+            100
+            * clamp(
+                speech_density * 0.38
+                + specificity * 0.24
+                + min(1.0, len(hook_terms) / 2) * 0.14
+                + min(1.0, len(cta_terms) / 2) * 0.10
+                + (1 - min(1.0, filler_count / max(1, len(words)))) * 0.14
+            )
+        )
+    )
+    return {
+        "word_count": len(words),
+        "words_per_second": round(len(words) / duration, 2) if duration > 0 else 0,
+        "clarity_score": clarity_score,
+        "hook_terms": hook_terms[:5],
+        "cta_terms": cta_terms[:5],
+        "claim_terms": claim_terms[:5],
+        "risk_flags": risk_flags,
+        "filler_count": filler_count,
+        "repetition_penalty": clamp((repetition_ratio - 0.16) / 0.24),
+        "silence_penalty": silence_penalty,
+        "early_hook": bool(start < 10 and hook_terms),
+    }
+
+
+def compute_brand_safety_score(transcript_insights: dict[str, Any]) -> int:
+    risk_flags = transcript_insights.get("risk_flags", {})
+    penalties = {
+        "profanity": 18,
+        "hate_or_abuse": 30,
+        "sexual_content": 25,
+        "violence": 22,
+        "drug_alcohol": 20,
+        "political_sensitive": 15,
+    }
+    score = 100
+    for label in risk_flags:
+        score -= penalties.get(label, 12)
+    if transcript_insights.get("claim_terms"):
+        score -= 12
+    return int(round(clamp(score / 100) * 100))
+
+
+def build_visual_evidence(
+    frame: dict[str, Any] | None,
+    objects: list[dict[str, Any]],
+    visual_novelty: float,
+    motion: float,
+    visual_quality: float,
+) -> dict[str, Any]:
+    object_labels = [obj["label"] for obj in objects[:5]]
+    return {
+        "sampled_frames": int(frame.get("sampled_frames", 0)) if frame else 0,
+        "visual_novelty": round(visual_novelty, 3),
+        "motion": round(motion, 3),
+        "visual_quality": round(visual_quality, 3),
+        "brightness": round(float(frame.get("brightness", 0.0)), 3) if frame else 0.0,
+        "contrast": round(float(frame.get("contrast", 0.0)), 3) if frame else 0.0,
+        "sharpness": round(float(frame.get("sharpness", 0.0)), 3) if frame else 0.0,
+        "object_count": len(objects),
+        "top_objects": object_labels,
+        "blur_penalty": clamp(1 - visual_quality),
+    }
+
+
+def score_drop_risk(attention: int, transcript_insights: dict[str, Any], visual_evidence: dict[str, Any]) -> int:
+    risk = 100 - attention
+    risk += 18 * float(transcript_insights.get("silence_penalty", 0.0))
+    risk += 14 * float(transcript_insights.get("repetition_penalty", 0.0))
+    risk += 12 * float(visual_evidence.get("blur_penalty", 0.0))
+    if visual_evidence.get("object_count", 0) == 0:
+        risk += 6
+    return int(round(clamp(risk / 100) * 100))
+
+
+def build_score_reasons(
+    visual_novelty: float,
+    motion: float,
+    object_clarity: float,
+    audio_energy: float,
+    speech_density: float,
+    topic_clarity: float,
+    hook_cta_signal: float,
+    visual_quality: float,
+    drop_risk: int,
+) -> list[str]:
+    signals = [
+        ("visual novelty", visual_novelty),
+        ("motion change", motion),
+        ("object clarity", object_clarity),
+        ("audio energy", audio_energy),
+        ("speech pacing", speech_density),
+        ("topic clarity", topic_clarity),
+        ("hook/CTA signal", hook_cta_signal),
+        ("visual quality", visual_quality),
+    ]
+    reasons = [f"{label}: {round(value * 100)}" for label, value in sorted(signals, key=lambda item: item[1], reverse=True)[:4]]
+    reasons.append(f"drop risk: {drop_risk}")
+    return reasons
 
 
 def score_attention(
@@ -1730,51 +2064,81 @@ def score_attention(
     scene_change: float,
     topic_clarity: float,
     hook_cta_signal: float,
+    motion: float = 0.0,
+    visual_quality: float = 0.5,
+    silence_penalty: float = 0.0,
+    repetition_penalty: float = 0.0,
+    blur_penalty: float = 0.0,
 ) -> int:
     value = (
-        visual_novelty * 0.25
-        + object_clarity * 0.20
-        + audio_energy * 0.15
-        + speech_density * 0.15
+        visual_novelty * 0.16
+        + motion * 0.12
+        + object_clarity * 0.12
+        + visual_quality * 0.10
         + scene_change * 0.10
+        + speech_density * 0.12
+        + hook_cta_signal * 0.10
+        + audio_energy * 0.08
         + topic_clarity * 0.10
-        + hook_cta_signal * 0.05
     )
-    return int(round(clamp(value) * 100))
+    penalty = silence_penalty * 0.12 + repetition_penalty * 0.08 + blur_penalty * 0.08
+    return int(round(clamp(value - penalty) * 100))
 
 
 def score_ad_matches(
-    objects: list[dict[str, Any]], topics: list[dict[str, Any]], metadata_text: str, attention_score: int
+    objects: list[dict[str, Any]],
+    topics: list[dict[str, Any]],
+    metadata_text: str,
+    attention_score: int,
+    transcript: str = "",
+    brand_safety_score: int = 100,
+    drop_risk_score: int = 0,
 ) -> list[dict[str, Any]]:
     object_labels = {obj["label"].lower() for obj in objects}
     topic_labels = {topic["label"].lower() for topic in topics}
-    metadata = metadata_text.lower()
+    context_text = " ".join([metadata_text, transcript, " ".join(topic_labels)]).lower()
     matches = []
     for item in AD_CATALOG:
-        object_match = len(object_labels.intersection(set(item["objects"]))) / max(1, len(item["objects"]))
-        transcript_match = len(topic_labels.intersection(set(item["keywords"]))) / max(1, min(3, len(item["keywords"])))
-        keyword_match = sum(1 for keyword in item["keywords"] if keyword in metadata) / max(1, len(item["keywords"]))
-        brand_safety = 0.9
+        catalog_objects = {label.lower() for label in item["objects"]}
+        object_hits = sorted(object_labels.intersection(catalog_objects))
+        object_match = len(object_hits) / max(1, min(3, len(catalog_objects)))
+        keyword_hits = [keyword for keyword in item["keywords"] if keyword in context_text]
+        transcript_match = min(1.0, len(keyword_hits) / max(1, min(4, len(item["keywords"]))))
+        audience_terms = AD_AUDIENCE_TERMS.get(item["category"], item.get("audience", []))
+        audience_hits = [term for term in audience_terms if term in context_text]
+        audience_match = min(1.0, len(audience_hits) / max(1, min(3, len(audience_terms))))
+        topic_match = min(1.0, len(topic_labels.intersection(set(item["keywords"]))) / max(1, min(3, len(item["keywords"]))))
+        attention_quality = clamp(attention_score / 100)
+        slot_quality = clamp(1 - drop_risk_score / 100)
+        safety_gate = clamp(brand_safety_score / 100)
         score = (
-            object_match * 0.35
-            + transcript_match * 0.30
-            + keyword_match * 0.15
-            + (attention_score / 100) * 0.10
-            + brand_safety * 0.10
-        )
-        if score > 0.16:
+            transcript_match * 0.25
+            + object_match * 0.20
+            + topic_match * 0.15
+            + audience_match * 0.10
+            + attention_quality * 0.12
+            + slot_quality * 0.10
+            + safety_gate * 0.08
+        ) * safety_gate
+        if not (object_hits or keyword_hits or audience_hits or topic_match > 0):
+            continue
+        if score > 0.18:
             reason_bits = []
-            if object_match:
-                reason_bits.append("visible objects match")
-            if transcript_match or keyword_match:
-                reason_bits.append("topic/context aligns")
+            if object_hits:
+                reason_bits.append(f"visual evidence: {', '.join(object_hits[:3])}")
+            if keyword_hits:
+                reason_bits.append(f"transcript/context: {', '.join(keyword_hits[:3])}")
+            if audience_hits:
+                reason_bits.append(f"audience cue: {', '.join(audience_hits[:2])}")
             if attention_score >= 70:
-                reason_bits.append("attention proxy is strong")
+                reason_bits.append(f"strong attention {attention_score}")
+            if brand_safety_score < 70:
+                reason_bits.append(f"brand-safety review needed {brand_safety_score}")
             matches.append(
                 {
                     "category": item["category"],
                     "ad_fit_score": int(round(clamp(score) * 100)),
-                    "reason": ", ".join(reason_bits) or "baseline contextual fit",
+                    "reason": "; ".join(reason_bits),
                     "confidence": int(round(min(0.95, 0.45 + score * 0.5) * 100)),
                 }
             )
@@ -1803,14 +2167,25 @@ def build_segment_summary(
 
 
 def build_recommendation(
-    start: float, attention: int, ad_fit: int, objects: list[dict[str, Any]], topics: list[dict[str, Any]]
+    start: float,
+    attention: int,
+    ad_fit: int,
+    objects: list[dict[str, Any]],
+    topics: list[dict[str, Any]],
+    drop_risk: int = 0,
+    transcript_insights: dict[str, Any] | None = None,
 ) -> str:
     timestamp = format_time(start)
+    transcript_insights = transcript_insights or {}
+    if transcript_insights.get("risk_flags") or transcript_insights.get("claim_terms"):
+        return f"{timestamp} needs brand-safety review before sponsorship; transcript flags include claims or sensitive wording."
     if ad_fit >= 75:
         category_hint = topics[0]["label"] if topics else "context"
         return f"{timestamp} is a strong contextual ad moment because the scene and {category_hint} topic align."
-    if attention < 40:
+    if attention < 40 or drop_risk >= 65:
         return f"{timestamp} may be a cut or rewrite zone; add clearer visual change, a stronger spoken promise, or a product cue."
+    if transcript_insights.get("word_count", 0) == 0:
+        return f"{timestamp} has little speech evidence; add a clear spoken cue or on-screen product context before placing a brand message."
     if objects:
         return f"{timestamp} is worth keeping; visible {objects[0]['label']} context helps viewers understand the moment."
     return f"{timestamp} is steady but could use a clearer object, example, or CTA to improve monetization fit."
@@ -1824,8 +2199,8 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
             conn.execute(
                 """
                 insert into segments
-                (id, video_id, start_time, end_time, attention_score, ad_fit_score, label, summary, transcript, recommendation, thumbnail_url, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, thumbnail_url, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment_id,
@@ -1834,9 +2209,14 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                     segment["end"],
                     segment["attention_score"],
                     segment["ad_fit_score"],
+                    segment.get("drop_risk_score", max(0, 100 - int(segment["attention_score"]))),
+                    segment.get("brand_safety_score", 100),
                     segment["label"],
                     segment["summary"],
                     segment["transcript"],
+                    json.dumps(segment.get("transcript_insights", {})),
+                    json.dumps(segment.get("visual_evidence", {})),
+                    json.dumps(segment.get("score_reasons", [])),
                     segment["recommendation"],
                     segment["thumbnail_url"],
                     utc_now(),
@@ -1903,9 +2283,14 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
                 "end": row["end_time"],
                 "attention_score": row["attention_score"],
                 "ad_fit_score": row["ad_fit_score"],
+                "drop_risk_score": row["drop_risk_score"] if row["drop_risk_score"] is not None else max(0, 100 - row["attention_score"]),
+                "brand_safety_score": row["brand_safety_score"] if row["brand_safety_score"] is not None else 100,
                 "label": row["label"],
                 "summary": row["summary"],
                 "transcript": row["transcript"],
+                "transcript_insights": json.loads(row["transcript_insights"]) if row["transcript_insights"] else {},
+                "visual_evidence": json.loads(row["visual_evidence"]) if row["visual_evidence"] else {},
+                "score_reasons": json.loads(row["score_reasons"]) if row["score_reasons"] else [],
                 "recommendation": row["recommendation"],
                 "thumbnail_url": row["thumbnail_url"],
                 "objects": objects,
@@ -1940,6 +2325,7 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
         "objects": all_objects,
         "topics": all_topics,
         "ad_matches": all_ad_matches,
+        "ad_categories": [item["category"] for item in AD_CATALOG],
         "recommendations": build_recommendations(summary, segments),
         "exports": exports,
     }
@@ -1950,16 +2336,46 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
         return {
             "overall_attention_score": 0,
             "monetization_opportunity_score": 0,
+            "overall_drop_risk_score": 0,
+            "brand_safety_score": 100,
+            "transcript_clarity_score": 0,
+            "visual_quality_score": 0,
+            "creator_readiness_score": 0,
+            "ad_catalog_size": len(AD_CATALOG),
             "best_hook": None,
             "best_ad_slot": None,
             "weakest_segment": None,
             "top_ad_category": None,
         }
-    overall = int(round(float(np.mean([segment["attention_score"] for segment in segments]))))
-    monetization = int(round(float(np.mean([segment["ad_fit_score"] for segment in segments]))))
+    attention_scores = [float(segment["attention_score"]) for segment in segments]
+    ad_scores = [float(segment["ad_fit_score"]) for segment in segments]
+    drop_scores = [float(segment.get("drop_risk_score", 100 - segment["attention_score"])) for segment in segments]
+    safety_scores = [float(segment.get("brand_safety_score", 100)) for segment in segments]
+    clarity_scores = [float(segment.get("transcript_insights", {}).get("clarity_score", 0)) for segment in segments]
+    visual_scores = [float(segment.get("visual_evidence", {}).get("visual_quality", 0)) * 100 for segment in segments]
+    first_pool = [segment for segment in segments if segment["start"] < 10] or segments[:2]
+    top_count = max(1, math.ceil(len(attention_scores) * 0.2))
+    consistency = 100 - min(100, float(np.std(attention_scores)))
+    overall = int(
+        round(
+            float(np.mean(attention_scores)) * 0.35
+            + float(np.mean([segment["attention_score"] for segment in first_pool])) * 0.20
+            + float(np.mean(sorted(attention_scores, reverse=True)[:top_count])) * 0.20
+            + consistency * 0.15
+            + float(np.mean(attention_scores[-min(2, len(attention_scores)) :])) * 0.10
+        )
+    )
+    brand_safety = int(round(float(np.mean(safety_scores))))
+    transcript_clarity = int(round(float(np.mean(clarity_scores)))) if any(clarity_scores) else 0
+    visual_quality = int(round(float(np.mean(visual_scores)))) if any(visual_scores) else 0
+    drop_risk = int(round(float(np.mean(drop_scores))))
+    top_ad_mean = float(np.mean(sorted(ad_scores, reverse=True)[:top_count])) if ad_scores else 0
+    monetization = int(round(top_ad_mean * 0.35 + brand_safety * 0.20 + overall * 0.20 + (100 - drop_risk) * 0.15 + visual_quality * 0.10))
+    creator_readiness = int(round(overall * 0.28 + transcript_clarity * 0.20 + visual_quality * 0.18 + brand_safety * 0.18 + monetization * 0.16))
     hook_pool = [segment for segment in segments if segment["start"] < 15] or segments[:3]
     best_hook = max(hook_pool, key=lambda segment: segment["attention_score"])
-    best_ad = max(segments, key=lambda segment: segment["ad_fit_score"])
+    ad_candidates = [segment for segment in segments if segment["ad_fit_score"] > 0 and segment["ad_matches"]]
+    best_ad = max(ad_candidates, key=lambda segment: segment["ad_fit_score"]) if ad_candidates else None
     weakest = min(segments, key=lambda segment: segment["attention_score"])
     category_counts: dict[str, int] = {}
     for segment in segments:
@@ -1969,8 +2385,14 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
     return {
         "overall_attention_score": overall,
         "monetization_opportunity_score": monetization,
+        "overall_drop_risk_score": drop_risk,
+        "brand_safety_score": brand_safety,
+        "transcript_clarity_score": transcript_clarity,
+        "visual_quality_score": visual_quality,
+        "creator_readiness_score": creator_readiness,
+        "ad_catalog_size": len(AD_CATALOG),
         "best_hook": compact_segment(best_hook),
-        "best_ad_slot": {**compact_segment(best_ad), "category": best_ad["ad_matches"][0]["ad_category"] if best_ad["ad_matches"] else "No strong ad match"},
+        "best_ad_slot": {**compact_segment(best_ad), "category": best_ad["ad_matches"][0]["ad_category"]} if best_ad else None,
         "weakest_segment": compact_segment(weakest),
         "top_ad_category": top_category,
     }
@@ -1999,16 +2421,29 @@ def build_recommendations(summary: dict[str, Any], segments: list[dict[str, Any]
             "body": "Open with this pacing and clarity; it has the strongest early attention proxy signal.",
         },
         {
-            "title": "Best ad placement",
-            "timestamp": format_range(best_ad["start"], best_ad["end"]),
-            "body": f"Test this slot for {best_ad.get('category', 'a contextual ad')} because attention and ad-fit both rank highly.",
-        },
-        {
             "title": "Avoid-ad zone",
             "timestamp": format_range(weakest["start"], weakest["end"]),
             "body": "Avoid inserting ads here; the moment already has weaker attention and may increase drop risk.",
         },
     ]
+    if best_ad:
+        recommendations.insert(
+            1,
+            {
+                "title": "Best ad placement",
+                "timestamp": format_range(best_ad["start"], best_ad["end"]),
+                "body": f"Test this slot for {best_ad['category']} because the detected evidence supports that brand category.",
+            },
+        )
+    else:
+        recommendations.insert(
+            1,
+            {
+                "title": "No reliable ad slot",
+                "timestamp": "Full video",
+                "body": "No brand category met the evidence threshold; add clearer product, topic, audience, or spoken context before recommending a sponsor slot.",
+            },
+        )
     for segment in sorted(segments, key=lambda item: item["attention_score"])[:2]:
         recommendations.append(
             {
@@ -2036,6 +2471,11 @@ def generate_exports(video_id: str) -> dict[str, Path]:
                 "attention_score",
                 "attention_label",
                 "ad_fit_score",
+                "drop_risk_score",
+                "brand_safety_score",
+                "transcript_clarity_score",
+                "visual_evidence",
+                "score_reasons",
                 "objects",
                 "topics",
                 "transcript",
@@ -2052,6 +2492,11 @@ def generate_exports(video_id: str) -> dict[str, Path]:
                     "attention_score": segment["attention_score"],
                     "attention_label": segment["label"],
                     "ad_fit_score": segment["ad_fit_score"],
+                    "drop_risk_score": segment.get("drop_risk_score", ""),
+                    "brand_safety_score": segment.get("brand_safety_score", ""),
+                    "transcript_clarity_score": segment.get("transcript_insights", {}).get("clarity_score", ""),
+                    "visual_evidence": json.dumps(segment.get("visual_evidence", {})),
+                    "score_reasons": " | ".join(segment.get("score_reasons", [])),
                     "objects": ", ".join(obj["label"] for obj in segment["objects"]),
                     "topics": ", ".join(topic["label"] for topic in segment["topics"]),
                     "transcript": segment["transcript"],

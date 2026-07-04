@@ -29,7 +29,48 @@ export function SegmentDrawer() {
         <div className="mt-8 grid grid-cols-2 gap-3">
           <ScoreBox label="Attention Proxy Score" value={segment.attention_score} />
           <ScoreBox label="Ad-Fit Score" value={segment.ad_fit_score} />
+          <ScoreBox label="Drop Risk" value={segment.drop_risk_score ?? 0} />
+          <ScoreBox label="Brand Safety" value={segment.brand_safety_score ?? 100} />
         </div>
+
+        <section className="mt-8 space-y-3">
+          <h3 className="font-semibold">Score evidence</h3>
+          <div className="flex flex-wrap gap-2">
+            {(segment.score_reasons ?? []).length ? (
+              segment.score_reasons.map((reason) => <Badge key={reason}>{reason}</Badge>)
+            ) : (
+              <p className="text-sm text-slate-400">No score evidence captured.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-8 grid gap-3 sm:grid-cols-2">
+          <EvidenceBox label="Transcript clarity" value={segment.transcript_insights?.clarity_score ?? 0} />
+          <EvidenceBox label="Words/sec" value={segment.transcript_insights?.words_per_second ?? 0} />
+          <EvidenceBox label="Visual quality" value={Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100)} />
+          <EvidenceBox label="Sampled frames" value={segment.visual_evidence?.sampled_frames ?? 0} />
+        </section>
+
+        <section className="mt-8 space-y-3">
+          <h3 className="font-semibold">Transcript flags</h3>
+          <div className="flex flex-wrap gap-2">
+            {(segment.transcript_insights?.hook_terms ?? []).map((term) => (
+              <Badge key={`hook-${term}`} tone="success">Hook: {term}</Badge>
+            ))}
+            {(segment.transcript_insights?.cta_terms ?? []).map((term) => (
+              <Badge key={`cta-${term}`} tone="cyan">CTA: {term}</Badge>
+            ))}
+            {(segment.transcript_insights?.claim_terms ?? []).map((term) => (
+              <Badge key={`claim-${term}`} tone="warning">Claim: {term}</Badge>
+            ))}
+            {Object.entries(segment.transcript_insights?.risk_flags ?? {}).map(([label, terms]) => (
+              <Badge key={label} tone="danger">{label}: {terms.join(", ")}</Badge>
+            ))}
+            {!(segment.transcript_insights?.hook_terms?.length || segment.transcript_insights?.cta_terms?.length || segment.transcript_insights?.claim_terms?.length || Object.keys(segment.transcript_insights?.risk_flags ?? {}).length) ? (
+              <p className="text-sm text-slate-400">No transcript flags in this segment.</p>
+            ) : null}
+          </div>
+        </section>
 
         <section className="mt-8 space-y-3">
           <h3 className="font-semibold">Detected objects</h3>
@@ -88,6 +129,15 @@ function ScoreBox({ label, value }: { label: string; value: number }) {
     <div className="rounded-lg border border-border bg-surface p-4">
       <p className="text-xs text-slate-400">{label}</p>
       <p className="mt-2 text-3xl font-semibold">{Math.round(value)}</p>
+    </div>
+  );
+}
+
+function EvidenceBox({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <p className="text-xs text-slate-400">{label}</p>
+      <p className="mt-2 text-xl font-semibold">{Math.round(value * 10) / 10}</p>
     </div>
   );
 }
