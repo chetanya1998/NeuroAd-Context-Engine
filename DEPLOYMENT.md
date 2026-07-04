@@ -142,6 +142,7 @@ Netlify uses the root `netlify.toml`.
 Build settings:
 
 ```text
+Git branch: V1.0
 Base directory: repository root
 Build command: npm --workspace apps/web run build
 Publish directory: apps/web/.next

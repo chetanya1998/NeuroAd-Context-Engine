@@ -16,7 +16,7 @@ apps/api/Dockerfile
 
 ## 1. Push Code
 
-Commit and push the deployment files:
+Commit and push the deployment files to the `V1.0` branch:
 
 ```bash
 git add .
