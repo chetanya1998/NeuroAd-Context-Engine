@@ -9,6 +9,7 @@
     "build": "npm run build:web",
     "lint": "npm run lint:web",
     "test": "npm run test:api",
+    "verify:web-env": "node scripts/verify-web-env.mjs",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",

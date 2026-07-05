@@ -1,6 +1,6 @@
 [build]
   base = "."
-  command = "npm --workspace apps/web run build"
+  command = "node scripts/verify-web-env.mjs && npm --workspace apps/web run build"
   publish = "apps/web/.next"
 
 [build.environment]
