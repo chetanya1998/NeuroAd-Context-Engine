@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
+  AlertTriangle,
   ArrowDown,
   ArrowRight,
   AudioLines,
@@ -17,6 +18,7 @@ import {
   ScanSearch,
   UploadCloud,
   Video,
+  WifiOff,
   WandSparkles
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -41,26 +43,22 @@ const conceptSteps = [
   {
     icon: FileVideo,
     title: "Bring any usable source",
-    copy: "Upload a file, paste a direct video URL, or submit a permission-cleared YouTube link with cookie fallback when needed.",
-    image: "/assets/concept_media_1782928119161.png"
+    copy: "Upload a file, paste a direct video URL, or submit a permission-cleared YouTube link with cookie fallback when needed."
   },
   {
     icon: ScanSearch,
     title: "Decode each segment",
-    copy: "Frames, speech, audio energy, objects, topics, and scene context are aligned to exact timestamps.",
-    image: "/assets/concept_read_1782928131178.png"
+    copy: "Frames, speech, audio energy, objects, topics, and scene context are aligned to exact timestamps."
   },
   {
     icon: BarChart3,
     title: "Score attention fit",
-    copy: "Attention Proxy Score, category signals, and brand-safety context turn raw media into placement guidance.",
-    image: "/assets/concept_score_1782928147048.png"
+    copy: "Attention Proxy Score, category signals, and brand-safety context turn raw media into placement guidance."
   },
   {
     icon: WandSparkles,
     title: "Move to activation",
-    copy: "Inspect the dashboard, review recommended ad slots, and export CSV or JSON for downstream campaign work.",
-    image: "/assets/concept_act_1782928157810.png"
+    copy: "Inspect the dashboard, review recommended ad slots, and export CSV or JSON for downstream campaign work."
   }
 ];
 
@@ -131,6 +129,16 @@ const pipelineStages = {
 
 type PipelineStepId = keyof typeof pipelineStages;
 
+const FALLBACK_MAX_UPLOAD_MB = 200;
+const SUPPORTED_VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".m4v"];
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /* ─── Counter hook ─── */
 
 function useCounter(target: number, active: boolean) {
@@ -166,6 +174,8 @@ export default function HomePage() {
   const [videoUrl, setVideoUrl] = useState("");
   const [hasYouTubePermission, setHasYouTubePermission] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [activePipelineStep, setActivePipelineStep] = useState<PipelineStepId>("score");
   const dependencyQuery = useQuery({
     queryKey: ["system-dependencies"],
@@ -174,6 +184,8 @@ export default function HomePage() {
   });
 
   function showActionError(err: Error) {
+    setUploadProgress(null);
+    setUploadNotice(null);
     if (err.message.toLowerCase().includes("sign in to confirm")) {
       setError(
         "YouTube blocked server-side access for this video. Upload the video file directly for reliable analysis."
@@ -184,8 +196,16 @@ export default function HomePage() {
   }
 
   const uploadMutation = useMutation({
-    mutationFn: uploadVideo,
-    onSuccess: (payload) => router.push(`/analyze/${payload.video_id}`),
+    mutationFn: (file: File) => uploadVideo(file, { onProgress: setUploadProgress }),
+    onMutate: () => {
+      setUploadProgress(0);
+      setUploadNotice("Uploading video. Keep this tab open while the file transfers.");
+    },
+    onSuccess: (payload) => {
+      setUploadProgress(100);
+      setUploadNotice("Upload complete. Opening the analysis workspace...");
+      router.push(`/analyze/${payload.video_id}`);
+    },
     onError: showActionError
   });
 
@@ -215,6 +235,22 @@ export default function HomePage() {
     uploadMutation.isPending || urlMutation.isPending || youtubeMutation.isPending || cookiesMutation.isPending;
   const activePipeline = pipelineStages[activePipelineStep];
   const ActivePipelineIcon = activePipeline.icon;
+  const maxUploadMb = dependencyQuery.data?.limits?.max_upload_mb ?? FALLBACK_MAX_UPLOAD_MB;
+  const hasConnectionError =
+    error?.toLowerCase().includes("connection") ||
+    error?.toLowerCase().includes("offline") ||
+    error?.toLowerCase().includes("cannot reach") ||
+    error?.toLowerCase().includes("taking too long");
+
+  useEffect(() => {
+    if (!uploadMutation.isPending) return;
+    const timer = window.setTimeout(() => {
+      setUploadNotice(
+        "Still uploading. Large videos can take a while on slower networks; keep this tab open until it finishes."
+      );
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [uploadMutation.isPending]);
 
   function isYouTubePageUrl(value: string) {
     try {
@@ -238,7 +274,24 @@ export default function HomePage() {
 
   function handleFile(file?: File) {
     setError(null);
+    setUploadNotice(null);
     if (!file) return;
+    if (typeof window !== "undefined" && !window.navigator.onLine) {
+      setError("Your internet connection appears to be offline. Reconnect, then try the upload again.");
+      return;
+    }
+    const suffix = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+    if (!SUPPORTED_VIDEO_EXTENSIONS.includes(suffix)) {
+      setError("Use a supported video file: MP4, MOV, WebM, or M4V.");
+      return;
+    }
+    const maxUploadBytes = maxUploadMb * 1024 * 1024;
+    if (file.size > maxUploadBytes) {
+      setError(
+        `${file.name} is ${formatFileSize(file.size)}. Upload a video under ${maxUploadMb} MB, or trim/compress it before uploading.`
+      );
+      return;
+    }
     uploadMutation.mutate(file);
   }
 
@@ -274,7 +327,7 @@ export default function HomePage() {
       {/* ═══════════════════════════════════════════════════════════
           SECTION 1 — HERO
        ═══════════════════════════════════════════════════════════ */}
-      <section className="relative flex min-h-[100vh] flex-col items-center justify-center overflow-hidden px-5">
+      <section className="relative flex min-h-[calc(100svh-4rem)] w-screen max-w-[100vw] flex-col items-center justify-center overflow-hidden px-5 py-16 sm:py-20">
         {/* Animated dot-grid background */}
         <div className="dot-grid pointer-events-none absolute inset-0 -z-10 opacity-40" />
         {/* Radial vignette overlay */}
@@ -282,13 +335,15 @@ export default function HomePage() {
 
         <Badge tone="cyan">Attention Proxy Score · v0.1</Badge>
 
-        <h1 className="shimmer-text mt-8 max-w-4xl text-center text-5xl font-semibold leading-[1.05] md:text-7xl lg:text-8xl">
-          NeuroAd Context Engine
+        <h1 className="shimmer-text mt-8 w-full max-w-[340px] text-center text-[clamp(2.65rem,8vw,7.75rem)] font-semibold leading-[0.95] md:max-w-[min(1120px,94vw)]">
+          <span className="block md:inline">NeuroAd</span>{" "}
+          <span className="block md:inline">Context</span>{" "}
+          <span className="block md:inline">Engine</span>
         </h1>
 
-        <p className="mt-6 max-w-3xl text-center text-lg leading-8 text-zinc-400 md:text-xl">
-          <span className="block">See which moments in a video earn attention.</span>
-          <span className="block">Place ads where they feel natural, valuable, and on time.</span>
+        <p className="mt-6 w-full max-w-[340px] text-center text-base leading-7 text-zinc-400 sm:max-w-3xl sm:text-lg md:text-xl md:leading-8">
+          <span className="block">Find the video moments that earn attention.</span>
+          <span className="block">Place ads where they feel natural and on time.</span>
         </p>
 
         <div className="context-orbit mt-8" aria-hidden="true">
@@ -319,8 +374,9 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="mt-10 flex gap-4">
+        <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4">
           <Button
+            className="w-full sm:w-auto"
             onClick={() =>
               document.getElementById("input-section")?.scrollIntoView({ behavior: "smooth" })
             }
@@ -329,6 +385,7 @@ export default function HomePage() {
           </Button>
           <Button
             variant="secondary"
+            className="w-full sm:w-auto"
             onClick={() =>
               document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })
             }
@@ -450,7 +507,7 @@ export default function HomePage() {
                       Upload a video file
                     </span>
                     <p className="mt-1 text-sm text-zinc-500">
-                      MP4, MOV, WebM, or M4V under 200 MB.
+                      MP4, MOV, WebM, or M4V under {maxUploadMb} MB.
                     </p>
                   </div>
                 </div>
@@ -460,13 +517,53 @@ export default function HomePage() {
                   accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
                   className="sr-only"
                   disabled={busy}
-                  onChange={(event) => handleFile(event.target.files?.[0])}
+                  onChange={(event) => {
+                    handleFile(event.target.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
                 />
               </label>
 
+              {uploadMutation.isPending && uploadProgress !== null ? (
+                <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-medium text-white">Uploading video</span>
+                    <span className="font-mono text-xs text-zinc-400">{uploadProgress}%</span>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-white transition-all duration-300"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  {uploadNotice ? (
+                    <p className="mt-3 text-xs leading-5 text-zinc-400">{uploadNotice}</p>
+                  ) : null}
+                </div>
+              ) : null}
+
               {error ? (
-                <div className="mt-4 rounded-lg border border-danger/30 bg-danger/10 p-3 text-sm text-danger">
-                  {error}
+                <div className="mt-4 rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
+                  <div className="flex items-start gap-3">
+                    {hasConnectionError ? (
+                      <WifiOff className="mt-0.5 h-5 w-5 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                    )}
+                    <div>
+                      <p className="font-semibold">
+                        {hasConnectionError ? "Upload connection issue" : "Upload could not start"}
+                      </p>
+                      <p className="mt-1 leading-6 text-red-200/90">{error}</p>
+                      {hasConnectionError ? (
+                        <div className="mt-3 grid gap-2 text-xs leading-5 text-red-100/75 sm:grid-cols-3">
+                          <span>Check your connection and retry.</span>
+                          <span>Use a smaller or compressed file on slow networks.</span>
+                          <span>Confirm the API URL and CORS settings in deployment.</span>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               ) : null}
             </Card>
@@ -531,34 +628,31 @@ export default function HomePage() {
             </div>
           </Reveal>
 
-          <div className="grid gap-6 md:grid-cols-3">
+          <div className="mx-auto grid max-w-6xl items-stretch gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {[
               {
                 step: "01",
                 title: "Analyze",
                 desc: "We extract every frame, every word, every sound — building a complete sensory map of your content.",
-                icon: ScanSearch,
-                image: "/assets/step_analyze_1782927847137.png"
+                icon: ScanSearch
               },
               {
                 step: "02",
                 title: "Pipeline",
                 desc: "Raw signals flow through our AI scoring engine to compute Attention Proxy and ad-fit metrics.",
-                icon: Cpu,
-                image: "/assets/step_pipeline_1782927857593.png"
+                icon: Cpu
               },
               {
                 step: "03",
                 title: "Reports",
                 desc: "Get timestamped scores, context tags, and ad recommendations — exported as CSV or JSON.",
-                icon: LayoutDashboard,
-                image: "/assets/step_reports_1782927871630.png"
+                icon: LayoutDashboard
               }
             ].map((item, i) => {
               const Icon = item.icon;
               return (
-                <Reveal key={item.step} delay={i * 150} className="h-full">
-                  <Card className="relative flex h-full flex-col border-white/10 bg-black p-6 transition hover:border-white/20">
+                <Reveal key={item.step} delay={i * 150} className="h-full min-w-0">
+                  <Card className="relative flex h-full min-h-[260px] flex-col border-white/10 bg-black p-5 transition hover:border-white/20 sm:p-6">
                     <div className="flex items-center justify-between">
                       <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/20 bg-white text-black">
                         <Icon className="h-6 w-6" />
@@ -567,12 +661,8 @@ export default function HomePage() {
                         {item.step}
                       </span>
                     </div>
-                    
-                    <div className="mt-6 relative h-40 w-full overflow-hidden rounded-lg border border-white/10">
-                      <img src={item.image} alt={item.title} className="absolute inset-0 h-full w-full object-cover" />
-                    </div>
 
-                    <h3 className="mt-5 text-xl font-semibold text-white">
+                    <h3 className="mt-8 text-xl font-semibold text-white">
                       {item.title}
                     </h3>
                     <p className="mt-3 text-sm leading-6 text-zinc-500">
@@ -607,7 +697,7 @@ export default function HomePage() {
 
           <div className="grid gap-6 md:grid-cols-3">
             {/* Frames */}
-            <Reveal delay={0}>
+              <Reveal delay={0} className="min-w-0">
               <Card className="border-white/10 bg-black p-6">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="font-semibold text-white">Visual Frames</h3>
@@ -617,10 +707,10 @@ export default function HomePage() {
                   <div className="absolute inset-y-0 left-0 flex w-[200%] animate-scroll-left items-center gap-2 px-2">
                     {[...Array(12)].map((_, i) => {
                       const images = [
-                        "/assets/video_frame_1_1782927764126.png",
-                        "/assets/video_frame_2_1782927775890.png",
-                        "/assets/video_frame_3_1782927788664.png",
-                        "/assets/video_frame_4_1782927802480.png",
+                        "/assets/landing_frame_productivity_hyperreal.jpg",
+                        "/assets/landing_frame_auto_hyperreal.jpg",
+                        "/assets/landing_frame_coffee_hyperreal.jpg",
+                        "/assets/landing_frame_travel_hyperreal.jpg",
                       ];
                       const imgSrc = images[i % images.length];
                       return (
@@ -628,7 +718,7 @@ export default function HomePage() {
                           key={i}
                           className="relative h-28 w-20 shrink-0 overflow-hidden rounded border border-white/10 bg-zinc-900"
                         >
-                          <img src={imgSrc} alt="frame" className="absolute inset-0 h-full w-full object-cover opacity-80" />
+                          <img src={imgSrc} alt="sample video frame" className="absolute inset-0 h-full w-full object-cover opacity-85" />
                           <div
                             className="absolute inset-0 bg-gradient-to-br from-white/[0.06] to-transparent"
                             style={{ animationDelay: `${i * 0.3}s` }}
@@ -645,7 +735,7 @@ export default function HomePage() {
             </Reveal>
 
             {/* Audio */}
-            <Reveal delay={150}>
+              <Reveal delay={150} className="min-w-0">
               <Card className="border-white/10 bg-black p-6">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="font-semibold text-white">Audio Energy</h3>
@@ -671,7 +761,7 @@ export default function HomePage() {
             </Reveal>
 
             {/* Transcript */}
-            <Reveal delay={300}>
+              <Reveal delay={300} className="min-w-0">
               <Card className="border-white/10 bg-black p-6">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="font-semibold text-white">Transcript & NLP</h3>
@@ -1023,7 +1113,7 @@ export default function HomePage() {
                 {/* Left Col: Media Player Mock */}
                 <div className="border-b border-white/10 bg-zinc-950 p-6 md:border-b-0 md:border-r">
                   <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-white/10 bg-black">
-                    <img src="/assets/dashboard_video_1782927812679.png" alt="Live analysis feed" className="absolute inset-0 h-full w-full object-cover opacity-75" />
+                    <img src="/assets/landing_dashboard_video_hyperreal.jpg" alt="Live analysis feed" className="absolute inset-0 h-full w-full object-cover opacity-75" />
                     {/* Shimmer background */}
                     <div className="absolute inset-0 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 bg-[length:200%_100%] animate-shimmer opacity-40 mix-blend-overlay" />
                     
@@ -1246,12 +1336,12 @@ export default function HomePage() {
             </div>
           </Reveal>
 
-          <div className="grid gap-4 md:grid-cols-4">
+          <div className="grid items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {conceptSteps.map((step, index) => {
               const Icon = step.icon;
               return (
-                <Reveal key={step.title} delay={index * 100} className="h-full">
-                  <Card className="flex h-full flex-col border-white/10 bg-black p-5 transition hover:border-white/20">
+                <Reveal key={step.title} delay={index * 100} className="h-full min-w-0">
+                  <Card className="flex h-full min-h-[292px] flex-col border-white/10 bg-black p-5 transition hover:border-white/20">
                     <div className="flex items-center justify-between">
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-black">
                         <Icon className="h-5 w-5" />
@@ -1261,11 +1351,7 @@ export default function HomePage() {
                       </span>
                     </div>
 
-                    <div className="mt-5 relative h-32 w-full overflow-hidden rounded-lg border border-white/10">
-                      <img src={step.image} alt={step.title} className="absolute inset-0 h-full w-full object-cover" />
-                    </div>
-
-                    <h3 className="mt-5 text-lg font-semibold text-white">
+                    <h3 className="mt-8 text-lg font-semibold text-white">
                       {step.title}
                     </h3>
                     <p className="mt-3 text-sm leading-6 text-zinc-500">
@@ -1278,15 +1364,15 @@ export default function HomePage() {
           </div>
 
           {/* Dependency status bar (preserved) */}
-          <Reveal delay={200}>
-            <div className="mt-6 rounded-lg border border-white/10 bg-black p-5 text-sm leading-6 text-zinc-500">
-              {dependencyQuery.data?.youtube_ingest_ready
-                ? "FFmpeg, FFprobe, and yt-dlp are ready. YouTube links, supported media pages, direct video URLs, and uploads can enter the real analysis pipeline."
-                : dependencyQuery.data?.ready
-                  ? "FFmpeg and FFprobe are ready. Uploads and direct video URLs can be analyzed; install yt-dlp for media-page and YouTube extraction."
-                  : "Install FFmpeg/FFprobe before real video analysis. The processing page will surface missing runtime details clearly."}
-            </div>
-          </Reveal>
+          {dependencyQuery.data?.ready ? (
+            <Reveal delay={200}>
+              <div className="mt-6 rounded-lg border border-white/10 bg-black p-5 text-sm leading-6 text-zinc-500">
+                {dependencyQuery.data.youtube_ingest_ready
+                  ? "FFmpeg, FFprobe, and yt-dlp are ready. YouTube links, supported media pages, direct video URLs, and uploads can enter the real analysis pipeline."
+                  : "FFmpeg and FFprobe are ready. Uploads and direct video URLs can be analyzed; install yt-dlp for media-page and YouTube extraction."}
+              </div>
+            </Reveal>
+          ) : null}
         </section>
 
         <footer className="border-t border-white/10 py-8">
@@ -1325,6 +1411,7 @@ function CapabilityScene() {
     if (!canvas?.parentElement) return;
     const parentElement = canvas.parentElement;
 
+    try {
     const renderer = new THREE.WebGLRenderer({
       alpha: true,
       antialias: true,
@@ -1477,6 +1564,11 @@ function CapabilityScene() {
       ringMaterial.dispose();
       paths.forEach((path) => path.geometry.dispose());
     };
+    } catch (error) {
+      console.warn("Capability scene disabled because WebGL could not start.", error);
+      canvas.style.display = "none";
+      return;
+    }
   }, []);
 
   return <canvas ref={canvasRef} className="context-orbit__canvas" />;

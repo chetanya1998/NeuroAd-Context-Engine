@@ -8,6 +8,7 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: clip;
 }
 
 * {
@@ -18,6 +19,7 @@ body {
   margin: 0;
   background: #000;
   color: #f8fafc;
+  overflow-x: clip;
 }
 
 button,
@@ -575,15 +577,16 @@ input {
 
 @media (max-width: 640px) {
   .context-orbit {
-    height: 184px;
+    height: 168px;
+    width: min(300px, calc(100vw - 72px));
   }
 
   .context-orbit__ring {
-    inset: 36px 34px;
+    inset: 34px 30px;
   }
 
   .context-orbit__ring--slow {
-    inset: 56px 68px;
+    inset: 54px 62px;
   }
 
   .context-orbit__core {
@@ -594,8 +597,8 @@ input {
 
   .context-orbit__node {
     min-width: auto;
-    padding: 8px 10px;
-    font-size: 11px;
+    padding: 7px 8px;
+    font-size: 10px;
   }
 
   .context-orbit__node--media {
@@ -604,17 +607,22 @@ input {
   }
 
   .context-orbit__node--attention {
-    left: 14%;
+    left: 6%;
     top: 10%;
   }
 
   .context-orbit__node--placement {
-    right: 5%;
-    top: 16%;
+    right: 0;
+    top: 14%;
   }
 
   .context-orbit__node--report {
     right: 0;
     bottom: 12%;
+  }
+
+  .context-orbit__node--placement span,
+  .context-orbit__node--report span {
+    display: none;
   }
 }

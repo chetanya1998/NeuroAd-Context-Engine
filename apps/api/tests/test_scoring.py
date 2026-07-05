@@ -1,4 +1,5 @@
 import sys
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -10,9 +11,11 @@ from main import (
     cors_origins_from_env,
     create_video_from_url,
     download_remote_video,
+    extract_audio,
     health,
     is_youtube_media_blocked,
     make_segments,
+    public_job_error,
     score_attention,
 )
 
@@ -105,3 +108,25 @@ def test_object_detection_falls_back_when_model_loading_fails(monkeypatch):
     monkeypatch.setattr(main, "detect_lightweight_visual_context", lambda frames: {1: []})
 
     assert main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}}) == {1: []}
+
+
+def test_extract_audio_returns_none_when_video_has_no_audio(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
+    monkeypatch.setattr(main, "has_audio_stream", lambda path: False)
+    monkeypatch.setattr(main.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert extract_audio("video_test", source) is None
+
+
+def test_public_job_error_hides_raw_subprocess_command():
+    error = subprocess.CalledProcessError(
+        234,
+        ["/usr/bin/ffmpeg", "-i", "/data/neuroad/storage/uploads/video.mp4"],
+        stderr="ffmpeg version\nInvalid data found when processing input\n",
+    )
+
+    message = public_job_error(error)
+
+    assert "/usr/bin/ffmpeg" not in message
+    assert "Invalid data found when processing input" in message

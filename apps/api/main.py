@@ -1140,6 +1140,11 @@ def get_system_dependencies() -> dict[str, Any]:
         "ready": bool(ffmpeg_available and ffprobe_available),
         "youtube_ingest_ready": bool(ffmpeg_available and ffprobe_available and yt_dlp_available),
         "youtube_cookies_configured": cookies_configured,
+        "limits": {
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "max_source_seconds": MAX_SOURCE_SECONDS,
+            "max_analysis_seconds": MAX_ANALYSIS_SECONDS,
+        },
         "dependencies": dependencies,
     }
 
@@ -1246,10 +1251,10 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "processing", 20, "frames")
 
         audio_path = extract_audio(video_id, source)
-        audio_metrics = compute_audio_metrics(audio_path, segments)
+        audio_metrics = compute_audio_metrics(audio_path, segments) if audio_path else {}
         update_job(job_id, "processing", 32, "audio")
 
-        transcript_segments = transcribe_audio(audio_path)
+        transcript_segments = transcribe_audio(audio_path) if audio_path else []
         update_job(job_id, "processing", 48, "transcript")
 
         detections = detect_objects(frames)
@@ -1270,7 +1275,17 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "completed", 100, "report")
     except Exception as exc:
         execute("update videos set status = 'failed' where id = ?", (video_id,))
-        update_job(job_id, "failed", 100, "failed", str(exc))
+        update_job(job_id, "failed", 100, "failed", public_job_error(exc))
+
+
+def public_job_error(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        output = (exc.stderr or exc.stdout or "").strip()
+        if output:
+            last_line = output.splitlines()[-1]
+            return f"Media processing failed: {last_line}"
+        return "Media processing failed while running FFmpeg. Try a smaller MP4 file or upload the source video directly."
+    return str(exc)
 
 
 def is_youtube_media_blocked(exc: Exception) -> bool:
@@ -1361,6 +1376,33 @@ def probe_duration_or_raise(path: Path) -> float:
         check=True,
     )
     return float(result.stdout.strip())
+
+
+def has_audio_stream(path: Path) -> bool:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return True
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+    return bool(result.stdout.strip())
 
 
 def make_segments(duration: float) -> list[dict[str, Any]]:
@@ -1477,17 +1519,23 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
     return frame_data
 
 
-def extract_audio(video_id: str, source: Path) -> Path:
+def extract_audio(video_id: str, source: Path) -> Path | None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("FFmpeg is required for audio extraction. Install it with `brew install ffmpeg`.")
+    if not has_audio_stream(source):
+        return None
     target = AUDIO_DIR / f"{video_id}.wav"
-    subprocess.run(
-        [ffmpeg, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(target)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(target)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        target.unlink(missing_ok=True)
+        return None
     return target
 
 
