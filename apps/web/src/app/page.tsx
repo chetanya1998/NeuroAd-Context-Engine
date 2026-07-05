@@ -263,8 +263,10 @@ export default function HomePage() {
 
         <Badge tone="cyan">Attention Proxy Score · v0.1</Badge>
 
-        <h1 className="shimmer-text mt-8 w-full max-w-[min(1180px,94vw)] text-center text-[clamp(3.1rem,9vw,7.5rem)] font-semibold leading-[1.02] [text-wrap:balance]">
-          NeuroAd Context Engine
+        <h1 className="shimmer-text mt-8 w-full max-w-[min(1040px,92vw)] text-center text-[clamp(2.8rem,7.2vw,6.25rem)] font-semibold leading-[1.04]">
+          <span className="block xl:inline">NeuroAd</span>{" "}
+          <span className="block xl:inline">Context</span>{" "}
+          <span className="block xl:inline">Engine</span>
         </h1>
 
         <p className="mt-6 w-full max-w-[340px] text-center text-base leading-7 text-zinc-400 sm:max-w-3xl sm:text-lg md:text-xl md:leading-8">
