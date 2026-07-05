@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -14,7 +14,6 @@ import {
   FileText,
   FileVideo,
   LayoutDashboard,
-  Link2,
   ScanSearch,
   UploadCloud,
   Video,
@@ -23,17 +22,13 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import * as THREE from "three";
 import { Reveal } from "@/components/Reveal";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
 import { useInView } from "@/lib/useInView";
 import {
-  createVideoFromUrl,
   getSystemDependencies,
-  ingestYouTubeVideo,
-  uploadVideo,
-  uploadCookies
+  uploadVideo
 } from "@/lib/api";
 
 /* ─── Static data ─── */
@@ -42,8 +37,8 @@ import {
 const conceptSteps = [
   {
     icon: FileVideo,
-    title: "Bring any usable source",
-    copy: "Upload a file, paste a direct video URL, or submit a permission-cleared YouTube link with cookie fallback when needed."
+    title: "Bring an approved video",
+    copy: "Upload an owned or permission-cleared file with size checks, progress feedback, and clear recovery guidance."
   },
   {
     icon: ScanSearch,
@@ -73,7 +68,7 @@ const featureHighlights = [
   {
     icon: UploadCloud,
     title: "Flexible ingest",
-    copy: "Use uploads, public media URLs, supported video pages, or YouTube links you have permission to analyze."
+    copy: "Upload owned or permission-cleared video files with clear transfer progress and format checks."
   },
   {
     icon: AudioLines,
@@ -170,12 +165,10 @@ function useCounter(target: number, active: boolean) {
 
 export default function HomePage() {
   const router = useRouter();
-  const queryClient = useQueryClient();
-  const [videoUrl, setVideoUrl] = useState("");
-  const [hasYouTubePermission, setHasYouTubePermission] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [isDraggingUpload, setIsDraggingUpload] = useState(false);
   const [activePipelineStep, setActivePipelineStep] = useState<PipelineStepId>("score");
   const dependencyQuery = useQuery({
     queryKey: ["system-dependencies"],
@@ -209,30 +202,7 @@ export default function HomePage() {
     onError: showActionError
   });
 
-  const urlMutation = useMutation({
-    mutationFn: createVideoFromUrl,
-    onSuccess: (payload) => router.push(`/analyze/${payload.video_id}`),
-    onError: showActionError
-  });
-
-  const youtubeMutation = useMutation({
-    mutationFn: ({ url, hasPermission }: { url: string; hasPermission: boolean }) =>
-      ingestYouTubeVideo(url, hasPermission),
-    onSuccess: (payload) => router.push(`/analyze/${payload.video_id}`),
-    onError: showActionError
-  });
-
-  const cookiesMutation = useMutation({
-    mutationFn: uploadCookies,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["system-dependencies"] });
-      setError("Cookies uploaded successfully. You can now analyze YouTube videos.");
-    },
-    onError: showActionError
-  });
-
-  const busy =
-    uploadMutation.isPending || urlMutation.isPending || youtubeMutation.isPending || cookiesMutation.isPending;
+  const busy = uploadMutation.isPending;
   const activePipeline = pipelineStages[activePipelineStep];
   const ActivePipelineIcon = activePipeline.icon;
   const maxUploadMb = dependencyQuery.data?.limits?.max_upload_mb ?? FALLBACK_MAX_UPLOAD_MB;
@@ -251,26 +221,6 @@ export default function HomePage() {
     }, 8000);
     return () => window.clearTimeout(timer);
   }, [uploadMutation.isPending]);
-
-  function isYouTubePageUrl(value: string) {
-    try {
-      const host = new URL(value).hostname.replace(/^www\./, "");
-      return (
-        host === "youtube.com" || host === "youtu.be" || host.endsWith(".youtube.com")
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  function isHttpUrl(value: string) {
-    try {
-      const protocol = new URL(value).protocol;
-      return protocol === "http:" || protocol === "https:";
-    } catch {
-      return false;
-    }
-  }
 
   function handleFile(file?: File) {
     setError(null);
@@ -293,33 +243,6 @@ export default function HomePage() {
       return;
     }
     uploadMutation.mutate(file);
-  }
-
-  function handleVideoUrl() {
-    setError(null);
-    const trimmedUrl = videoUrl.trim();
-    if (!trimmedUrl) {
-      setError("Paste a YouTube URL you can analyze, or a direct public video file URL.");
-      return;
-    }
-    if (isYouTubePageUrl(trimmedUrl)) {
-      if (!hasYouTubePermission) {
-        setError(
-          "Confirm that you own or have permission to analyze this YouTube video."
-        );
-        return;
-      }
-      youtubeMutation.mutate({
-        url: trimmedUrl,
-        hasPermission: hasYouTubePermission
-      });
-      return;
-    }
-    if (!isHttpUrl(trimmedUrl)) {
-      setError("Paste a valid http(s) video URL.");
-      return;
-    }
-    urlMutation.mutate(trimmedUrl);
   }
 
   return (
@@ -346,35 +269,7 @@ export default function HomePage() {
           <span className="block">Place ads where they feel natural and on time.</span>
         </p>
 
-        <div className="context-orbit mt-8" aria-hidden="true">
-          <CapabilityScene />
-          <div className="context-orbit__stage">
-            <div className="context-orbit__ring" />
-            <div className="context-orbit__ring context-orbit__ring--slow" />
-            <div className="context-orbit__core">
-              <Brain className="h-6 w-6" />
-              <span>Best Moment</span>
-            </div>
-            <div className="context-orbit__node context-orbit__node--media">
-              <Video className="h-4 w-4" />
-              <span>Video</span>
-            </div>
-            <div className="context-orbit__node context-orbit__node--attention">
-              <Activity className="h-4 w-4" />
-              <span>Attention</span>
-            </div>
-            <div className="context-orbit__node context-orbit__node--placement">
-              <WandSparkles className="h-4 w-4" />
-              <span>Ad Slot</span>
-            </div>
-            <div className="context-orbit__node context-orbit__node--report">
-              <FileText className="h-4 w-4" />
-              <span>Report</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4">
+        <div className="mt-12 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4">
           <Button
             className="w-full sm:w-auto"
             onClick={() =>
@@ -407,20 +302,76 @@ export default function HomePage() {
          ═══════════════════════════════════════════════════════════ */}
         <section id="input-section" className="py-20">
           <Reveal>
-            <Card className="glow-border mx-auto max-w-3xl border-white/10 bg-black p-6 shadow-glow-lg md:p-8">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-white text-black">
-                  <Link2 className="h-5 w-5" />
-                </div>
+            <Card className="glow-border mx-auto max-w-4xl border-white/10 bg-black p-5 shadow-glow-lg sm:p-6 md:p-8">
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center">
                 <div>
-                  <h2 className="text-lg font-semibold text-white">
-                    Start with a video source
+                  <Badge tone="cyan">Secure Upload</Badge>
+                  <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                    Upload a video file
                   </h2>
-                  <p className="text-sm text-zinc-500">
-                    Paste a permission-cleared YouTube watch link, supported
-                    media page, or direct video file URL.
+                  <p className="mt-3 text-sm leading-6 text-zinc-500 md:text-base">
+                    Add an owned or permission-cleared video and the engine will open the analysis workspace when ingest is ready.
                   </p>
+
+                  <div className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3 lg:grid-cols-1">
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                      <span className="font-medium text-zinc-300">Formats</span>
+                      <p className="mt-1">MP4, MOV, WebM, M4V</p>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                      <span className="font-medium text-zinc-300">Limit</span>
+                      <p className="mt-1">Up to {maxUploadMb} MB</p>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                      <span className="font-medium text-zinc-300">Network</span>
+                      <p className="mt-1">Keep this tab open</p>
+                    </div>
+                  </div>
                 </div>
+
+                <label
+                  className={[
+                    "relative flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-6 text-center transition",
+                    isDraggingUpload
+                      ? "border-white bg-white/[0.08]"
+                      : "border-white/20 bg-zinc-950 hover:border-white/45 hover:bg-white/[0.03]",
+                    busy ? "pointer-events-none opacity-70" : ""
+                  ].join(" ")}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setIsDraggingUpload(true);
+                  }}
+                  onDragLeave={() => setIsDraggingUpload(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setIsDraggingUpload(false);
+                    handleFile(event.dataTransfer.files?.[0]);
+                  }}
+                >
+                  <div className="absolute inset-3 rounded-lg border border-white/5" />
+                  <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_40px_rgba(255,255,255,0.14)]">
+                    <UploadCloud className="h-7 w-7" />
+                  </div>
+                  <span className="relative mt-5 text-lg font-semibold text-white">
+                    {isDraggingUpload ? "Drop video to upload" : "Drop your video here"}
+                  </span>
+                  <span className="relative mt-2 text-sm leading-6 text-zinc-500">
+                    or select a file from your computer
+                  </span>
+                  <span className="relative mt-5 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black">
+                    Choose file <ArrowRight className="h-4 w-4" />
+                  </span>
+                  <input
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
+                    className="sr-only"
+                    disabled={busy}
+                    onChange={(event) => {
+                      handleFile(event.target.files?.[0]);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
               </div>
 
               <div className="mt-6 rounded-lg border border-white/10 bg-zinc-950 p-4 text-sm leading-6 text-zinc-400">
@@ -429,100 +380,7 @@ export default function HomePage() {
                 produces review-ready ad-fit recommendations.
               </div>
 
-              <div className="mt-6 flex flex-col gap-3 lg:flex-row">
-                <input
-                  value={videoUrl}
-                  onChange={(event) => setVideoUrl(event.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=... or https://example.com/video"
-                  className="min-h-12 flex-1 rounded-lg border border-white/10 bg-zinc-950 px-4 text-sm text-white outline-none ring-white/20 transition placeholder:text-zinc-700 focus:ring-2"
-                />
-                <Button onClick={handleVideoUrl} disabled={busy}>
-                  {busy ? "Opening progress..." : "Analyze"}{" "}
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-
-              <label className="mt-4 flex items-start gap-3 rounded-lg border border-white/10 bg-zinc-950 p-3 text-sm text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={hasYouTubePermission}
-                  onChange={(event) =>
-                    setHasYouTubePermission(event.target.checked)
-                  }
-                  className="mt-1 h-4 w-4 accent-white"
-                />
-                <span>
-                  I own this YouTube video or have permission to download and
-                  analyze it. If YouTube blocks server access, upload the video
-                  file directly.
-                </span>
-              </label>
-
-              {/* Cookies Upload Section */}
-              <div className="mt-4 rounded-lg border border-white/10 bg-zinc-950 p-4">
-                <h3 className="text-sm font-semibold text-white">YouTube Bot Detection Fallback</h3>
-                <p className="mt-1 text-xs text-zinc-400 leading-relaxed">
-                  If YouTube blocks server-side access, add your local browser cookies. Install the
-                  <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpocnjdlpihdn" target="_blank" rel="noreferrer" className="text-white hover:underline mx-1">
-                    &quot;Get cookies.txt LOCALLY&quot;
-                  </a> 
-                  Chrome extension, export your YouTube cookies, and upload the cookies.txt file here.
-                </p>
-                <div className="mt-3 flex items-center gap-3">
-                  <label className="cursor-pointer rounded border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/10">
-                    {cookiesMutation.isPending ? "Uploading..." : "Upload cookies.txt"}
-                    <input 
-                      type="file" 
-                      accept=".txt" 
-                      className="sr-only" 
-                      disabled={cookiesMutation.isPending}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) cookiesMutation.mutate(file);
-                      }} 
-                    />
-                  </label>
-                  {dependencyQuery.data?.youtube_cookies_configured && (
-                    <span className="text-xs text-green-400 flex items-center gap-1">
-                      <div className="h-2 w-2 rounded-full bg-green-400" />
-                      Cookies configured
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-5 flex items-center gap-3 text-sm text-zinc-600">
-                <span className="h-px flex-1 bg-white/10" />
-                OR
-                <span className="h-px flex-1 bg-white/10" />
-              </div>
-
-              <label className="mt-5 flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-dashed border-white/15 bg-zinc-950 p-4 transition hover:border-white/40">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-white text-black">
-                    <UploadCloud className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <span className="font-semibold text-white">
-                      Upload a video file
-                    </span>
-                    <p className="mt-1 text-sm text-zinc-500">
-                      MP4, MOV, WebM, or M4V under {maxUploadMb} MB.
-                    </p>
-                  </div>
-                </div>
-                <ArrowRight className="hidden h-5 w-5 text-zinc-500 sm:block" />
-                <input
-                  type="file"
-                  accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
-                  className="sr-only"
-                  disabled={busy}
-                  onChange={(event) => {
-                    handleFile(event.target.files?.[0]);
-                    event.currentTarget.value = "";
-                  }}
-                />
-              </label>
+              {/* Video URL Section commented out per current landing-page direction. */}
 
               {uploadMutation.isPending && uploadProgress !== null ? (
                 <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-3">
@@ -1368,8 +1226,8 @@ export default function HomePage() {
             <Reveal delay={200}>
               <div className="mt-6 rounded-lg border border-white/10 bg-black p-5 text-sm leading-6 text-zinc-500">
                 {dependencyQuery.data.youtube_ingest_ready
-                  ? "FFmpeg, FFprobe, and yt-dlp are ready. YouTube links, supported media pages, direct video URLs, and uploads can enter the real analysis pipeline."
-                  : "FFmpeg and FFprobe are ready. Uploads and direct video URLs can be analyzed; install yt-dlp for media-page and YouTube extraction."}
+                  ? "The media runtime is ready. Uploaded videos can enter the real analysis pipeline."
+                  : "FFmpeg and FFprobe are ready. Uploaded videos can enter the real analysis pipeline."}
               </div>
             </Reveal>
           ) : null}
@@ -1401,177 +1259,6 @@ export default function HomePage() {
       </div>
     </AppShell>
   );
-}
-
-function CapabilityScene() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas?.parentElement) return;
-    const parentElement = canvas.parentElement;
-
-    try {
-    const renderer = new THREE.WebGLRenderer({
-      alpha: true,
-      antialias: true,
-      canvas
-    });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-    camera.position.set(0, 0.15, 5.4);
-
-    const group = new THREE.Group();
-    scene.add(group);
-
-    const softWhite = new THREE.MeshBasicMaterial({
-      color: 0xf8fafc,
-      transparent: true,
-      opacity: 0.86
-    });
-    const green = new THREE.MeshBasicMaterial({
-      color: 0x22c55e,
-      transparent: true,
-      opacity: 0.76
-    });
-    const amber = new THREE.MeshBasicMaterial({
-      color: 0xf59e0b,
-      transparent: true,
-      opacity: 0.72
-    });
-    const lineMaterial = new THREE.LineBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.18
-    });
-    const ringMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.18
-    });
-
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(1.86, 0.012, 16, 120),
-      ringMaterial
-    );
-    ring.rotation.x = Math.PI / 2.6;
-    group.add(ring);
-
-    const innerRing = new THREE.Mesh(
-      new THREE.TorusGeometry(1.18, 0.008, 16, 100),
-      ringMaterial
-    );
-    innerRing.rotation.x = Math.PI / 2.35;
-    innerRing.rotation.z = Math.PI / 5;
-    group.add(innerRing);
-
-    const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.28, 2), softWhite);
-    group.add(core);
-
-    const satelliteGeometry = new THREE.SphereGeometry(0.09, 24, 24);
-    const satelliteSpecs = [
-      { angle: 0, radius: 1.86, material: softWhite },
-      { angle: Math.PI / 2, radius: 1.28, material: green },
-      { angle: Math.PI, radius: 1.68, material: amber },
-      { angle: Math.PI * 1.5, radius: 1.42, material: softWhite }
-    ];
-
-    const satellites = satelliteSpecs.map((spec) => {
-      const mesh = new THREE.Mesh(satelliteGeometry, spec.material);
-      group.add(mesh);
-      return { mesh, ...spec };
-    });
-
-    const paths = satelliteSpecs.map((spec) => {
-      const geometry = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(Math.cos(spec.angle) * spec.radius, Math.sin(spec.angle) * 0.42, Math.sin(spec.angle) * 0.3)
-      ]);
-      const line = new THREE.Line(geometry, lineMaterial);
-      group.add(line);
-      return line;
-    });
-
-    let frame = 0;
-    let animationFrame = 0;
-    let isVisible = true;
-    let lastRender = 0;
-
-    function resize() {
-      const { width, height } = parentElement.getBoundingClientRect();
-      renderer.setSize(width, height, false);
-      camera.aspect = width / Math.max(height, 1);
-      camera.updateProjectionMatrix();
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        isVisible = entry?.isIntersecting ?? true;
-      },
-      { threshold: 0.05 }
-    );
-    observer.observe(parentElement);
-
-    function animate(now = 0) {
-      animationFrame = requestAnimationFrame(animate);
-      if (!isVisible || document.hidden || now - lastRender < 33) return;
-      lastRender = now;
-      frame += 0.024;
-      group.rotation.y = Math.sin(frame * 0.42) * 0.28;
-      group.rotation.x = Math.sin(frame * 0.3) * 0.08;
-      ring.rotation.z += 0.006;
-      innerRing.rotation.z -= 0.004;
-      core.rotation.x += 0.01;
-      core.rotation.y += 0.013;
-
-      satellites.forEach((satellite, index) => {
-        const angle = satellite.angle + frame * (0.75 + index * 0.08);
-        satellite.mesh.position.set(
-          Math.cos(angle) * satellite.radius,
-          Math.sin(angle) * 0.42,
-          Math.sin(angle) * 0.3
-        );
-        satellite.mesh.scale.setScalar(1 + Math.sin(frame * 2 + index) * 0.18);
-      });
-
-      paths.forEach((path, index) => {
-        const target = satellites[index].mesh.position;
-        path.geometry.setFromPoints([new THREE.Vector3(0, 0, 0), target]);
-      });
-
-      renderer.render(scene, camera);
-    }
-
-    resize();
-    window.addEventListener("resize", resize);
-    animate();
-
-    return () => {
-      cancelAnimationFrame(animationFrame);
-      observer.disconnect();
-      window.removeEventListener("resize", resize);
-      renderer.dispose();
-      ring.geometry.dispose();
-      innerRing.geometry.dispose();
-      core.geometry.dispose();
-      satelliteGeometry.dispose();
-      softWhite.dispose();
-      green.dispose();
-      amber.dispose();
-      lineMaterial.dispose();
-      ringMaterial.dispose();
-      paths.forEach((path) => path.geometry.dispose());
-    };
-    } catch (error) {
-      console.warn("Capability scene disabled because WebGL could not start.", error);
-      canvas.style.display = "none";
-      return;
-    }
-  }, []);
-
-  return <canvas ref={canvasRef} className="context-orbit__canvas" />;
 }
 
 /* ─── Report Counters Sub-Component ─── */
