@@ -603,6 +603,24 @@ If omitted, the frontend defaults to:
 http://localhost:8000
 ```
 
+For a public website, never deploy with the localhost value. `localhost`
+inside a visitor's browser means the visitor's own computer, not the
+NeuroAd server. Deploy the API to a public HTTPS URL and build the web app
+with that URL:
+
+```bash
+NEXT_PUBLIC_API_BASE=https://api.your-domain.com
+```
+
+Then set the API CORS origins to the exact public website origin:
+
+```bash
+CORS_ORIGINS=https://your-web-domain.com
+```
+
+Because `NEXT_PUBLIC_API_BASE` is baked into the Next.js browser bundle at
+build time, redeploy/rebuild the web app after changing it.
+
 ### Backend
 
 ```bash
@@ -897,6 +915,20 @@ Make sure FastAPI is running:
 
 ```bash
 curl http://localhost:8000/api/system/dependencies
+```
+
+If public users see an error mentioning `http://localhost:8000`, the web app
+was deployed with the local development API URL. Fix the hosting environment
+variable:
+
+```bash
+NEXT_PUBLIC_API_BASE=https://api.your-domain.com
+```
+
+Then redeploy the frontend and make sure the backend has:
+
+```bash
+CORS_ORIGINS=https://your-web-domain.com
 ```
 
 ### FFmpeg missing
