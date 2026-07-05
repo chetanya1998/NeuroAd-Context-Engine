@@ -3,6 +3,7 @@
 import { Activity, FileText, Gauge, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 function NeuroAdLogo() {
   return (
@@ -32,6 +33,26 @@ const navItems = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isHome = pathname === "/";
+  const [showHeader, setShowHeader] = useState(true);
+
+  useEffect(() => {
+    let lastY = window.scrollY;
+
+    function handleScroll() {
+      const currentY = window.scrollY;
+      if (currentY < 32) {
+        setShowHeader(true);
+      } else if (currentY > lastY + 8) {
+        setShowHeader(false);
+      } else if (currentY < lastY - 8) {
+        setShowHeader(true);
+      }
+      lastY = currentY;
+    }
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   function scrollToSection(sectionId: string) {
     const el = document.getElementById(sectionId);
@@ -42,7 +63,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <main className="min-h-screen w-screen overflow-x-clip bg-background text-slate-50">
-      <header className="sticky top-0 z-30 w-screen border-b border-white/[0.06] bg-black/80 backdrop-blur-xl">
+      <header
+        className={[
+          "sticky top-0 z-30 w-screen border-b border-white/[0.06] bg-black/80 backdrop-blur-xl transition-transform duration-300",
+          showHeader ? "translate-y-0" : "-translate-y-full"
+        ].join(" ")}
+      >
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 lg:px-10">
           <Link href="/" className="flex items-center gap-3 transition hover:opacity-80">
             <NeuroAdLogo />
@@ -57,7 +83,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onClick={() => scrollToSection("input-section")}
               className="inline-flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 md:hidden"
             >
-              Start
+              Upload
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           ) : (
@@ -65,7 +91,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/"
               className="inline-flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 md:hidden"
             >
-              Start
+              Upload
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           )}
@@ -101,7 +127,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onClick={() => scrollToSection("input-section")}
                 className="ml-2 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200"
               >
-                Get Started
+                Upload Video
                 <ArrowRight className="h-3.5 w-3.5" />
               </button>
             ) : (
@@ -109,7 +135,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 href="/"
                 className="ml-2 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200"
               >
-                Get Started
+                Upload Video
                 <ArrowRight className="h-3.5 w-3.5" />
               </Link>
             )}

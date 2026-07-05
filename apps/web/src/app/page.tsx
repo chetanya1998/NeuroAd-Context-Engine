@@ -210,7 +210,12 @@ export default function HomePage() {
     error?.toLowerCase().includes("connection") ||
     error?.toLowerCase().includes("offline") ||
     error?.toLowerCase().includes("cannot reach") ||
-    error?.toLowerCase().includes("taking too long");
+    error?.toLowerCase().includes("taking too long") ||
+    error?.toLowerCase().includes("localhost:8000");
+  const hasApiConfigError =
+    error?.toLowerCase().includes("localhost:8000") ||
+    error?.toLowerCase().includes("next_public_api_base") ||
+    error?.toLowerCase().includes("insecure api url");
 
   useEffect(() => {
     if (!uploadMutation.isPending) return;
@@ -258,10 +263,8 @@ export default function HomePage() {
 
         <Badge tone="cyan">Attention Proxy Score · v0.1</Badge>
 
-        <h1 className="shimmer-text mt-8 w-full max-w-[340px] text-center text-[clamp(2.65rem,8vw,7.75rem)] font-semibold leading-[0.95] md:max-w-[min(1120px,94vw)]">
-          <span className="block md:inline">NeuroAd</span>{" "}
-          <span className="block md:inline">Context</span>{" "}
-          <span className="block md:inline">Engine</span>
+        <h1 className="shimmer-text mt-8 w-full max-w-[min(1180px,94vw)] text-center text-[clamp(3.1rem,9vw,7.5rem)] font-semibold leading-[1.02] [text-wrap:balance]">
+          NeuroAd Context Engine
         </h1>
 
         <p className="mt-6 w-full max-w-[340px] text-center text-base leading-7 text-zinc-400 sm:max-w-3xl sm:text-lg md:text-xl md:leading-8">
@@ -276,7 +279,7 @@ export default function HomePage() {
               document.getElementById("input-section")?.scrollIntoView({ behavior: "smooth" })
             }
           >
-            Get Started <ArrowRight className="h-4 w-4" />
+            Analyze Video <ArrowRight className="h-4 w-4" />
           </Button>
           <Button
             variant="secondary"
@@ -410,10 +413,20 @@ export default function HomePage() {
                     )}
                     <div>
                       <p className="font-semibold">
-                        {hasConnectionError ? "Upload connection issue" : "Upload could not start"}
+                        {hasApiConfigError
+                          ? "API deployment setup needed"
+                          : hasConnectionError
+                            ? "Upload connection issue"
+                            : "Upload could not start"}
                       </p>
                       <p className="mt-1 leading-6 text-red-200/90">{error}</p>
-                      {hasConnectionError ? (
+                      {hasApiConfigError ? (
+                        <div className="mt-3 grid gap-2 text-xs leading-5 text-red-100/75 sm:grid-cols-3">
+                          <span>Set NEXT_PUBLIC_API_BASE to the public API URL.</span>
+                          <span>Add this website origin to CORS_ORIGINS on the API.</span>
+                          <span>Redeploy the web app after changing the environment variable.</span>
+                        </div>
+                      ) : hasConnectionError ? (
                         <div className="mt-3 grid gap-2 text-xs leading-5 text-red-100/75 sm:grid-cols-3">
                           <span>Check your connection and retry.</span>
                           <span>Use a smaller or compressed file on slow networks.</span>

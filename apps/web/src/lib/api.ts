@@ -14,6 +14,10 @@ function apiConnectionErrorMessage() {
     try {
       const apiUrl = new URL(API_BASE, window.location.href);
       const isLocalApi = ["localhost", "127.0.0.1", "::1"].includes(apiUrl.hostname);
+      const isLocalSite = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+      if (isLocalApi && !isLocalSite) {
+        return "This website is configured to call localhost:8000 for uploads. That only works on the developer machine; public users need NEXT_PUBLIC_API_BASE set to the deployed NeuroAd API URL.";
+      }
       if (window.location.protocol === "https:" && apiUrl.protocol === "http:" && !isLocalApi) {
         return "Uploads cannot reach the API because this secure site is configured with an insecure API URL. Set NEXT_PUBLIC_API_BASE to the backend HTTPS URL and redeploy.";
       }
