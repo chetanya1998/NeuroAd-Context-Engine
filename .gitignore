@@ -15,6 +15,7 @@ apps/api/storage/frames/*
 apps/api/storage/audio/*
 apps/api/storage/reports/*
 apps/api/storage/samples/*
+apps/api/storage/cookies.txt
 !apps/api/storage/**/.gitkeep
 
 .env

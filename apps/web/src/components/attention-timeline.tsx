@@ -16,10 +16,10 @@ function scoreColor(score: number) {
 export function AttentionTimeline({ segments }: { segments: Segment[] }) {
   const setSelectedSegment = useExplorerStore((state) => state.setSelectedSegment);
   if (!segments.length) {
-    return <div className="rounded-lg border border-dashed border-border p-8 text-center text-slate-400">No timeline data yet.</div>;
+    return <div className="rounded-lg border border-dashed border-border p-8 text-center text-base text-slate-400">No timeline data yet.</div>;
   }
   return (
-    <div className="timeline-grid overflow-x-auto rounded-lg border border-border bg-black p-4">
+    <div className="timeline-grid overflow-x-auto rounded-lg border border-border bg-black p-5">
       <div className="flex min-w-[860px] items-end gap-2">
         {segments.map((segment) => (
           <button
@@ -36,8 +36,8 @@ export function AttentionTimeline({ segments }: { segments: Segment[] }) {
               />
             </div>
             <div className="space-y-1">
-              <p className="text-xs font-semibold text-slate-200">{formatRange(segment.start, segment.end)}</p>
-              <div className="flex items-center gap-1 text-xs text-slate-400">
+              <p className="text-sm font-semibold text-slate-200">{formatRange(segment.start, segment.end)}</p>
+              <div className="flex items-center gap-1 text-sm text-slate-400">
                 {segment.ad_fit_score >= 75 ? <BadgeDollarSign className="h-3.5 w-3.5 text-success" /> : null}
                 {segment.attention_score < 40 ? <AlertTriangle className="h-3.5 w-3.5 text-danger" /> : null}
                 <span>{segment.attention_score}</span>

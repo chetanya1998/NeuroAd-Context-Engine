@@ -35,6 +35,11 @@ export type Segment = {
   visual_evidence: VisualEvidence;
   score_reasons: string[];
   recommendation: string;
+  recommendation_tier?: RecommendationTier;
+  recommendation_confidence?: number;
+  evidence_mode?: EvidenceMode;
+  strong_signals?: string[];
+  failed_or_weak_signals?: string[];
   thumbnail_url?: string | null;
   objects: DetectedObject[];
   topics: Topic[];
@@ -45,6 +50,8 @@ export type TranscriptInsights = {
   word_count?: number;
   words_per_second?: number;
   clarity_score?: number;
+  transcript_confidence?: number;
+  transcript_quality_flags?: string[];
   hook_terms?: string[];
   cta_terms?: string[];
   claim_terms?: string[];
@@ -92,6 +99,10 @@ export type AnalysisPayload = {
     ad_catalog_size?: number;
     best_hook: SummaryMoment | null;
     best_ad_slot: (SummaryMoment & { category?: string }) | null;
+    best_content_window?: SummaryMoment | null;
+    best_recommendation_tier?: RecommendationTier;
+    recommendation_status?: string;
+    recommendation_message?: string;
     weakest_segment: SummaryMoment | null;
     top_ad_category: string | null;
   };
@@ -113,6 +124,8 @@ export type SummaryMoment = {
   score: number;
   ad_fit_score: number;
   label: string;
+  recommendation_tier?: RecommendationTier;
+  recommendation_confidence?: number;
 };
 
 export type Recommendation = {
@@ -120,6 +133,10 @@ export type Recommendation = {
   timestamp: string;
   body: string;
 };
+
+export type RecommendationTier = "Strong ad slot" | "Conditional ad slot" | "Edit before monetization" | "Avoid";
+
+export type EvidenceMode = "transcript_visual" | "visual_only" | "audio_visual" | "weak_evidence";
 
 export type JobStatus = {
   id: string;

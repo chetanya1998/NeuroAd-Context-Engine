@@ -11,7 +11,7 @@ import { getJob, startAnalysis } from "@/lib/api";
 const steps = [
   ["metadata", "Ingest media"],
   ["frames", "Extract frames"],
-  ["audio", "Read audio"],
+  ["audio", "Clean audio"],
   ["transcript", "Build transcript"],
   ["objects", "Detect objects"],
   ["topics", "Map topics"],
@@ -23,9 +23,9 @@ const steps = [
 const stepDescriptions: Record<string, string> = {
   metadata: "Preparing the source video and reading duration, title, thumbnail, and media metadata.",
   frames: "Sampling visual frames and segment thumbnails for scene-level understanding.",
-  audio: "Extracting a 16kHz mono audio track and measuring energy across the timeline.",
-  transcript: "Transcribing speech with timestamps and aligning it to video segments.",
-  objects: "Running object detection on sampled frames and keeping the strongest detections.",
+  audio: "Extracting audio, optionally running UVR-style cleanup, applying VAD when enabled, and measuring energy across the timeline.",
+  transcript: "Transcribing speech with timestamps and confidence checks, then aligning it to video segments.",
+  objects: "Trying YOLO Tiny when enabled, then falling back to MobileNet/OpenCV visual context if unavailable.",
   topics: "Classifying transcript and context into creator and ad-relevant topics.",
   attention: "Combining visual novelty, object clarity, audio, speech density, and topic signals.",
   ad_scoring: "Ranking contextual ad opportunities and avoid-ad zones per segment.",

@@ -71,10 +71,13 @@ NEUROAD_MAX_UPLOAD_MB=200
 NEUROAD_MAX_SOURCE_SECONDS=600
 NEUROAD_MAX_ANALYSIS_SECONDS=180
 NEUROAD_MODEL_DIR=/opt/neuroad/models
+NEUROAD_ENABLE_AUDIO_CLEANUP=0
+NEUROAD_AUDIO_CLEANUP_ENGINE=uvr
+NEUROAD_ENABLE_VAD=0
 NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=vosk
 NEUROAD_ENABLE_OBJECT_DETECTION=1
-NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+NEUROAD_OBJECT_DETECTION_ENGINE=yolo
 VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
@@ -82,7 +85,7 @@ WHISPER_MODEL=tiny
 YOLO_MODEL=yolov8n.pt
 ```
 
-Docker now installs the lightweight Vosk speech model and OpenCV MobileNet-SSD object model by default. This keeps Whisper and YOLO out of the base image, avoiding the large PyTorch install while preserving transcript and object-detection functionality. If a model is missing, the app falls back unless the matching `NEUROAD_REQUIRE_*` variable is set to `1`.
+Docker now installs the lightweight Vosk speech model and OpenCV MobileNet-SSD object model by default. The object engine is configured to try YOLO Tiny first when `INSTALL_YOLO=1` is used, then fall back to MobileNet/OpenCV if Ultralytics is unavailable. Whisper, YOLO, and UVR are kept out of the base image by default to avoid large PyTorch/model installs. If a model is missing, the app falls back unless the matching `NEUROAD_REQUIRE_*` variable is set to `1`.
 
 Set CORS after Netlify deploys:
 
@@ -133,6 +136,19 @@ To opt back into YOLO object detection in Docker:
 ```bash
 docker compose build api --build-arg INSTALL_YOLO=1
 NEUROAD_ENABLE_OBJECT_DETECTION=1 docker compose up
+```
+
+To enable UVR-style audio cleanup, build the optional UVR dependency layer and enable cleanup explicitly:
+
+```bash
+docker compose build api --build-arg INSTALL_UVR=1
+NEUROAD_ENABLE_AUDIO_CLEANUP=1 NEUROAD_AUDIO_CLEANUP_ENGINE=uvr docker compose up
+```
+
+For a lighter ASR cleanup pass without UVR, enable the built-in energy VAD:
+
+```bash
+NEUROAD_ENABLE_VAD=1 docker compose up
 ```
 
 ## Netlify Frontend Deployment

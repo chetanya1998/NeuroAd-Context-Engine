@@ -25,6 +25,7 @@ import { useEffect, useRef, useState } from "react";
 import { Reveal } from "@/components/Reveal";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
+import HeroContextAnimation from "@/components/animations/HeroContextAnimation";
 import { useInView } from "@/lib/useInView";
 import {
   getSystemDependencies,
@@ -255,18 +256,17 @@ export default function HomePage() {
       {/* ═══════════════════════════════════════════════════════════
           SECTION 1 — HERO
        ═══════════════════════════════════════════════════════════ */}
-      <section className="relative flex min-h-[calc(100svh-4rem)] w-screen max-w-[100vw] flex-col items-center justify-center overflow-hidden px-5 py-16 sm:py-20">
-        {/* Animated dot-grid background */}
-        <div className="dot-grid pointer-events-none absolute inset-0 -z-10 opacity-40" />
+      <section className="pointer-events-none relative isolate flex min-h-[calc(100svh-4rem)] w-screen max-w-[100vw] flex-col items-center justify-center overflow-hidden px-5 py-16 sm:py-20">
+        <HeroContextAnimation />
         {/* Radial vignette overlay */}
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,transparent_30%,#000_80%)]" />
 
-        <Badge tone="cyan">Attention Proxy Score · v0.1</Badge>
+        <div className="pointer-events-auto">
+          <Badge tone="cyan">Attention Proxy Score · v0.1</Badge>
+        </div>
 
-        <h1 className="shimmer-text mt-8 w-full max-w-[min(1040px,92vw)] pb-3 text-center text-[clamp(2.8rem,7.2vw,6.25rem)] font-semibold leading-[1.14]">
-          <span className="block xl:inline">NeuroAd</span>{" "}
-          <span className="block xl:inline">Context</span>{" "}
-          <span className="block xl:inline">Engine</span>
+        <h1 className="hero-wordmark mt-8 w-full max-w-[96vw] whitespace-nowrap pb-3 text-center text-[clamp(1.95rem,7.2vw,5.4rem)] font-semibold leading-none">
+          <span className="hero-wordmark__shimmer">NeuroAd Context Engine</span>
         </h1>
 
         <p className="mt-6 w-full max-w-[340px] text-center text-base leading-7 text-zinc-400 sm:max-w-3xl sm:text-lg md:text-xl md:leading-8">
@@ -274,7 +274,11 @@ export default function HomePage() {
           <span className="block">Place ads where they feel natural and on time.</span>
         </p>
 
-        <div className="mt-12 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4">
+        <span className="mt-5 inline-flex rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-sm font-medium text-zinc-300 shadow-[0_0_24px_rgba(255,255,255,0.06)]">
+          Coming soon
+        </span>
+
+        <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
           <Button
             className="w-full sm:w-auto"
             onClick={() =>
@@ -311,7 +315,7 @@ export default function HomePage() {
               <div className="grid gap-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center">
                 <div>
                   <Badge tone="cyan">Secure Upload</Badge>
-                  <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                  <h2 className="signal-shimmer-title mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
                     Upload a video file
                   </h2>
                   <p className="mt-3 text-sm leading-6 text-zinc-500 md:text-base">
@@ -558,7 +562,7 @@ export default function HomePage() {
           <Reveal>
             <div className="mb-12 text-center">
               <Badge tone="cyan">Step 1 · Analyze</Badge>
-              <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">
+              <h2 className="signal-shimmer-title mt-4 text-3xl font-semibold md:text-5xl">
                 Deep Frame-by-Frame Extraction
               </h2>
               <p className="mx-auto mt-4 max-w-2xl text-zinc-400">
@@ -668,7 +672,7 @@ export default function HomePage() {
           <Reveal>
             <div className="mb-20 text-center">
               <Badge tone="success">Step 2 · Context Engine</Badge>
-              <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white md:text-5xl">
+              <h2 className="signal-shimmer-title mt-4 text-4xl font-semibold tracking-tight md:text-5xl">
                 Parallel Data Processing
               </h2>
               <p className="mx-auto mt-5 max-w-xl text-lg text-zinc-400">
@@ -680,7 +684,7 @@ export default function HomePage() {
 
           <div className="mx-auto max-w-6xl px-4">
             <Reveal delay={200}>
-              <div className="pipeline-board relative overflow-hidden rounded-2xl border border-white/10 bg-black/50 p-6 shadow-2xl md:p-12">
+              <div className="pipeline-board signal-sheen-panel relative overflow-hidden rounded-2xl border border-white/10 bg-black/50 p-6 shadow-2xl md:p-12">
                 {/* Background grid lines */}
                 <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)]" />
                 <div className="pipeline-aurora pipeline-aurora--green" />
@@ -956,7 +960,7 @@ export default function HomePage() {
           <Reveal>
             <div className="mb-20 text-center">
               <Badge tone="cyan">Live Preview</Badge>
-              <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white md:text-5xl">
+              <h2 className="signal-shimmer-title mt-4 text-4xl font-semibold tracking-tight md:text-5xl">
                 Real-Time Analysis
               </h2>
               <p className="mx-auto mt-5 max-w-2xl text-lg text-zinc-400">
@@ -968,7 +972,7 @@ export default function HomePage() {
 
           <Reveal delay={200}>
             {/* Mock OS Window Frame */}
-            <div className="mx-auto max-w-6xl overflow-hidden rounded-2xl border border-white/10 bg-black shadow-glow-lg">
+            <div className="signal-sheen-panel mx-auto max-w-6xl overflow-hidden rounded-2xl border border-white/10 bg-black shadow-glow-lg">
               {/* Window Header */}
               <div className="flex h-12 items-center border-b border-white/10 bg-white/[0.02] px-4">
                 <div className="flex gap-2">
@@ -1126,7 +1130,7 @@ export default function HomePage() {
           <Reveal>
             <div className="mb-12 text-center">
               <Badge tone="warning">Step 3 · Reports</Badge>
-              <h2 className="mt-4 text-3xl font-semibold text-white md:text-5xl">
+              <h2 className="signal-shimmer-title mt-4 text-3xl font-semibold md:text-5xl">
                 Actionable Insights
               </h2>
               <p className="mx-auto mt-4 max-w-2xl text-zinc-400">

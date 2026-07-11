@@ -81,10 +81,13 @@ NEUROAD_MAX_UPLOAD_MB=200
 NEUROAD_MAX_SOURCE_SECONDS=600
 NEUROAD_MAX_ANALYSIS_SECONDS=180
 NEUROAD_MODEL_DIR=/opt/neuroad/models
+NEUROAD_ENABLE_AUDIO_CLEANUP=0
+NEUROAD_AUDIO_CLEANUP_ENGINE=uvr
+NEUROAD_ENABLE_VAD=0
 NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=vosk
 NEUROAD_ENABLE_OBJECT_DETECTION=1
-NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+NEUROAD_OBJECT_DETECTION_ENGINE=yolo
 VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
@@ -93,6 +96,8 @@ RAPIDAPI_KEY=your_key_here
 RAPIDAPI_HOST=your_host_here
 RAPIDAPI_URL=your_endpoint_here
 ```
+
+Railway MVP should keep `NEUROAD_ENABLE_AUDIO_CLEANUP=0` unless you move to a larger worker. With the default Docker build, `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` tries YOLO Tiny only when Ultralytics was installed with `INSTALL_YOLO=1`; otherwise it falls back to MobileNet/OpenCV.
 
 After Netlify deploys, update `CORS_ORIGINS` with your Netlify URL.
 

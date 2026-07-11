@@ -46,6 +46,23 @@ def int_from_env(name: str, default: int) -> int:
         return default
 
 
+def float_from_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def env_enabled(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def cors_origins_from_env() -> list[str]:
     value = os.getenv("CORS_ORIGINS")
     if value:
@@ -94,9 +111,9 @@ MOBILENET_SSD_NET_CACHE: Any | None = None
 PROCESSING_STEPS = [
     ("metadata", "Metadata fetched"),
     ("frames", "Frames extracted"),
-    ("audio", "Audio extracted"),
+    ("audio", "Audio prepared"),
     ("transcript", "Transcript processed"),
-    ("objects", "Object detection complete"),
+    ("objects", "YOLO/Object detection complete"),
     ("topics", "Topics extracted"),
     ("attention", "Attention timeline scored"),
     ("ad_scoring", "Ad-match scoring complete"),
@@ -119,6 +136,18 @@ TOPIC_KEYWORDS = {
     "parenting": ["child", "kid", "parent", "family", "baby"],
     "technology": ["ai", "software", "laptop", "phone", "camera", "tech"],
     "health": ["health", "sleep", "doctor", "wellness", "stress"],
+    "functional beverage": [
+        "hydration",
+        "hydrate",
+        "electrolyte",
+        "electrolytes",
+        "sports drink",
+        "zero sugar",
+        "wellness drink",
+        "functional beverage",
+        "oral rehydration",
+        "sachet",
+    ],
     "luxury": ["luxury", "watch", "premium", "designer", "brand"],
     "automobiles": ["car", "vehicle", "drive", "engine", "auto"],
 }
@@ -145,6 +174,24 @@ BASE_AD_CATALOG = [
         "objects": ["sports ball", "bottle", "person"],
     },
     {
+        "category": "Functional Beverage",
+        "keywords": [
+            "hydration",
+            "hydrate",
+            "electrolyte",
+            "electrolytes",
+            "sports drink",
+            "wellness drink",
+            "clean label",
+            "zero sugar",
+            "beverage",
+            "sachet",
+            "oral rehydration",
+        ],
+        "objects": ["bottle", "cup", "sports ball", "person"],
+        "audience": ["athlete", "wellness", "fitness", "health", "outdoor"],
+    },
+    {
         "category": "Creator Gear",
         "keywords": ["camera", "video", "recording", "studio", "content"],
         "objects": ["camera", "laptop", "cell phone", "tv"],
@@ -161,6 +208,7 @@ AD_AUDIENCE_TERMS = {
     "AI Note-taking App": ["meeting", "notes", "summary", "call", "student", "team"],
     "Coffee Brand": ["morning", "routine", "energy", "work", "break", "lifestyle"],
     "Fitness Product": ["workout", "gym", "protein", "training", "health", "wellness"],
+    "Functional Beverage": ["hydration", "electrolyte", "wellness", "fitness", "athlete", "zero sugar"],
     "Creator Gear": ["creator", "camera", "video", "studio", "recording", "editing"],
     "Fashion / Apparel": ["outfit", "style", "fashion", "shoes", "clothing", "look"],
 }
@@ -172,6 +220,7 @@ AD_VERTICALS = {
     "Banking": {"keywords": ["bank", "card", "payment", "account", "saving"], "objects": ["cell phone", "laptop"], "audience": ["shopper", "family", "professional"]},
     "Insurance": {"keywords": ["protect", "safe", "family", "health", "coverage"], "objects": ["person", "car", "house"], "audience": ["family", "parent", "owner"]},
     "Fitness": {"keywords": ["workout", "gym", "training", "protein", "health"], "objects": ["person", "sports ball", "bottle"], "audience": ["athlete", "coach", "wellness"]},
+    "Functional Beverage": {"keywords": ["hydration", "electrolyte", "sports drink", "zero sugar", "wellness drink", "sachet"], "objects": ["bottle", "cup", "sports ball", "person"], "audience": ["athlete", "fitness", "wellness"]},
     "Nutrition": {"keywords": ["protein", "meal", "healthy", "diet", "vitamin"], "objects": ["bottle", "bowl", "cup"], "audience": ["fitness", "parent", "wellness"]},
     "Beauty": {"keywords": ["makeup", "beauty", "glow", "hair", "routine"], "objects": ["person", "mirror", "hair brush"], "audience": ["style", "beauty", "creator"]},
     "Skincare": {"keywords": ["skin", "serum", "spf", "acne", "moisturizer"], "objects": ["person", "bottle", "mirror"], "audience": ["beauty", "wellness", "lifestyle"]},
@@ -237,6 +286,30 @@ RISK_TERMS = {
     "violence": ["weapon", "gun", "blood", "fight", "violent"],
     "drug_alcohol": ["drugs", "weed", "cocaine", "alcohol", "drunk"],
     "political_sensitive": ["election", "politics", "government", "party"],
+}
+
+GENERIC_CONTEXT_OBJECTS = {
+    "person",
+    "detailed scene",
+    "colorful scene",
+    "bright scene",
+    "low light scene",
+}
+
+PRODUCT_CONTEXT_OBJECTS = {
+    "bottle",
+    "cup",
+    "sports ball",
+    "bowl",
+    "plate",
+    "laptop",
+    "cell phone",
+    "camera",
+    "keyboard",
+    "shoe",
+    "handbag",
+    "suitcase",
+    "backpack",
 }
 
 COCO_LABELS = [
@@ -350,6 +423,8 @@ def enforce_source_duration(duration_seconds: int | float) -> None:
 def runtime_dependency_status() -> dict[str, Any]:
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
+    uvr_command = os.getenv("NEUROAD_UVR_COMMAND", "audio-separator")
+    uvr_path = shutil.which(uvr_command)
     yt_dlp_available = importlib.util.find_spec("yt_dlp") is not None
     vosk_available = importlib.util.find_spec("vosk") is not None
     ultralytics_available = importlib.util.find_spec("ultralytics") is not None
@@ -357,13 +432,25 @@ def runtime_dependency_status() -> dict[str, Any]:
         "ffmpeg": {"available": bool(ffmpeg_path), "path": ffmpeg_path},
         "ffprobe": {"available": bool(ffprobe_path), "path": ffprobe_path},
         "yt_dlp": {"available": yt_dlp_available, "path": None},
+        "audio_cleanup": {
+            "enabled": env_enabled("NEUROAD_ENABLE_AUDIO_CLEANUP", False),
+            "engine": os.getenv("NEUROAD_AUDIO_CLEANUP_ENGINE", "uvr"),
+            "available": bool(uvr_path),
+            "command": uvr_command,
+            "path": uvr_path,
+        },
+        "vad": {
+            "enabled": env_enabled("NEUROAD_ENABLE_VAD", False),
+            "engine": "energy",
+            "rms_threshold": float_from_env("NEUROAD_VAD_RMS_THRESHOLD", 0.012),
+        },
         "vosk": {"available": vosk_available, "model_path": str(VOSK_MODEL_DIR), "model_ready": VOSK_MODEL_DIR.exists()},
         "mobilenet_ssd": {
             "available": MOBILENET_SSD_GRAPH.exists() and MOBILENET_SSD_CONFIG.exists(),
             "graph_path": str(MOBILENET_SSD_GRAPH),
             "config_path": str(MOBILENET_SSD_CONFIG),
         },
-        "ultralytics": {"available": ultralytics_available, "path": None},
+        "ultralytics": {"available": ultralytics_available, "path": None, "model": os.getenv("YOLO_MODEL", "yolov8n.pt")},
     }
 
 
@@ -484,6 +571,11 @@ def init_db() -> None:
               visual_evidence text,
               score_reasons text,
               recommendation text,
+              recommendation_tier text default 'Edit before monetization',
+              recommendation_confidence real default 0,
+              evidence_mode text default 'weak_evidence',
+              strong_signals text,
+              failed_or_weak_signals text,
               thumbnail_url text,
               created_at text not null
             );
@@ -535,6 +627,11 @@ def init_db() -> None:
                 "transcript_insights": "text",
                 "visual_evidence": "text",
                 "score_reasons": "text",
+                "recommendation_tier": "text default 'Edit before monetization'",
+                "recommendation_confidence": "real default 0",
+                "evidence_mode": "text default 'weak_evidence'",
+                "strong_signals": "text",
+                "failed_or_weak_signals": "text",
             },
         )
         conn.commit()
@@ -1251,10 +1348,11 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "processing", 20, "frames")
 
         audio_path = extract_audio(video_id, source)
-        audio_metrics = compute_audio_metrics(audio_path, segments) if audio_path else {}
+        analysis_audio_path = prepare_audio_for_analysis(video_id, audio_path) if audio_path else None
+        audio_metrics = compute_audio_metrics(analysis_audio_path, segments) if analysis_audio_path else {}
         update_job(job_id, "processing", 32, "audio")
 
-        transcript_segments = transcribe_audio(audio_path) if audio_path else []
+        transcript_segments = transcribe_audio(analysis_audio_path) if analysis_audio_path else []
         update_job(job_id, "processing", 48, "transcript")
 
         detections = detect_objects(frames)
@@ -1539,6 +1637,133 @@ def extract_audio(video_id: str, source: Path) -> Path | None:
     return target
 
 
+def prepare_audio_for_analysis(video_id: str, audio_path: Path) -> Path:
+    cleaned = cleanup_audio_with_uvr(video_id, audio_path)
+    return apply_vad_to_audio(video_id, cleaned)
+
+
+def cleanup_audio_with_uvr(video_id: str, audio_path: Path) -> Path:
+    if not env_enabled("NEUROAD_ENABLE_AUDIO_CLEANUP", False):
+        return audio_path
+    engine = os.getenv("NEUROAD_AUDIO_CLEANUP_ENGINE", "uvr").lower()
+    if engine != "uvr":
+        return audio_path
+
+    command = os.getenv("NEUROAD_UVR_COMMAND", "audio-separator")
+    executable = shutil.which(command)
+    if not executable:
+        return audio_path
+
+    output_dir = AUDIO_DIR / f"{video_id}_uvr"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    before = set(output_dir.glob("*.wav"))
+    args = [
+        executable,
+        str(audio_path),
+        "--output_dir",
+        str(output_dir),
+        "--output_format",
+        "WAV",
+    ]
+    model_name = os.getenv("NEUROAD_UVR_MODEL")
+    if model_name:
+        args.extend(["--model_filename", model_name])
+
+    try:
+        subprocess.run(args, capture_output=True, text=True, check=True, timeout=int_from_env("NEUROAD_UVR_TIMEOUT_SECONDS", 180))
+    except Exception:
+        return audio_path
+
+    candidate = select_uvr_vocal_output(output_dir, before)
+    if not candidate:
+        return audio_path
+    normalized = AUDIO_DIR / f"{video_id}_uvr.wav"
+    return normalize_audio_to_wav(candidate, normalized) or audio_path
+
+
+def select_uvr_vocal_output(output_dir: Path, before: set[Path]) -> Path | None:
+    outputs = [path for path in output_dir.glob("*.wav") if path not in before and path.exists()]
+    if not outputs:
+        return None
+    vocal_outputs = [path for path in outputs if "vocal" in path.name.lower() or "instrumental" not in path.name.lower()]
+    candidates = vocal_outputs or outputs
+    return max(candidates, key=lambda path: path.stat().st_size)
+
+
+def normalize_audio_to_wav(source: Path, target: Path) -> Path | None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(target)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        target.unlink(missing_ok=True)
+        return None
+    return target if target.exists() else None
+
+
+def apply_vad_to_audio(video_id: str, audio_path: Path) -> Path:
+    if not env_enabled("NEUROAD_ENABLE_VAD", False):
+        return audio_path
+    try:
+        with wave.open(str(audio_path), "rb") as wav:
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            rate = wav.getframerate()
+            frames = wav.readframes(wav.getnframes())
+    except wave.Error:
+        return audio_path
+    if channels != 1 or sample_width != 2 or rate <= 0:
+        return audio_path
+
+    samples = np.frombuffer(frames, dtype=np.int16).copy()
+    if samples.size == 0:
+        return audio_path
+    frame_ms = max(10, int_from_env("NEUROAD_VAD_FRAME_MS", 30))
+    chunk_size = max(1, int(rate * frame_ms / 1000))
+    rms_values = []
+    for start in range(0, samples.size, chunk_size):
+        chunk = samples[start : start + chunk_size].astype(np.float32) / 32768
+        rms_values.append(float(np.sqrt(np.mean(np.square(chunk)))) if chunk.size else 0.0)
+    if not rms_values:
+        return audio_path
+
+    base_threshold = float_from_env("NEUROAD_VAD_RMS_THRESHOLD", 0.012)
+    dynamic_threshold = float(np.percentile(rms_values, 35)) * 2.5
+    threshold = max(base_threshold, dynamic_threshold)
+    speech_chunks = np.array(rms_values) >= threshold
+    if not bool(np.any(speech_chunks)):
+        return audio_path
+
+    padding_chunks = max(0, int_from_env("NEUROAD_VAD_PADDING_CHUNKS", 2))
+    expanded = speech_chunks.copy()
+    for index, is_speech in enumerate(speech_chunks):
+        if is_speech:
+            left = max(0, index - padding_chunks)
+            right = min(len(expanded), index + padding_chunks + 1)
+            expanded[left:right] = True
+
+    masked = np.zeros_like(samples)
+    for index, keep in enumerate(expanded):
+        if keep:
+            start = index * chunk_size
+            end = min(samples.size, start + chunk_size)
+            masked[start:end] = samples[start:end]
+
+    target = AUDIO_DIR / f"{video_id}_vad.wav"
+    with wave.open(str(target), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        output.writeframes(masked.astype(np.int16).tobytes())
+    return target
+
+
 def compute_audio_metrics(audio_path: Path, segments: list[dict[str, Any]]) -> dict[int, float]:
     with wave.open(str(audio_path), "rb") as wav:
         rate = wav.getframerate()
@@ -1657,9 +1882,14 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
     try:
         if engine == "mobilenet_ssd":
             return detect_mobilenet_ssd_objects(frames)
-        if engine != "yolo":
-            return detect_lightweight_visual_context(frames)
-        return detect_yolo_objects(frames)
+        if engine == "yolo":
+            try:
+                return detect_yolo_objects(frames)
+            except Exception:
+                if object_detection_required():
+                    raise
+                return detect_mobilenet_ssd_objects(frames)
+        return detect_lightweight_visual_context(frames)
     except Exception:
         if object_detection_required():
             raise
@@ -1674,9 +1904,7 @@ def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dic
     try:
         from ultralytics import YOLO
     except ImportError as exc:
-        if object_detection_required():
-            raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
-        return detect_lightweight_visual_context(frames)
+        raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
     model_name = os.getenv("YOLO_MODEL", "yolov8n.pt")
     model = YOLO(model_name)
     output: dict[int, list[dict[str, Any]]] = {}
@@ -1835,6 +2063,7 @@ def assemble_segments(
     video: sqlite3.Row,
 ) -> list[dict[str, Any]]:
     previous_frame: dict[str, Any] | None = None
+    previous_transcript = ""
     enriched = []
     metadata_text = " ".join([video["title"] or "", video["description"] or ""])
 
@@ -1857,6 +2086,9 @@ def assemble_segments(
         topic_clarity = max([topic["confidence"] for topic in topics], default=0.2)
         hook_cta_signal = compute_hook_cta_signal(transcript, segment["start"])
         transcript_insights = analyze_transcript_segment(transcript, segment_duration, segment["start"], speech_density)
+        apply_transcript_sequence_quality(transcript_insights, transcript, previous_transcript)
+        if transcript.strip():
+            previous_transcript = transcript.strip().lower()
         brand_safety_score = compute_brand_safety_score(transcript_insights)
         visual_evidence = build_visual_evidence(frame, objects, visual_novelty, motion, visual_quality)
         attention = score_attention(
@@ -1888,6 +2120,16 @@ def assemble_segments(
         ad_matches = score_ad_matches(objects, topics, metadata_text, attention, transcript, brand_safety_score, drop_risk)
         ad_fit = max([match["ad_fit_score"] for match in ad_matches], default=0)
         label = attention_label(attention)
+        recommendation_context = evaluate_recommendation(
+            attention,
+            ad_fit,
+            drop_risk,
+            brand_safety_score,
+            transcript_insights,
+            visual_evidence,
+            objects,
+            ad_matches,
+        )
         enriched.append(
             {
                 "start": segment["start"],
@@ -1902,7 +2144,21 @@ def assemble_segments(
                 "transcript_insights": transcript_insights,
                 "visual_evidence": visual_evidence,
                 "score_reasons": score_reasons,
-                "recommendation": build_recommendation(segment["start"], attention, ad_fit, objects, topics, drop_risk, transcript_insights),
+                "recommendation": build_recommendation(
+                    segment["start"],
+                    attention,
+                    ad_fit,
+                    objects,
+                    topics,
+                    drop_risk,
+                    transcript_insights,
+                    recommendation_context,
+                ),
+                "recommendation_tier": recommendation_context["tier"],
+                "recommendation_confidence": recommendation_context["confidence"],
+                "evidence_mode": recommendation_context["evidence_mode"],
+                "strong_signals": recommendation_context["strong_signals"],
+                "failed_or_weak_signals": recommendation_context["failed_or_weak_signals"],
                 "thumbnail_url": media_url(frame["path"]) if frame else None,
                 "objects": objects,
                 "topics": topics,
@@ -1912,13 +2168,43 @@ def assemble_segments(
     return enriched
 
 
+def normalize_transcript_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", "", value.lower())).strip()
+
+
+def transcript_time(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def transcript_for_segment(start: float, end: float, transcript_segments: list[dict[str, Any]]) -> str:
-    chunks = [
-        item.get("text", "").strip()
-        for item in transcript_segments
-        if float(item.get("end", 0)) >= start and float(item.get("start", 0)) <= end
-    ]
-    return " ".join(chunk for chunk in chunks if chunk)
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for item in transcript_segments:
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        item_start = transcript_time(item.get("start"), start)
+        item_end = transcript_time(item.get("end"), item_start)
+        if item_end < item_start:
+            item_start, item_end = item_end, item_start
+        overlap = max(0.0, min(end, item_end) - max(start, item_start))
+        if overlap <= 0:
+            continue
+        item_duration = max(0.1, item_end - item_start)
+        midpoint = item_start + item_duration / 2
+        substantial_overlap = overlap / item_duration >= 0.55
+        midpoint_inside = start <= midpoint < end
+        if not midpoint_inside and not substantial_overlap:
+            continue
+        normalized = normalize_transcript_text(text)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        chunks.append(text)
+    return " ".join(chunks)
 
 
 def classify_topics(text: str) -> list[dict[str, Any]]:
@@ -2000,6 +2286,16 @@ def analyze_transcript_segment(transcript: str, duration: float, start: float, s
     silence_penalty = 1.0 if not words else 0.0
     if transcript.strip() and duration > 0 and len(words) / duration < 0.8:
         silence_penalty = 0.45
+    words_per_second = len(words) / duration if duration > 0 else 0
+    quality_flags: list[str] = []
+    if not words:
+        quality_flags.append("no_speech_detected")
+    if words_per_second > 6:
+        quality_flags.append("unrealistic_speech_rate")
+    elif words_per_second > 4:
+        quality_flags.append("fast_speech_rate")
+    if repetition_ratio > 0.34 and len(words) >= 6:
+        quality_flags.append("repetitive_transcript")
     specificity = clamp(len({word for word in words if len(word) > 4}) / max(1, len(words)))
     clarity_score = int(
         round(
@@ -2013,10 +2309,21 @@ def analyze_transcript_segment(transcript: str, duration: float, start: float, s
             )
         )
     )
+    transcript_confidence = clarity_score
+    if not words:
+        transcript_confidence = 0
+    if "unrealistic_speech_rate" in quality_flags:
+        transcript_confidence = min(transcript_confidence, 35)
+    elif "fast_speech_rate" in quality_flags:
+        transcript_confidence = min(transcript_confidence, 55)
+    if "repetitive_transcript" in quality_flags:
+        transcript_confidence = min(transcript_confidence, 50)
     return {
         "word_count": len(words),
-        "words_per_second": round(len(words) / duration, 2) if duration > 0 else 0,
+        "words_per_second": round(words_per_second, 2),
         "clarity_score": clarity_score,
+        "transcript_confidence": int(round(transcript_confidence)),
+        "transcript_quality_flags": quality_flags,
         "hook_terms": hook_terms[:5],
         "cta_terms": cta_terms[:5],
         "claim_terms": claim_terms[:5],
@@ -2026,6 +2333,19 @@ def analyze_transcript_segment(transcript: str, duration: float, start: float, s
         "silence_penalty": silence_penalty,
         "early_hook": bool(start < 10 and hook_terms),
     }
+
+
+def apply_transcript_sequence_quality(insights: dict[str, Any], transcript: str, previous_transcript: str) -> None:
+    normalized = " ".join(transcript.lower().split())
+    if not normalized or not previous_transcript:
+        return
+    if normalized == previous_transcript and insights.get("word_count", 0) >= 3:
+        flags = list(insights.get("transcript_quality_flags", []))
+        if "duplicate_nearby_transcript" not in flags:
+            flags.append("duplicate_nearby_transcript")
+        insights["transcript_quality_flags"] = flags
+        insights["transcript_confidence"] = min(int(insights.get("transcript_confidence", 0)), 40)
+        insights["repetition_penalty"] = max(float(insights.get("repetition_penalty", 0.0)), 0.75)
 
 
 def compute_brand_safety_score(transcript_insights: dict[str, Any]) -> int:
@@ -2104,6 +2424,114 @@ def build_score_reasons(
     return reasons
 
 
+def evaluate_recommendation(
+    attention: int,
+    ad_fit: int,
+    drop_risk: int,
+    brand_safety: int,
+    transcript_insights: dict[str, Any],
+    visual_evidence: dict[str, Any],
+    objects: list[dict[str, Any]],
+    ad_matches: list[dict[str, Any]],
+) -> dict[str, Any]:
+    transcript_confidence = int(transcript_insights.get("transcript_confidence", transcript_insights.get("clarity_score", 0)) or 0)
+    visual_quality = int(round(float(visual_evidence.get("visual_quality", 0.0)) * 100))
+    motion = int(round(float(visual_evidence.get("motion", 0.0)) * 100))
+    object_count = int(visual_evidence.get("object_count", 0) or 0)
+    object_labels = {obj["label"].lower() for obj in objects}
+    has_person = "person" in object_labels
+    product_objects = sorted(object_labels.intersection(PRODUCT_CONTEXT_OBJECTS))
+    top_match_confidence = max([int(match.get("confidence", 0) or 0) for match in ad_matches], default=0)
+    transcript_missing = int(transcript_insights.get("word_count", 0) or 0) == 0
+
+    strong_signals: list[str] = []
+    weak_signals: list[str] = []
+    if attention >= 70:
+        strong_signals.append(f"strong attention {attention}")
+    elif attention < 40:
+        weak_signals.append(f"low attention {attention}")
+    if ad_fit >= 60 and top_match_confidence >= 65:
+        strong_signals.append(f"category evidence {ad_fit}")
+    elif ad_fit < 35:
+        weak_signals.append("weak category match")
+    if brand_safety >= 85:
+        strong_signals.append(f"brand safe {brand_safety}")
+    elif brand_safety < 70:
+        weak_signals.append(f"brand-safety review {brand_safety}")
+    if drop_risk <= 35:
+        strong_signals.append(f"low drop risk {drop_risk}")
+    elif drop_risk >= 65:
+        weak_signals.append(f"high drop risk {drop_risk}")
+    if transcript_confidence >= 70:
+        strong_signals.append(f"clear transcript {transcript_confidence}")
+    elif transcript_missing:
+        weak_signals.append("transcript unavailable")
+    elif transcript_confidence < 50:
+        weak_signals.append(f"low transcript confidence {transcript_confidence}")
+    if product_objects:
+        strong_signals.append(f"product/context objects: {', '.join(product_objects[:3])}")
+    elif has_person:
+        strong_signals.append("person/context detected")
+        weak_signals.append("person is generic product evidence")
+    if visual_quality >= 65:
+        strong_signals.append(f"visual quality {visual_quality}")
+    elif visual_quality < 35:
+        weak_signals.append(f"weak visual quality {visual_quality}")
+    if motion >= 25:
+        strong_signals.append(f"motion/context change {motion}")
+    if object_count == 0:
+        weak_signals.append("no strong object detections")
+
+    visual_context = clamp((visual_quality / 100) * 0.42 + (motion / 100) * 0.18 + min(1.0, object_count / 3) * 0.24 + (0.16 if has_person else 0.0))
+    transcript_weight = 0.12 if transcript_missing else 0.27
+    visual_weight = 0.25 if transcript_missing else 0.17
+    object_weight = 0.17 if transcript_missing else 0.12
+    confidence = int(
+        round(
+            clamp(
+                attention / 100 * 0.18
+                + ad_fit / 100 * 0.20
+                + (1 - drop_risk / 100) * 0.14
+                + brand_safety / 100 * 0.14
+                + transcript_confidence / 100 * transcript_weight
+                + visual_context * visual_weight
+                + min(1.0, object_count / 3) * object_weight
+            )
+            * 100
+        )
+    )
+
+    has_context_source = bool(product_objects or transcript_confidence >= 55 or visual_context >= 0.58 or (has_person and visual_context >= 0.46))
+    has_category_evidence = bool(ad_fit >= 60 and top_match_confidence >= 65 and (product_objects or transcript_confidence >= 55))
+    if brand_safety < 50 or drop_risk >= 82 or attention < 20:
+        tier = "Avoid"
+    elif confidence >= 72 and attention >= 55 and drop_risk <= 50 and brand_safety >= 80 and has_category_evidence and has_context_source:
+        tier = "Strong ad slot"
+    elif confidence >= 54 and attention >= 38 and drop_risk <= 72 and brand_safety >= 68 and has_context_source:
+        tier = "Conditional ad slot"
+    elif confidence >= 38 or attention >= 35 or visual_context >= 0.42:
+        tier = "Edit before monetization"
+    else:
+        tier = "Avoid"
+
+    if transcript_missing and object_count > 0:
+        evidence_mode = "visual_only"
+    elif transcript_missing:
+        evidence_mode = "weak_evidence"
+    elif visual_evidence.get("sampled_frames", 0) and transcript_confidence > 0:
+        evidence_mode = "transcript_visual"
+    else:
+        evidence_mode = "audio_visual"
+
+    return {
+        "tier": tier,
+        "confidence": confidence,
+        "evidence_mode": evidence_mode,
+        "strong_signals": strong_signals[:8],
+        "failed_or_weak_signals": weak_signals[:8],
+    }
+
+
 def score_attention(
     visual_novelty: float,
     object_clarity: float,
@@ -2143,19 +2571,29 @@ def score_ad_matches(
     drop_risk_score: int = 0,
 ) -> list[dict[str, Any]]:
     object_labels = {obj["label"].lower() for obj in objects}
+    product_object_labels = object_labels.difference(GENERIC_CONTEXT_OBJECTS)
     topic_labels = {topic["label"].lower() for topic in topics}
     context_text = " ".join([metadata_text, transcript, " ".join(topic_labels)]).lower()
     matches = []
     for item in AD_CATALOG:
         catalog_objects = {label.lower() for label in item["objects"]}
         object_hits = sorted(object_labels.intersection(catalog_objects))
-        object_match = len(object_hits) / max(1, min(3, len(catalog_objects)))
+        product_object_hits = sorted(product_object_labels.intersection(catalog_objects))
+        generic_object_hits = sorted(set(object_hits).difference(product_object_hits))
+        object_match = (len(product_object_hits) + len(generic_object_hits) * 0.35) / max(1, min(3, len(catalog_objects)))
         keyword_hits = [keyword for keyword in item["keywords"] if keyword in context_text]
         transcript_match = min(1.0, len(keyword_hits) / max(1, min(4, len(item["keywords"]))))
         audience_terms = AD_AUDIENCE_TERMS.get(item["category"], item.get("audience", []))
         audience_hits = [term for term in audience_terms if term in context_text]
         audience_match = min(1.0, len(audience_hits) / max(1, min(3, len(audience_terms))))
         topic_match = min(1.0, len(topic_labels.intersection(set(item["keywords"]))) / max(1, min(3, len(item["keywords"]))))
+        evidence_units = (
+            len(product_object_hits) * 1.0
+            + len(generic_object_hits) * 0.25
+            + len(keyword_hits) * 0.6
+            + len(audience_hits) * 0.4
+            + topic_match
+        )
         attention_quality = clamp(attention_score / 100)
         slot_quality = clamp(1 - drop_risk_score / 100)
         safety_gate = clamp(brand_safety_score / 100)
@@ -2168,12 +2606,18 @@ def score_ad_matches(
             + slot_quality * 0.10
             + safety_gate * 0.08
         ) * safety_gate
-        if not (object_hits or keyword_hits or audience_hits or topic_match > 0):
+        if evidence_units <= 0:
             continue
-        if score > 0.18:
+        if len(keyword_hits) == 1 and not product_object_hits and not audience_hits and topic_match == 0:
+            score *= 0.45
+        if not product_object_hits and generic_object_hits == ["person"] and len(keyword_hits) < 2:
+            score *= 0.55
+        if score > 0.22 and evidence_units >= 0.75:
             reason_bits = []
-            if object_hits:
-                reason_bits.append(f"visual evidence: {', '.join(object_hits[:3])}")
+            if product_object_hits:
+                reason_bits.append(f"product/visual evidence: {', '.join(product_object_hits[:3])}")
+            elif generic_object_hits:
+                reason_bits.append(f"context evidence: {', '.join(generic_object_hits[:3])}")
             if keyword_hits:
                 reason_bits.append(f"transcript/context: {', '.join(keyword_hits[:3])}")
             if audience_hits:
@@ -2187,7 +2631,7 @@ def score_ad_matches(
                     "category": item["category"],
                     "ad_fit_score": int(round(clamp(score) * 100)),
                     "reason": "; ".join(reason_bits),
-                    "confidence": int(round(min(0.95, 0.45 + score * 0.5) * 100)),
+                    "confidence": int(round(min(0.95, 0.38 + score * 0.48 + min(evidence_units, 3) * 0.06) * 100)),
                 }
             )
     return sorted(matches, key=lambda match: match["ad_fit_score"], reverse=True)[:3]
@@ -2222,9 +2666,26 @@ def build_recommendation(
     topics: list[dict[str, Any]],
     drop_risk: int = 0,
     transcript_insights: dict[str, Any] | None = None,
+    recommendation_context: dict[str, Any] | None = None,
 ) -> str:
     timestamp = format_time(start)
     transcript_insights = transcript_insights or {}
+    recommendation_context = recommendation_context or {}
+    tier = recommendation_context.get("tier")
+    confidence = recommendation_context.get("confidence", 0)
+    weak_signals = recommendation_context.get("failed_or_weak_signals", [])
+    if tier == "Strong ad slot":
+        category_hint = topics[0]["label"] if topics else "context"
+        return f"{timestamp} is a strong ad slot for {category_hint}; confidence {confidence} with aligned attention, safety, and context evidence."
+    if tier == "Conditional ad slot":
+        if transcript_insights.get("word_count", 0) == 0:
+            return f"{timestamp} is a conditional slot; transcript unavailable, so the recommendation is based on visual, object, person, audio, and safety signals."
+        caveat = f" Caveat: {weak_signals[0]}." if weak_signals else ""
+        return f"{timestamp} is a conditional ad slot; review the evidence before monetization.{caveat}"
+    if tier == "Edit before monetization":
+        return f"{timestamp} is the best available content-context window, but editing is recommended before monetization."
+    if tier == "Avoid":
+        return f"{timestamp} should be avoided for ad placement because the available evidence is weak or risky."
     if transcript_insights.get("risk_flags") or transcript_insights.get("claim_terms"):
         return f"{timestamp} needs brand-safety review before sponsorship; transcript flags include claims or sensitive wording."
     if ad_fit >= 75:
@@ -2247,8 +2708,8 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
             conn.execute(
                 """
                 insert into segments
-                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, thumbnail_url, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, recommendation_tier, recommendation_confidence, evidence_mode, strong_signals, failed_or_weak_signals, thumbnail_url, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment_id,
@@ -2266,6 +2727,11 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                     json.dumps(segment.get("visual_evidence", {})),
                     json.dumps(segment.get("score_reasons", [])),
                     segment["recommendation"],
+                    segment.get("recommendation_tier", "Edit before monetization"),
+                    segment.get("recommendation_confidence", 0),
+                    segment.get("evidence_mode", "weak_evidence"),
+                    json.dumps(segment.get("strong_signals", [])),
+                    json.dumps(segment.get("failed_or_weak_signals", [])),
                     segment["thumbnail_url"],
                     utc_now(),
                 ),
@@ -2340,6 +2806,11 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
                 "visual_evidence": json.loads(row["visual_evidence"]) if row["visual_evidence"] else {},
                 "score_reasons": json.loads(row["score_reasons"]) if row["score_reasons"] else [],
                 "recommendation": row["recommendation"],
+                "recommendation_tier": row["recommendation_tier"] or "Edit before monetization",
+                "recommendation_confidence": row["recommendation_confidence"] or 0,
+                "evidence_mode": row["evidence_mode"] or "weak_evidence",
+                "strong_signals": json.loads(row["strong_signals"]) if row["strong_signals"] else [],
+                "failed_or_weak_signals": json.loads(row["failed_or_weak_signals"]) if row["failed_or_weak_signals"] else [],
                 "thumbnail_url": row["thumbnail_url"],
                 "objects": objects,
                 "topics": topics,
@@ -2392,6 +2863,10 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
             "ad_catalog_size": len(AD_CATALOG),
             "best_hook": None,
             "best_ad_slot": None,
+            "best_content_window": None,
+            "best_recommendation_tier": "Avoid",
+            "recommendation_status": "No analysis available",
+            "recommendation_message": "No segment evidence is available yet.",
             "weakest_segment": None,
             "top_ad_category": None,
         }
@@ -2422,14 +2897,37 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
     creator_readiness = int(round(overall * 0.28 + transcript_clarity * 0.20 + visual_quality * 0.18 + brand_safety * 0.18 + monetization * 0.16))
     hook_pool = [segment for segment in segments if segment["start"] < 15] or segments[:3]
     best_hook = max(hook_pool, key=lambda segment: segment["attention_score"])
-    ad_candidates = [segment for segment in segments if segment["ad_fit_score"] > 0 and segment["ad_matches"]]
-    best_ad = max(ad_candidates, key=lambda segment: segment["ad_fit_score"]) if ad_candidates else None
+    strong_candidates = [segment for segment in segments if segment.get("recommendation_tier") == "Strong ad slot" and segment["ad_fit_score"] > 0 and segment["ad_matches"]]
+    best_ad = max(strong_candidates, key=lambda segment: segment.get("recommendation_confidence", segment["ad_fit_score"])) if strong_candidates else None
+    best_content = max(segments, key=content_window_score)
     weakest = min(segments, key=lambda segment: segment["attention_score"])
     category_counts: dict[str, int] = {}
     for segment in segments:
         for match in segment["ad_matches"]:
             category_counts[match["ad_category"]] = category_counts.get(match["ad_category"], 0) + 1
-    top_category = max(category_counts, key=category_counts.get) if category_counts else "No strong ad match"
+    top_category = max(category_counts, key=category_counts.get) if category_counts and best_ad else "No confident ad category match"
+    best_tier = best_ad.get("recommendation_tier") if best_ad else best_content.get("recommendation_tier", "Edit before monetization")
+    if best_ad:
+        recommendation_status = "Strong ad slot found"
+        recommendation_message = f"Strong ad slot found at {format_range(best_ad['start'], best_ad['end'])} for {best_ad['ad_matches'][0]['ad_category']}."
+    elif best_tier == "Conditional ad slot":
+        recommendation_status = "Conditional slot only"
+        recommendation_message = (
+            f"No strong ad slot found. Best content-context window is {format_range(best_content['start'], best_content['end'])}; "
+            "use it only after reviewing the weak signals."
+        )
+    elif best_tier == "Avoid":
+        recommendation_status = "No reliable ad slot"
+        recommendation_message = (
+            f"No strong ad slot found. Best content-context window is {format_range(best_content['start'], best_content['end'])}, "
+            "but editing is recommended before monetization."
+        )
+    else:
+        recommendation_status = "Edit before monetization"
+        recommendation_message = (
+            f"No strong ad slot found. Best content-context window is {format_range(best_content['start'], best_content['end'])}, "
+            "but editing is recommended before monetization."
+        )
     return {
         "overall_attention_score": overall,
         "monetization_opportunity_score": monetization,
@@ -2441,6 +2939,10 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
         "ad_catalog_size": len(AD_CATALOG),
         "best_hook": compact_segment(best_hook),
         "best_ad_slot": {**compact_segment(best_ad), "category": best_ad["ad_matches"][0]["ad_category"]} if best_ad else None,
+        "best_content_window": compact_segment(best_content),
+        "best_recommendation_tier": best_tier,
+        "recommendation_status": recommendation_status,
+        "recommendation_message": recommendation_message,
         "weakest_segment": compact_segment(weakest),
         "top_ad_category": top_category,
     }
@@ -2453,16 +2955,35 @@ def compact_segment(segment: dict[str, Any]) -> dict[str, Any]:
         "score": segment["attention_score"],
         "ad_fit_score": segment["ad_fit_score"],
         "label": segment["label"],
+        "recommendation_tier": segment.get("recommendation_tier", "Edit before monetization"),
+        "recommendation_confidence": segment.get("recommendation_confidence", 0),
     }
+
+
+def content_window_score(segment: dict[str, Any]) -> float:
+    visual_quality = float(segment.get("visual_evidence", {}).get("visual_quality", 0.0)) * 100
+    return (
+        float(segment.get("attention_score", 0)) * 0.32
+        + float(segment.get("ad_fit_score", 0)) * 0.20
+        + max(0, 100 - float(segment.get("drop_risk_score", 100))) * 0.22
+        + float(segment.get("brand_safety_score", 100)) * 0.14
+        + visual_quality * 0.12
+    )
 
 
 def build_recommendations(summary: dict[str, Any], segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not segments:
         return []
     best_ad = summary["best_ad_slot"]
+    best_content = summary.get("best_content_window")
     weakest = summary["weakest_segment"]
     best_hook = summary["best_hook"]
     recommendations = [
+        {
+            "title": summary.get("recommendation_status", "Placement decision"),
+            "timestamp": format_range(best_content["start"], best_content["end"]) if best_content else "Full video",
+            "body": summary.get("recommendation_message", "Review the best content-context window before placing an ad."),
+        },
         {
             "title": "Best hook moment",
             "timestamp": format_range(best_hook["start"], best_hook["end"]),
@@ -2487,9 +3008,9 @@ def build_recommendations(summary: dict[str, Any], segments: list[dict[str, Any]
         recommendations.insert(
             1,
             {
-                "title": "No reliable ad slot",
-                "timestamp": "Full video",
-                "body": "No brand category met the evidence threshold; add clearer product, topic, audience, or spoken context before recommending a sponsor slot.",
+                "title": "Best available content window",
+                "timestamp": format_range(best_content["start"], best_content["end"]) if best_content else "Full video",
+                "body": "Use this as the review window, not an automatic ad placement. Improve weak evidence before monetization.",
             },
         )
     for segment in sorted(segments, key=lambda item: item["attention_score"])[:2]:
@@ -2521,7 +3042,14 @@ def generate_exports(video_id: str) -> dict[str, Path]:
                 "ad_fit_score",
                 "drop_risk_score",
                 "brand_safety_score",
+                "recommendation_tier",
+                "recommendation_confidence",
+                "evidence_mode",
+                "strong_signals",
+                "failed_or_weak_signals",
                 "transcript_clarity_score",
+                "transcript_confidence",
+                "transcript_quality_flags",
                 "visual_evidence",
                 "score_reasons",
                 "objects",
@@ -2542,7 +3070,14 @@ def generate_exports(video_id: str) -> dict[str, Path]:
                     "ad_fit_score": segment["ad_fit_score"],
                     "drop_risk_score": segment.get("drop_risk_score", ""),
                     "brand_safety_score": segment.get("brand_safety_score", ""),
+                    "recommendation_tier": segment.get("recommendation_tier", ""),
+                    "recommendation_confidence": segment.get("recommendation_confidence", ""),
+                    "evidence_mode": segment.get("evidence_mode", ""),
+                    "strong_signals": " | ".join(segment.get("strong_signals", [])),
+                    "failed_or_weak_signals": " | ".join(segment.get("failed_or_weak_signals", [])),
                     "transcript_clarity_score": segment.get("transcript_insights", {}).get("clarity_score", ""),
+                    "transcript_confidence": segment.get("transcript_insights", {}).get("transcript_confidence", ""),
+                    "transcript_quality_flags": " | ".join(segment.get("transcript_insights", {}).get("transcript_quality_flags", [])),
                     "visual_evidence": json.dumps(segment.get("visual_evidence", {})),
                     "score_reasons": " | ".join(segment.get("score_reasons", [])),
                     "objects": ", ".join(obj["label"] for obj in segment["objects"]),
