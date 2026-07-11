@@ -113,7 +113,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-7xl px-5 py-10 lg:px-10">
+      <div className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6 md:py-10 lg:px-10 xl:px-12">
         <header className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
           <div>
             <Badge tone="cyan">Attention Proxy Score</Badge>
@@ -143,10 +143,10 @@ export default function DashboardPage() {
           <PlacementDecision analysis={analysis} />
         </section>
 
-        <section className="mt-8 space-y-5">
+        <section className="mt-10 space-y-6">
           <OverallVideoTrend segments={analysis.segments} />
 
-          <div className="grid gap-5 xl:grid-cols-3">
+          <div className="space-y-8">
             <MetricGroup title="Attention">
               <Metric title="Overall Attention" value={analysis.summary.overall_attention_score} icon={<Zap className="h-5 w-5" />} />
               <Metric title="Drop Risk" value={analysis.summary.overall_drop_risk_score ?? 0} icon={<AlertTriangle className="h-5 w-5" />} />
@@ -173,10 +173,10 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section className="mt-6">
-          <div className="mb-3 flex items-center justify-between gap-4">
+        <section className="mt-10">
+          <div className="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <h2 className="text-2xl font-semibold">Attention Timeline</h2>
-            <div className="relative w-full max-w-sm">
+            <div className="relative w-full md:max-w-md">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
               <input
                 value={query}
@@ -189,31 +189,37 @@ export default function DashboardPage() {
           <AttentionTimeline segments={filteredSegments} />
         </section>
 
-        <section className="mt-8 space-y-4">
+        <section className="mt-12 space-y-5">
           <SectionTitle title="Evidence Charts" body="Compare attention, safety, transcript quality, and ad-fit before opening the timestamp evidence." />
           <div className="grid gap-5 xl:grid-cols-2">
-            <EvidenceHeatmap segments={filteredSegments} />
+            <div className="min-w-0 xl:col-span-2">
+              <EvidenceHeatmap segments={filteredSegments} />
+            </div>
             <BrandFitRadar segments={filteredSegments} />
             <AttentionAdFitScatter segments={filteredSegments} />
-            <ScoringMethodologyTable catalogSize={analysis.summary.ad_catalog_size ?? 0} />
+            <div className="min-w-0 xl:col-span-2">
+              <ScoringMethodologyTable catalogSize={analysis.summary.ad_catalog_size ?? 0} />
+            </div>
           </div>
         </section>
 
-        <section className="mt-8">
+        <section className="mt-12">
           <SectionTitle title="Segment Evidence" body="Review the exact timestamp evidence behind objects, transcript, ad matches, and recommendations." />
-          <div className="flex flex-wrap gap-2 border-b border-border">
-            {tabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setActiveTab(tab)}
-                className={`border-b-2 px-4 py-4 text-base font-semibold ${
-                  activeTab === tab ? "border-zinc-100 text-zinc-100" : "border-transparent text-slate-500"
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
+          <div className="mt-2 overflow-x-auto border-b border-border">
+            <div className="flex min-w-max gap-1">
+              {tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTab(tab)}
+                  className={`border-b-2 px-4 py-4 text-base font-semibold ${
+                    activeTab === tab ? "border-zinc-100 text-zinc-100" : "border-transparent text-slate-500"
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="mt-5">
             {activeTab === "Segments" ? <SegmentsTab segments={filteredSegments} /> : null}
@@ -325,7 +331,7 @@ function PlacementDecision({ analysis }: { analysis: AnalysisPayload }) {
       ? analysis.segments.find((segment) => segment.start === bestWindow.start && segment.end === bestWindow.end)
       : undefined;
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <GuidedLabel label="Placement Decision" guide="Flexible recommendation tier based on weighted transcript, visual, object, person, audio, safety, attention, and drop-risk evidence." />
@@ -373,7 +379,7 @@ function MetricGroup({ title, children }: { title: string; children: React.React
   return (
     <section>
       <h2 className="mb-3 text-base font-semibold uppercase tracking-[0.14em] text-slate-500">{title}</h2>
-      <div className="grid gap-4 sm:grid-cols-2">{children}</div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{children}</div>
     </section>
   );
 }
@@ -381,22 +387,22 @@ function MetricGroup({ title, children }: { title: string; children: React.React
 function Metric({ title, value, icon }: { title: string; value: number; icon: React.ReactNode }) {
   const guide = metricGuides[title];
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between text-slate-400">
+    <Card className="min-h-[220px] p-5 md:p-6">
+      <div className="flex items-start justify-between gap-4 text-slate-400">
         <GuidedLabel label={title} guide={guide ? `${guide.definition} ${guide.example}` : undefined} />
-        {icon}
+        <span className="shrink-0">{icon}</span>
       </div>
-      <p className="mt-4 text-5xl font-semibold">{Math.round(value)}</p>
-      {guide ? <p className="mt-3 text-sm leading-6 text-slate-500">{guide.definition}</p> : null}
+      <p className="mt-5 text-4xl font-semibold md:text-5xl">{Math.round(value)}</p>
+      {guide ? <p className="mt-4 max-w-md text-base leading-7 text-slate-500">{guide.definition}</p> : null}
     </Card>
   );
 }
 
 function GuidedLabel({ label, guide }: { label: string; guide?: string }) {
   return (
-    <span className="inline-flex items-center gap-2 text-base text-slate-400" title={guide}>
+    <span className="inline-flex min-w-0 items-start gap-2 text-base leading-6 text-slate-400" title={guide}>
       {label}
-      {guide ? <CircleHelp className="h-4 w-4 text-slate-500" aria-hidden="true" /> : null}
+      {guide ? <CircleHelp className="mt-1 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /> : null}
     </span>
   );
 }
@@ -536,7 +542,7 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
   };
 
   return (
-    <Card className="overflow-hidden border-white/10 bg-black">
+    <Card className="min-w-0 overflow-hidden border-white/10 bg-black">
       <div className="border-b border-white/10 p-6 md:p-8">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
@@ -554,11 +560,11 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
         </div>
       </div>
 
-      <div className="p-5 md:p-8">
-        <div className="rounded-lg border border-white/10 bg-zinc-950 p-4 md:p-6">
+      <div className="p-4 sm:p-5 md:p-8">
+        <div className="overflow-x-auto rounded-lg border border-white/10 bg-zinc-950 p-3 sm:p-4 md:p-6">
           <svg
             viewBox={`0 0 ${width} ${height}`}
-            className="h-[440px] w-full md:h-[520px]"
+            className="h-[340px] min-w-[760px] md:h-[520px] md:min-w-0"
             role="img"
             aria-label="Overall attention trend graph"
             onMouseMove={handleTrendHover}
@@ -794,10 +800,10 @@ function EvidenceHeatmap({ segments }: { segments: Segment[] }) {
     { label: "Brand safety", guide: "Safety after claims and risky transcript flags.", value: (segment: Segment) => segment.brand_safety_score ?? 100 }
   ];
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Evidence Heatmap" guide="Rows are scoring signals; columns are video segments. Brighter cells mean stronger signal or higher risk for that timestamp." />
-      <div className="overflow-x-auto">
-        <div className="min-w-[760px] space-y-3">
+      <div className="overflow-x-auto pb-2">
+        <div className="min-w-[980px] space-y-3">
           <div className="grid gap-2" style={{ gridTemplateColumns: `190px repeat(${Math.max(1, segments.length)}, minmax(68px, 1fr))` }}>
             <div />
             {segments.map((segment) => (
@@ -847,9 +853,9 @@ function BrandFitRadar({ segments }: { segments: Segment[] }) {
       ]
     : [];
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Brand-Fit Radar" guide="Shows why the best available segment is or is not sponsor-ready across transcript, visual, object, attention, slot, and safety dimensions." />
-      <div className="h-96">
+      <div className="h-[340px] sm:h-96">
         {data.length ? (
           <ResponsiveContainer width="100%" height="100%">
             <RadarChart data={data} outerRadius="72%">
@@ -876,9 +882,9 @@ function AttentionAdFitScatter({ segments }: { segments: Segment[] }) {
     risk: Math.round(segment.drop_risk_score ?? 0)
   }));
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Attention vs Ad-Fit" guide="Each dot is a segment. Upper-right means the timestamp is both attention-worthy and brand-relevant; low safety or high risk should still be reviewed." />
-      <div className="h-96">
+      <div className="h-[340px] sm:h-96">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 18, right: 24, bottom: 24, left: 8 }}>
             <CartesianGrid stroke="#2f2f33" />
@@ -910,7 +916,7 @@ function ScoringMethodologyTable({ catalogSize }: { catalogSize: number }) {
     ["Ad Catalog", `${catalogSize}+ generated categories considered in backend`, "Vertical x intent candidates such as Productivity - Tutorial or Travel - Review", "The catalog is not shown as recommendations unless detected evidence matches"]
   ];
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Scoring Methodology" guide="Transparent method table showing what contributes to each score and how the system avoids generic ad recommendations." />
       <SimpleRows rows={rows} headers={["Score", "Score Labels", "Inputs", "Guardrail"]} />
     </Card>
@@ -1017,8 +1023,8 @@ function TrendMoment({ title, segment, tone, showAdFit = false }: { title: strin
 
 function Moment({ title, moment, danger = false }: { title: string; moment: { start: number; end: number; score: number } | null; danger?: boolean }) {
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between text-slate-400">
+    <Card className="min-h-[180px] p-5 md:p-6">
+      <div className="flex items-start justify-between gap-4 text-slate-400">
         <GuidedLabel
           label={title}
           guide={danger ? "Lowest attention moment; use it to decide where to rewrite, trim, or avoid ad placement." : "Strongest early moment; use it to understand hook pacing and opening strength."}
@@ -1033,26 +1039,28 @@ function Moment({ title, moment, danger = false }: { title: string; moment: { st
 
 function SegmentsTab({ segments }: { segments: Segment[] }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-      <Card className="h-80 p-5">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={segments.map((segment) => ({ time: formatRange(segment.start, segment.end), attention: segment.attention_score, adFit: segment.ad_fit_score, confidence: segment.recommendation_confidence ?? 0 }))}>
-            <CartesianGrid stroke="#202020" />
-            <XAxis dataKey="time" stroke="#64748B" fontSize={13} />
-            <YAxis stroke="#64748B" fontSize={13} />
-            <RechartsTooltip content={<ChartTooltip />} />
-            <Bar dataKey="attention" fill="#F8FAFC" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="adFit" fill="#F59E0B" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="confidence" fill="#22C55E" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+    <div className="space-y-5">
+      <Card className="overflow-x-auto p-4 sm:p-5">
+        <div className="h-[340px] min-w-[760px] xl:h-[420px] xl:min-w-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={segments.map((segment) => ({ time: formatRange(segment.start, segment.end), attention: segment.attention_score, adFit: segment.ad_fit_score, confidence: segment.recommendation_confidence ?? 0 }))} margin={{ top: 16, right: 16, bottom: 24, left: 0 }}>
+              <CartesianGrid stroke="#202020" />
+              <XAxis dataKey="time" stroke="#94a3b8" fontSize={13} tickLine={false} interval="preserveStartEnd" />
+              <YAxis stroke="#94a3b8" fontSize={13} tickLine={false} />
+              <RechartsTooltip content={<ChartTooltip />} />
+              <Bar dataKey="attention" name="Attention" fill="#F8FAFC" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="adFit" name="Ad Fit" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="confidence" name="Confidence" fill="#22C55E" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </Card>
-      <div className="space-y-3">
-        {segments.slice(0, 5).map((segment) => (
-          <Card key={segment.id} className="p-5">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-lg font-semibold">{formatRange(segment.start, segment.end)}</p>
-              <Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? segment.label}</Badge>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {segments.map((segment) => (
+          <Card key={segment.id} className="min-w-0 p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <p className="shrink-0 text-lg font-semibold">{formatRange(segment.start, segment.end)}</p>
+              <span className="min-w-0 text-right"><Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? segment.label}</Badge></span>
             </div>
             <p className="mt-3 text-base leading-7 text-slate-400">{segment.summary}</p>
             <p className="mt-3 text-sm text-slate-500">Confidence {Math.round(segment.recommendation_confidence ?? 0)} · {evidenceModeLabel(segment.evidence_mode)}</p>
