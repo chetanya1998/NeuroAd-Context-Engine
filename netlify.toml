@@ -7,6 +7,7 @@
   NODE_VERSION = "22"
   NEXT_TELEMETRY_DISABLED = "1"
   NETLIFY_NEXT_SKEW_PROTECTION = "true"
+  NEXT_PUBLIC_API_BASE = "https://neuroadweb-production.up.railway.app"
 
 [[headers]]
   for = "/*"

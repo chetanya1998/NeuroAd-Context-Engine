@@ -316,3 +316,28 @@ def test_yolo_unavailable_falls_back_to_mobilenet(monkeypatch):
     monkeypatch.setattr(main, "detect_mobilenet_ssd_objects", lambda frames: {1: [{"label": "person", "confidence": 0.7}]})
 
     assert main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}}) == {1: [{"label": "person", "confidence": 0.7}]}
+
+
+def test_repeated_person_only_detections_are_not_product_evidence():
+    detections = {
+        1: [{"label": "person", "confidence": 0.91}],
+        2: [{"label": "person", "confidence": 0.88}],
+        3: [{"label": "person", "confidence": 0.84}],
+        4: [{"label": "person", "confidence": 0.82}],
+    }
+
+    assert main.normalize_object_detections(detections) == {1: [], 2: [], 3: [], 4: []}
+
+
+def test_person_detections_do_not_hide_product_objects():
+    detections = {
+        1: [{"label": "person", "confidence": 0.91}],
+        2: [{"label": "person", "confidence": 0.88}, {"label": "bottle", "confidence": 0.74}],
+        3: [{"label": "person", "confidence": 0.84}],
+    }
+
+    normalized = main.normalize_object_detections(detections)
+
+    assert normalized[1] == []
+    assert normalized[2] == [{"label": "bottle", "confidence": 0.74}]
+    assert normalized[3] == []

@@ -1881,14 +1881,14 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
     engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
     try:
         if engine == "mobilenet_ssd":
-            return detect_mobilenet_ssd_objects(frames)
+            return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
         if engine == "yolo":
             try:
-                return detect_yolo_objects(frames)
+                return normalize_object_detections(detect_yolo_objects(frames))
             except Exception:
                 if object_detection_required():
                     raise
-                return detect_mobilenet_ssd_objects(frames)
+                return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
         return detect_lightweight_visual_context(frames)
     except Exception:
         if object_detection_required():
@@ -1898,6 +1898,31 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
 
 def object_detection_required() -> bool:
     return os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_object_detections(detections: dict[int, list[dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:
+    if not detections:
+        return detections
+
+    total_segments = len(detections)
+    person_only_segments = 0
+    for objects in detections.values():
+        labels = {str(obj.get("label", "")).lower() for obj in objects}
+        if labels and labels.issubset({"person"}):
+            person_only_segments += 1
+
+    person_only_ratio = person_only_segments / max(1, total_segments)
+    if total_segments < 3 or person_only_ratio < 0.6:
+        return detections
+
+    normalized: dict[int, list[dict[str, Any]]] = {}
+    for segment_index, objects in detections.items():
+        non_person_objects = [obj for obj in objects if str(obj.get("label", "")).lower() != "person"]
+        if non_person_objects:
+            normalized[segment_index] = non_person_objects[:5]
+        else:
+            normalized[segment_index] = []
+    return normalized
 
 
 def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:

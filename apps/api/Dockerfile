@@ -27,7 +27,7 @@ WORKDIR /app
 ARG INSTALL_VOSK=1
 ARG INSTALL_MOBILENET_SSD=1
 ARG INSTALL_WHISPER=0
-ARG INSTALL_YOLO=0
+ARG INSTALL_YOLO=1
 ARG INSTALL_UVR=0
 
 RUN apt-get update \
@@ -50,6 +50,10 @@ RUN pip install --upgrade pip \
     && if [ "$INSTALL_WHISPER" = "1" ]; then pip install --default-timeout=1000 -r requirements-whisper.txt; fi \
     && if [ "$INSTALL_YOLO" = "1" ]; then pip install --default-timeout=1000 -r requirements-yolo.txt; fi \
     && if [ "$INSTALL_UVR" = "1" ]; then pip install --default-timeout=1000 -r requirements-uvr.txt; fi
+
+RUN if [ "$INSTALL_YOLO" = "1" ]; then \
+        python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"; \
+    fi
 
 RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         curl -fL --retry 5 --retry-delay 5 --retry-connrefused --continue-at - -o /tmp/vosk-model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip \
