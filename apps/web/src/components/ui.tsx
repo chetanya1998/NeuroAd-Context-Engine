@@ -19,7 +19,7 @@ export function Badge({
     cyan: "border-zinc-500/40 bg-white/5 text-zinc-100"
   };
   return (
-    <span className={clsx("inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium", tones[tone])}>
+    <span className={clsx("inline-flex items-center rounded-md border px-2.5 py-1 text-sm font-medium", tones[tone])}>
       {children}
     </span>
   );
@@ -39,7 +39,7 @@ export function Button({
   return (
     <button
       className={clsx(
-        "inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 py-2 text-base font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
         variants[variant],
         className
       )}

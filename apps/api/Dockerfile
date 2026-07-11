@@ -9,10 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEUROAD_MAX_SOURCE_SECONDS=600 \
     NEUROAD_MAX_ANALYSIS_SECONDS=180 \
     NEUROAD_MODEL_DIR=/opt/neuroad/models \
+    NEUROAD_ENABLE_AUDIO_CLEANUP=0 \
+    NEUROAD_AUDIO_CLEANUP_ENGINE=uvr \
+    NEUROAD_ENABLE_VAD=0 \
     NEUROAD_ENABLE_TRANSCRIPTION=1 \
     NEUROAD_TRANSCRIPTION_ENGINE=vosk \
     NEUROAD_ENABLE_OBJECT_DETECTION=1 \
-    NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd \
+    NEUROAD_OBJECT_DETECTION_ENGINE=yolo \
     VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15 \
     MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb \
     MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt \
@@ -25,6 +28,7 @@ ARG INSTALL_VOSK=1
 ARG INSTALL_MOBILENET_SSD=1
 ARG INSTALL_WHISPER=0
 ARG INSTALL_YOLO=0
+ARG INSTALL_UVR=0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -39,12 +43,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data/neuroad/storage /opt/neuroad/models
 
-COPY requirements.txt requirements-vosk.txt requirements-whisper.txt requirements-yolo.txt .
+COPY requirements.txt requirements-vosk.txt requirements-whisper.txt requirements-yolo.txt requirements-uvr.txt .
 RUN pip install --upgrade pip \
     && pip install --default-timeout=1000 -r requirements.txt \
     && if [ "$INSTALL_VOSK" = "1" ]; then pip install --default-timeout=1000 -r requirements-vosk.txt; fi \
     && if [ "$INSTALL_WHISPER" = "1" ]; then pip install --default-timeout=1000 -r requirements-whisper.txt; fi \
-    && if [ "$INSTALL_YOLO" = "1" ]; then pip install --default-timeout=1000 -r requirements-yolo.txt; fi
+    && if [ "$INSTALL_YOLO" = "1" ]; then pip install --default-timeout=1000 -r requirements-yolo.txt; fi \
+    && if [ "$INSTALL_UVR" = "1" ]; then pip install --default-timeout=1000 -r requirements-uvr.txt; fi
 
 RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         curl -fL --retry 5 --retry-delay 5 --retry-connrefused --continue-at - -o /tmp/vosk-model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip \

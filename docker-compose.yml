@@ -18,16 +18,22 @@ services:
       NEUROAD_MAX_SOURCE_SECONDS: "600"
       NEUROAD_MAX_ANALYSIS_SECONDS: "180"
       NEUROAD_MODEL_DIR: /opt/neuroad/models
+      NEUROAD_ENABLE_AUDIO_CLEANUP: "0"
+      NEUROAD_AUDIO_CLEANUP_ENGINE: uvr
+      NEUROAD_ENABLE_VAD: "0"
       NEUROAD_ENABLE_TRANSCRIPTION: "1"
       NEUROAD_TRANSCRIPTION_ENGINE: vosk
       NEUROAD_ENABLE_OBJECT_DETECTION: "1"
-      NEUROAD_OBJECT_DETECTION_ENGINE: mobilenet_ssd
+      NEUROAD_OBJECT_DETECTION_ENGINE: yolo
       VOSK_MODEL_DIR: /opt/neuroad/models/vosk-model-small-en-us-0.15
       MOBILENET_SSD_GRAPH: /opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
       MOBILENET_SSD_CONFIG: /opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       WHISPER_MODEL: tiny
       YOLO_MODEL: yolov8n.pt
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      RAPIDAPI_HOST: ${RAPIDAPI_HOST:-}
+      RAPIDAPI_URL: ${RAPIDAPI_URL:-}
     volumes:
       - neuroad-api-data:/data
     healthcheck:
