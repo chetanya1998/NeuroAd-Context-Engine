@@ -232,6 +232,16 @@ def test_transcript_for_segment_dedupes_repeated_chunks():
     assert transcript_for_segment(0, 2, transcript_segments) == "zero sugar hydration after workout"
 
 
+def test_transcript_for_segment_removes_near_duplicate_partial_chunks():
+    transcript_segments = [
+        {"start": 0, "end": 2, "text": "zero sugar hydration after workout"},
+        {"start": 0.3, "end": 1.8, "text": "sugar hydration after workout"},
+        {"start": 1.8, "end": 2.4, "text": "ready now"},
+    ]
+
+    assert transcript_for_segment(0, 2.5, transcript_segments) == "zero sugar hydration after workout ready now"
+
+
 def test_transcript_for_segment_does_not_copy_long_chunk_to_every_window():
     transcript_segments = [{"start": 0, "end": 6, "text": "long timestamped transcript"}]
     windows = [

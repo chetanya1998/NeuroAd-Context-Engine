@@ -2197,6 +2197,23 @@ def normalize_transcript_text(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", "", value.lower())).strip()
 
 
+def transcript_text_is_near_duplicate(current: str, previous: str) -> bool:
+    current_normalized = normalize_transcript_text(current)
+    previous_normalized = normalize_transcript_text(previous)
+    if not current_normalized or not previous_normalized:
+        return False
+    if current_normalized == previous_normalized:
+        return True
+    current_words = current_normalized.split()
+    previous_words = previous_normalized.split()
+    if len(current_words) < 4 or len(previous_words) < 4:
+        return False
+    current_set = set(current_words)
+    previous_set = set(previous_words)
+    overlap = len(current_set.intersection(previous_set)) / max(1, min(len(current_set), len(previous_set)))
+    return overlap >= 0.82 and (current_normalized in previous_normalized or previous_normalized in current_normalized)
+
+
 def transcript_time(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -2226,6 +2243,8 @@ def transcript_for_segment(start: float, end: float, transcript_segments: list[d
             continue
         normalized = normalize_transcript_text(text)
         if not normalized or normalized in seen:
+            continue
+        if any(transcript_text_is_near_duplicate(text, existing) for existing in chunks):
             continue
         seen.add(normalized)
         chunks.append(text)

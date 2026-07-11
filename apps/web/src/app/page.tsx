@@ -256,7 +256,7 @@ export default function HomePage() {
       {/* ═══════════════════════════════════════════════════════════
           SECTION 1 — HERO
        ═══════════════════════════════════════════════════════════ */}
-      <section className="pointer-events-none relative isolate flex min-h-[calc(100svh-4rem)] w-screen max-w-[100vw] flex-col items-center justify-center overflow-hidden px-5 py-16 sm:py-20">
+      <section className="pointer-events-none relative isolate flex min-h-[58svh] w-screen max-w-[100vw] flex-col items-center justify-center overflow-hidden px-5 py-12 sm:py-14">
         <HeroContextAnimation />
         {/* Radial vignette overlay */}
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,transparent_30%,#000_80%)]" />
@@ -274,11 +274,7 @@ export default function HomePage() {
           <span className="block">Place ads where they feel natural and on time.</span>
         </p>
 
-        <span className="mt-5 inline-flex rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-sm font-medium text-zinc-300 shadow-[0_0_24px_rgba(255,255,255,0.06)]">
-          Coming soon
-        </span>
-
-        <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
+        <div className="mt-8 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
           <Button
             className="w-full sm:w-auto"
             onClick={() =>
@@ -299,7 +295,7 @@ export default function HomePage() {
         </div>
 
         {/* Scroll indicator */}
-        <div className="absolute bottom-8 flex flex-col items-center gap-2">
+        <div className="absolute bottom-5 hidden flex-col items-center gap-2 md:flex">
           <span className="text-xs tracking-widest text-zinc-600">SCROLL</span>
           <ArrowDown className="h-4 w-4 animate-bounce-arrow text-zinc-500" />
         </div>
@@ -309,29 +305,29 @@ export default function HomePage() {
         {/* ═══════════════════════════════════════════════════════════
             SECTION 2 — INPUT CARD
          ═══════════════════════════════════════════════════════════ */}
-        <section id="input-section" className="py-20">
+        <section id="input-section" className="py-10 md:py-14">
           <Reveal>
-            <Card className="glow-border mx-auto max-w-4xl border-white/10 bg-black p-5 shadow-glow-lg sm:p-6 md:p-8">
-              <div className="grid gap-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center">
+            <Card className="glow-border mx-auto max-w-6xl border-white/10 bg-black p-6 shadow-glow-lg sm:p-8 md:p-10">
+              <div className="grid gap-8 lg:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)] lg:items-center">
                 <div>
                   <Badge tone="cyan">Secure Upload</Badge>
-                  <h2 className="signal-shimmer-title mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
+                  <h2 className="signal-shimmer-title mt-4 text-3xl font-semibold tracking-tight md:text-5xl">
                     Upload a video file
                   </h2>
-                  <p className="mt-3 text-sm leading-6 text-zinc-500 md:text-base">
+                  <p className="mt-4 text-base leading-7 text-zinc-400 md:text-lg">
                     Add an owned or permission-cleared video and the engine will open the analysis workspace when ingest is ready.
                   </p>
 
-                  <div className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3 lg:grid-cols-1">
-                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                  <div className="mt-6 grid gap-3 text-sm text-zinc-500 sm:grid-cols-3 lg:grid-cols-1">
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-4 py-3">
                       <span className="font-medium text-zinc-300">Formats</span>
                       <p className="mt-1">MP4, MOV, WebM, M4V</p>
                     </div>
-                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-4 py-3">
                       <span className="font-medium text-zinc-300">Limit</span>
                       <p className="mt-1">Up to {maxUploadMb} MB</p>
                     </div>
-                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-4 py-3">
                       <span className="font-medium text-zinc-300">Network</span>
                       <p className="mt-1">Keep this tab open</p>
                     </div>
@@ -340,10 +336,10 @@ export default function HomePage() {
 
                 <label
                   className={[
-                    "relative flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-6 text-center transition",
+                    "relative flex min-h-[360px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition",
                     isDraggingUpload
                       ? "border-white bg-white/[0.08]"
-                      : "border-white/20 bg-zinc-950 hover:border-white/45 hover:bg-white/[0.03]",
+                      : "border-white/30 bg-zinc-950 hover:border-white/60 hover:bg-white/[0.04]",
                     busy ? "pointer-events-none opacity-70" : ""
                   ].join(" ")}
                   onDragOver={(event) => {
@@ -357,17 +353,17 @@ export default function HomePage() {
                     handleFile(event.dataTransfer.files?.[0]);
                   }}
                 >
-                  <div className="absolute inset-3 rounded-lg border border-white/5" />
-                  <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_40px_rgba(255,255,255,0.14)]">
-                    <UploadCloud className="h-7 w-7" />
+                  <div className="absolute inset-4 rounded-lg border border-white/5" />
+                  <div className="relative flex h-24 w-24 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_56px_rgba(255,255,255,0.18)]">
+                    <UploadCloud className="h-10 w-10" />
                   </div>
-                  <span className="relative mt-5 text-lg font-semibold text-white">
+                  <span className="relative mt-7 text-2xl font-semibold text-white">
                     {isDraggingUpload ? "Drop video to upload" : "Drop your video here"}
                   </span>
-                  <span className="relative mt-2 text-sm leading-6 text-zinc-500">
+                  <span className="relative mt-3 text-base leading-7 text-zinc-500">
                     or select a file from your computer
                   </span>
-                  <span className="relative mt-5 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black">
+                  <span className="relative mt-7 inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 text-base font-semibold text-black">
                     Choose file <ArrowRight className="h-4 w-4" />
                   </span>
                   <input
@@ -383,7 +379,7 @@ export default function HomePage() {
                 </label>
               </div>
 
-              <div className="mt-6 rounded-lg border border-white/10 bg-zinc-950 p-4 text-sm leading-6 text-zinc-400">
+              <div className="mt-8 rounded-lg border border-white/10 bg-zinc-950 p-5 text-base leading-7 text-zinc-400">
                 The engine extracts frames and audio, transcribes speech,
                 identifies visual context, scores attention by segment, and
                 produces review-ready ad-fit recommendations.
