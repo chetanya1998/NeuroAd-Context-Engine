@@ -13,7 +13,7 @@ Netlify
 Railway
   apps/api FastAPI service
   FFmpeg/FFprobe
-  Vosk, OpenCV MobileNet-SSD, yt-dlp
+  faster-whisper, OpenCV MobileNet-SSD, yt-dlp
   volume mounted at /data for SQLite, uploads, frames, audio, and reports
 ```
 
@@ -70,22 +70,29 @@ NEUROAD_WORKERS=1
 NEUROAD_MAX_UPLOAD_MB=200
 NEUROAD_MAX_SOURCE_SECONDS=600
 NEUROAD_MAX_ANALYSIS_SECONDS=180
-NEUROAD_MODEL_DIR=/opt/neuroad/models
+NEUROAD_MODEL_DIR=/data/neuroad/models
 NEUROAD_ENABLE_AUDIO_CLEANUP=0
 NEUROAD_AUDIO_CLEANUP_ENGINE=uvr
 NEUROAD_ENABLE_VAD=0
 NEUROAD_ENABLE_TRANSCRIPTION=1
-NEUROAD_TRANSCRIPTION_ENGINE=vosk
+NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper
 NEUROAD_ENABLE_OBJECT_DETECTION=1
 NEUROAD_OBJECT_DETECTION_ENGINE=yolo
 VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
-WHISPER_MODEL=tiny
+WHISPER_MODEL=small.en
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+WHISPER_WORD_TIMESTAMPS=1
+WHISPER_VAD_FILTER=1
+WHISPER_CPU_THREADS=4
+COMPARISON_MIN_VIDEOS=2
+COMPARISON_MAX_VIDEOS=5
 YOLO_MODEL=yolov8n.pt
 ```
 
-Docker now installs the lightweight Vosk speech model and OpenCV MobileNet-SSD object model by default. The object engine is configured to try YOLO Tiny first when `INSTALL_YOLO=1` is used, then fall back to MobileNet/OpenCV if Ultralytics is unavailable. Whisper, YOLO, and UVR are kept out of the base image by default to avoid large PyTorch/model installs. If a model is missing, the app falls back unless the matching `NEUROAD_REQUIRE_*` variable is set to `1`.
+Docker installs faster-whisper and OpenCV MobileNet-SSD by default. The faster-whisper model is downloaded into the mounted `/data/neuroad/models` directory on its first analysis, then reused after redeploys. The object engine is configured to try YOLO Tiny first when `INSTALL_YOLO=1` is used, then fall back to MobileNet/OpenCV if Ultralytics is unavailable. UVR remains optional because it is expensive on the Railway MVP worker.
 
 Set CORS after Netlify deploys:
 
@@ -117,18 +124,11 @@ npm run docker:up
 
 This uses `docker-compose.yml`, exposes the web app on `http://localhost:3000`, exposes the API on `http://localhost:8000`, and stores API data in the `neuroad-api-data` named volume.
 
-Vosk and MobileNet-SSD are enabled by default:
+faster-whisper and MobileNet-SSD are enabled by default:
 
 ```bash
 docker compose build api --no-cache
 docker compose up
-```
-
-To opt back into Whisper transcription in Docker:
-
-```bash
-docker compose build api --build-arg INSTALL_WHISPER=1
-NEUROAD_ENABLE_TRANSCRIPTION=1 docker compose up
 ```
 
 To opt back into YOLO object detection in Docker:

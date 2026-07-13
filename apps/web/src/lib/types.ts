@@ -44,6 +44,9 @@ export type Segment = {
   objects: DetectedObject[];
   topics: Topic[];
   ad_matches: AdMatch[];
+  ad_slot_score?: number;
+  ad_slot_reasons?: string[];
+  is_best_ad_slot?: boolean;
 };
 
 export type TranscriptInsights = {
@@ -60,6 +63,13 @@ export type TranscriptInsights = {
   repetition_penalty?: number;
   silence_penalty?: number;
   early_hook?: boolean;
+  source?: string;
+  language?: string | null;
+  language_probability?: number;
+  word_confidence?: number;
+  avg_logprob?: number | null;
+  no_speech_probability?: number | null;
+  timestamp_coverage?: number;
 };
 
 export type VisualEvidence = {
@@ -126,6 +136,8 @@ export type SummaryMoment = {
   label: string;
   recommendation_tier?: RecommendationTier;
   recommendation_confidence?: number;
+  ad_slot_score?: number;
+  ad_slot_reasons?: string[];
 };
 
 export type Recommendation = {
@@ -145,4 +157,110 @@ export type JobStatus = {
   progress: number;
   current_step: string;
   error?: string | null;
+};
+
+export type ComparisonVideo = {
+  video_id: string;
+  title: string;
+  status: "uploaded" | "processing" | "completed" | "failed" | string;
+  error?: string | null;
+  duration?: number;
+  thumbnail?: string | null;
+  individual_report_url?: string | null;
+  category?: string;
+  category_confidence?: number;
+  evidence_confidence?: number;
+  score?: number;
+  normalized_score?: number;
+  percentile?: number;
+  rank?: number;
+  metrics?: Record<string, number>;
+  strongest_ad_slot?: {
+    start: number;
+    end: number;
+    score: number;
+    ad_fit_score: number;
+    reasons: string[];
+  } | null;
+  keywords?: Array<{ keyword: string; type: string; confidence: number; evidence: string[] }>;
+};
+
+export type ComparisonPayload = {
+  comparison: {
+    id: string;
+    title: string;
+    status: string;
+    comparison_mode: "same_category" | "mixed" | "pending" | string;
+    inferred_category: string;
+    total_videos: number;
+    completed_videos: number;
+    failed_videos: number;
+  };
+  rankings: ComparisonVideo[];
+  videos: ComparisonVideo[];
+  metric_comparison: Array<{ metric: string; values: Array<{ video_id: string; value: number; rank: number }> }>;
+  shared_keywords: string[];
+  ab?: {
+    video_a_id: string;
+    video_b_id: string;
+    winner: "A" | "B" | "tie";
+    confidence: number;
+    deltas: Array<{ metric: string; video_a: number; video_b: number; delta: number; winner: "A" | "B" | "tie" }>;
+  } | null;
+  recommendations: Recommendation[];
+  caveats: string[];
+};
+
+export type ComparisonStatus = {
+  comparison_id: string;
+  status: string;
+  total_videos: number;
+  completed_videos: number;
+  failed_videos: number;
+  consolidated_report_ready: boolean;
+  videos: Array<{ video_id: string; status: string; progress: number; job_id?: string | null; error?: string | null }>;
+};
+
+export type ProductProfile = {
+  id?: string;
+  source_url: string;
+  canonical_url?: string | null;
+  name: string;
+  brand_name?: string | null;
+  description?: string | null;
+  category?: string | null;
+  keywords: string[];
+  audience: string[];
+  prohibited_contexts: string[];
+  image_url?: string | null;
+  extraction_confidence?: number;
+  status?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ProductPlacement = {
+  id: string;
+  segment_id: string;
+  placement_score: number;
+  placement_type: string;
+  recommendation: string;
+  reasons: string[];
+  is_best_placement: boolean;
+  start: number;
+  end: number;
+  summary: string;
+};
+
+export type ProductFitPayload = {
+  fit_run_id: string;
+  video_id: string;
+  video_title: string;
+  product: ProductProfile;
+  overall_fit_score: number;
+  fit_confidence: number;
+  suitability_tier: "Strong fit" | "Conditional fit" | "Weak fit" | "Not suitable" | string;
+  summary: string;
+  created_at: string;
+  placements: ProductPlacement[];
 };
