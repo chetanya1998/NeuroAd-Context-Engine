@@ -19,17 +19,17 @@ export function AttentionTimeline({ segments }: { segments: Segment[] }) {
     return <div className="rounded-lg border border-dashed border-border p-8 text-center text-base text-slate-400">No timeline data yet.</div>;
   }
   return (
-    <div className="timeline-grid overflow-x-auto rounded-lg border border-border bg-black p-5">
-      <div className="flex min-w-[860px] items-end gap-2">
+    <div className="timeline-grid overflow-x-auto rounded-lg border border-border bg-black p-4 sm:p-5">
+      <div className="flex min-w-[980px] items-end gap-3">
         {segments.map((segment) => (
           <button
             key={segment.id}
             type="button"
             onClick={() => setSelectedSegment(segment)}
-            className="group flex min-w-24 flex-1 flex-col items-stretch gap-2 text-left"
+            className="group flex min-w-28 flex-1 flex-col items-stretch gap-2 text-left"
             title={`Attention Proxy Score ${segment.attention_score}`}
           >
-            <div className="flex h-40 items-end rounded-md bg-[#080808] p-1 ring-1 ring-border transition group-hover:ring-zinc-400">
+            <div className="flex h-44 items-end rounded-md bg-[#080808] p-1 ring-1 ring-border transition group-hover:ring-zinc-400">
               <div
                 className={`${scoreColor(segment.attention_score)} w-full rounded opacity-90`}
                 style={{ height: `${Math.max(12, segment.attention_score)}%` }}

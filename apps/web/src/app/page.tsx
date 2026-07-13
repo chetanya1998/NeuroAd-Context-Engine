@@ -4,7 +4,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
-  ArrowDown,
   ArrowRight,
   AudioLines,
   BarChart3,
@@ -274,11 +273,7 @@ export default function HomePage() {
           <span className="block">Place ads where they feel natural and on time.</span>
         </p>
 
-        <span className="mt-5 inline-flex rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-sm font-medium text-zinc-300 shadow-[0_0_24px_rgba(255,255,255,0.06)]">
-          Coming soon
-        </span>
-
-        <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
+        <div className="mt-8 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
           <Button
             className="w-full sm:w-auto"
             onClick={() =>
@@ -297,53 +292,45 @@ export default function HomePage() {
             How It Works
           </Button>
         </div>
-
-        {/* Scroll indicator */}
-        <div className="absolute bottom-8 flex flex-col items-center gap-2">
-          <span className="text-xs tracking-widest text-zinc-600">SCROLL</span>
-          <ArrowDown className="h-4 w-4 animate-bounce-arrow text-zinc-500" />
-        </div>
       </section>
 
       <div className="mx-auto max-w-7xl px-5 lg:px-10">
         {/* ═══════════════════════════════════════════════════════════
             SECTION 2 — INPUT CARD
          ═══════════════════════════════════════════════════════════ */}
-        <section id="input-section" className="py-20">
+        <section id="input-section" className="flex min-h-[calc(100svh-4rem)] items-center py-12 md:py-16">
           <Reveal>
-            <Card className="glow-border mx-auto max-w-4xl border-white/10 bg-black p-5 shadow-glow-lg sm:p-6 md:p-8">
-              <div className="grid gap-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center">
-                <div>
-                  <Badge tone="cyan">Secure Upload</Badge>
-                  <h2 className="signal-shimmer-title mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
-                    Upload a video file
-                  </h2>
-                  <p className="mt-3 text-sm leading-6 text-zinc-500 md:text-base">
-                    Add an owned or permission-cleared video and the engine will open the analysis workspace when ingest is ready.
-                  </p>
+            <Card className="glow-border mx-auto w-full max-w-6xl border-white/10 bg-black p-6 shadow-glow-lg sm:p-8 md:p-12">
+              <div>
+                <Badge tone="cyan">Secure Upload</Badge>
+                <h2 className="signal-shimmer-title mt-6 text-4xl font-semibold tracking-tight md:text-6xl">
+                  Upload a video file
+                </h2>
+                <p className="mt-5 max-w-5xl text-lg leading-8 text-zinc-400 md:text-xl">
+                  Add an owned or permission-cleared video and the engine will open the analysis workspace when ingest is ready.
+                </p>
 
-                  <div className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3 lg:grid-cols-1">
-                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
-                      <span className="font-medium text-zinc-300">Formats</span>
-                      <p className="mt-1">MP4, MOV, WebM, M4V</p>
-                    </div>
-                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
-                      <span className="font-medium text-zinc-300">Limit</span>
-                      <p className="mt-1">Up to {maxUploadMb} MB</p>
-                    </div>
-                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
-                      <span className="font-medium text-zinc-300">Network</span>
-                      <p className="mt-1">Keep this tab open</p>
-                    </div>
+                <div className="mt-8 grid gap-4 text-base text-zinc-500 md:grid-cols-3">
+                  <div className="rounded-lg border border-white/10 bg-zinc-950 px-5 py-4">
+                    <span className="font-medium text-zinc-300">Formats</span>
+                    <p className="mt-2">MP4, MOV, WebM, M4V</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-zinc-950 px-5 py-4">
+                    <span className="font-medium text-zinc-300">Limit</span>
+                    <p className="mt-2">Up to {maxUploadMb} MB</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-zinc-950 px-5 py-4">
+                    <span className="font-medium text-zinc-300">Network</span>
+                    <p className="mt-2">Keep this tab open</p>
                   </div>
                 </div>
 
                 <label
                   className={[
-                    "relative flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-6 text-center transition",
+                    "relative mt-10 flex min-h-[430px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition md:min-h-[470px]",
                     isDraggingUpload
                       ? "border-white bg-white/[0.08]"
-                      : "border-white/20 bg-zinc-950 hover:border-white/45 hover:bg-white/[0.03]",
+                      : "border-white/30 bg-zinc-950 hover:border-white/60 hover:bg-white/[0.04]",
                     busy ? "pointer-events-none opacity-70" : ""
                   ].join(" ")}
                   onDragOver={(event) => {
@@ -357,17 +344,17 @@ export default function HomePage() {
                     handleFile(event.dataTransfer.files?.[0]);
                   }}
                 >
-                  <div className="absolute inset-3 rounded-lg border border-white/5" />
-                  <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_40px_rgba(255,255,255,0.14)]">
-                    <UploadCloud className="h-7 w-7" />
+                  <div className="absolute inset-4 rounded-lg border border-white/5" />
+                  <div className="relative flex h-24 w-24 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_56px_rgba(255,255,255,0.18)]">
+                    <UploadCloud className="h-10 w-10" />
                   </div>
-                  <span className="relative mt-5 text-lg font-semibold text-white">
+                  <span className="relative mt-7 text-2xl font-semibold text-white">
                     {isDraggingUpload ? "Drop video to upload" : "Drop your video here"}
                   </span>
-                  <span className="relative mt-2 text-sm leading-6 text-zinc-500">
+                  <span className="relative mt-3 text-base leading-7 text-zinc-500">
                     or select a file from your computer
                   </span>
-                  <span className="relative mt-5 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black">
+                  <span className="relative mt-7 inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 text-base font-semibold text-black">
                     Choose file <ArrowRight className="h-4 w-4" />
                   </span>
                   <input
@@ -383,7 +370,7 @@ export default function HomePage() {
                 </label>
               </div>
 
-              <div className="mt-6 rounded-lg border border-white/10 bg-zinc-950 p-4 text-sm leading-6 text-zinc-400">
+              <div className="mt-9 rounded-lg border border-white/10 bg-zinc-950 p-6 text-lg leading-8 text-zinc-400">
                 The engine extracts frames and audio, transcribes speech,
                 identifies visual context, scores attention by segment, and
                 produces review-ready ad-fit recommendations.

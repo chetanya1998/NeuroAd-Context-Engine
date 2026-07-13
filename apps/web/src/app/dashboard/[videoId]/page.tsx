@@ -114,7 +114,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-7xl px-5 py-10 lg:px-10">
+      <div className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6 md:py-10 lg:px-10 xl:px-12">
         <header className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
           <div>
             <Badge tone="cyan">Attention Proxy Score</Badge>
@@ -148,10 +148,10 @@ export default function DashboardPage() {
           <BrandFitPanel videoId={videoId} />
         </section>
 
-        <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
+        <section className="mt-10 space-y-6">
           <OverallVideoTrend segments={analysis.segments} />
 
-          <div className="space-y-5">
+          <div className="space-y-8">
             <MetricGroup title="Attention">
               <Metric title="Overall Attention" value={analysis.summary.overall_attention_score} icon={<Zap className="h-5 w-5" />} />
               <Metric title="Drop Risk" value={analysis.summary.overall_drop_risk_score ?? 0} icon={<AlertTriangle className="h-5 w-5" />} />
@@ -178,10 +178,10 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section className="mt-6">
-          <div className="mb-3 flex items-center justify-between gap-4">
+        <section className="mt-10">
+          <div className="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <h2 className="text-2xl font-semibold">Attention Timeline</h2>
-            <div className="relative w-full max-w-sm">
+            <div className="relative w-full md:max-w-md">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
               <input
                 value={query}
@@ -194,31 +194,37 @@ export default function DashboardPage() {
           <AttentionTimeline segments={filteredSegments} />
         </section>
 
-        <section className="mt-8 space-y-4">
+        <section className="mt-12 space-y-5">
           <SectionTitle title="Evidence Charts" body="Compare attention, safety, transcript quality, and ad-fit before opening the timestamp evidence." />
           <div className="grid gap-5 xl:grid-cols-2">
-            <EvidenceHeatmap segments={filteredSegments} />
+            <div className="min-w-0 xl:col-span-2">
+              <EvidenceHeatmap segments={filteredSegments} />
+            </div>
             <BrandFitRadar segments={filteredSegments} />
             <AttentionAdFitScatter segments={filteredSegments} />
-            <ScoringMethodologyTable catalogSize={analysis.summary.ad_catalog_size ?? 0} />
+            <div className="min-w-0 xl:col-span-2">
+              <ScoringMethodologyTable catalogSize={analysis.summary.ad_catalog_size ?? 0} />
+            </div>
           </div>
         </section>
 
-        <section className="mt-8">
+        <section className="mt-12">
           <SectionTitle title="Segment Evidence" body="Review the exact timestamp evidence behind objects, transcript, ad matches, and recommendations." />
-          <div className="flex flex-wrap gap-2 border-b border-border">
-            {tabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setActiveTab(tab)}
-                className={`border-b-2 px-4 py-4 text-base font-semibold ${
-                  activeTab === tab ? "border-zinc-100 text-zinc-100" : "border-transparent text-slate-500"
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
+          <div className="mt-2 overflow-x-auto border-b border-border">
+            <div className="flex min-w-max gap-1">
+              {tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTab(tab)}
+                  className={`border-b-2 px-4 py-4 text-base font-semibold ${
+                    activeTab === tab ? "border-zinc-100 text-zinc-100" : "border-transparent text-slate-500"
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="mt-5">
             {activeTab === "Segments" ? <SegmentsTab segments={filteredSegments} /> : null}
@@ -330,7 +336,7 @@ function PlacementDecision({ analysis }: { analysis: AnalysisPayload }) {
       ? analysis.segments.find((segment) => segment.start === bestWindow.start && segment.end === bestWindow.end)
       : undefined;
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <GuidedLabel label="Placement Decision" guide="Flexible recommendation tier based on weighted transcript, visual, object, person, audio, safety, attention, and drop-risk evidence." />
@@ -389,7 +395,7 @@ function MetricGroup({ title, children }: { title: string; children: React.React
   return (
     <section>
       <h2 className="mb-3 text-base font-semibold uppercase tracking-[0.14em] text-slate-500">{title}</h2>
-      <div className="grid gap-4 sm:grid-cols-2">{children}</div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{children}</div>
     </section>
   );
 }
@@ -397,22 +403,22 @@ function MetricGroup({ title, children }: { title: string; children: React.React
 function Metric({ title, value, icon }: { title: string; value: number; icon: React.ReactNode }) {
   const guide = metricGuides[title];
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between text-slate-400">
+    <Card className="min-h-[220px] p-5 md:p-6">
+      <div className="flex items-start justify-between gap-4 text-slate-400">
         <GuidedLabel label={title} guide={guide ? `${guide.definition} ${guide.example}` : undefined} />
-        {icon}
+        <span className="shrink-0">{icon}</span>
       </div>
-      <p className="mt-4 text-5xl font-semibold">{Math.round(value)}</p>
-      {guide ? <p className="mt-3 text-sm leading-6 text-slate-500">{guide.definition}</p> : null}
+      <p className="mt-5 text-4xl font-semibold md:text-5xl">{Math.round(value)}</p>
+      {guide ? <p className="mt-4 max-w-md text-base leading-7 text-slate-500">{guide.definition}</p> : null}
     </Card>
   );
 }
 
 function GuidedLabel({ label, guide }: { label: string; guide?: string }) {
   return (
-    <span className="inline-flex items-center gap-2 text-base text-slate-400" title={guide}>
+    <span className="inline-flex min-w-0 items-start gap-2 text-base leading-6 text-slate-400" title={guide}>
       {label}
-      {guide ? <CircleHelp className="h-4 w-4 text-slate-500" aria-hidden="true" /> : null}
+      {guide ? <CircleHelp className="mt-1 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /> : null}
     </span>
   );
 }
@@ -498,9 +504,9 @@ function ChartTooltip({
 
 function OverallVideoTrend({ segments }: { segments: Segment[] }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const width = 920;
-  const height = 360;
-  const padding = { top: 48, right: 52, bottom: 58, left: 54 };
+  const width = 1100;
+  const height = 460;
+  const padding = { top: 58, right: 68, bottom: 72, left: 66 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   const safeSegments = segments.length ? segments : [];
@@ -552,12 +558,12 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
   };
 
   return (
-    <Card className="overflow-hidden border-white/10 bg-black">
-      <div className="border-b border-white/10 p-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+    <Card className="min-w-0 overflow-hidden border-white/10 bg-black">
+      <div className="border-b border-white/10 p-6 md:p-8">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <p className="text-sm uppercase tracking-[0.18em] text-slate-500">{trendCopy.kicker}</p>
-            <h2 className="mt-2 text-3xl font-semibold leading-tight text-white">{trendCopy.title}</h2>
+            <h2 className="mt-2 max-w-3xl text-3xl font-semibold leading-tight text-white md:text-4xl">{trendCopy.title}</h2>
           </div>
           <LegendRow
             items={[
@@ -570,11 +576,11 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
         </div>
       </div>
 
-      <div className="p-6">
-        <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
+      <div className="p-4 sm:p-5 md:p-8">
+        <div className="overflow-x-auto rounded-lg border border-white/10 bg-zinc-950 p-3 sm:p-4 md:p-6">
           <svg
             viewBox={`0 0 ${width} ${height}`}
-            className="h-[360px] w-full"
+            className="h-[340px] min-w-[760px] md:h-[520px] md:min-w-0"
             role="img"
             aria-label="Overall attention trend graph"
             onMouseMove={handleTrendHover}
@@ -591,8 +597,8 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
               const y = padding.top + chartHeight - (value / 100) * chartHeight;
               return (
                 <g key={value}>
-                  <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} stroke="rgba(255,255,255,0.08)" />
-                  <text x={padding.left - 14} y={y + 4} textAnchor="end" fontSize="12" fill="#71717a">
+                  <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} stroke="rgba(255,255,255,0.12)" />
+                  <text x={padding.left - 16} y={y + 5} textAnchor="end" fontSize="15" fill="#a1a1aa">
                     {value}
                   </text>
                 </g>
@@ -600,7 +606,7 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
             })}
 
             <line x1={padding.left} x2={width - padding.right} y1={averageY} y2={averageY} stroke="rgba(245,158,11,0.45)" strokeDasharray="7 7" />
-            <text x={width - padding.right} y={averageY - 8} textAnchor="end" fontSize="12" fill="#f59e0b">
+            <text x={width - padding.right} y={averageY - 10} textAnchor="end" fontSize="15" fill="#fbbf24">
               Avg {average}
             </text>
 
@@ -608,13 +614,13 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
               points={`${attentionPath} ${data[data.length - 1].x},${padding.top + chartHeight} ${data[0].x},${padding.top + chartHeight}`}
               fill="url(#attentionTrendFill)"
             />
-            <polyline points={adFitPath} fill="none" stroke="#f59e0b" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="8 8" />
-            <polyline points={dropRiskPath} fill="none" stroke="#ef4444" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="3 7" />
-            <polyline points={safetyPath} fill="none" stroke="#22c55e" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="10 6" />
-            <polyline points={attentionPath} fill="none" stroke="#f8fafc" strokeLinecap="round" strokeLinejoin="round" strokeWidth="5" />
+            <polyline points={adFitPath} fill="none" stroke="#f59e0b" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" strokeDasharray="10 9" />
+            <polyline points={dropRiskPath} fill="none" stroke="#ef4444" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" strokeDasharray="4 8" />
+            <polyline points={safetyPath} fill="none" stroke="#22c55e" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" strokeDasharray="12 7" />
+            <polyline points={attentionPath} fill="none" stroke="#f8fafc" strokeLinecap="round" strokeLinejoin="round" strokeWidth="6" />
 
             {data.map((item, index) => (
-              <circle key={item.segment.id} cx={item.x} cy={item.attentionY} r={index === 0 || index === data.length - 1 ? 4 : 3} fill="#f8fafc" opacity="0.92" />
+              <circle key={item.segment.id} cx={item.x} cy={item.attentionY} r={index === 0 || index === data.length - 1 ? 5 : 4} fill="#f8fafc" opacity="0.95" />
             ))}
 
             {data.map((item, index) => {
@@ -641,14 +647,14 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
             {bestAd.segment.id !== high.segment.id && bestAd.segment.id !== low.segment.id ? <AnnotatedPoint item={bestAd} label="Best ad fit" tone="warning" useAdFit /> : null}
 
             {ticks.map((item) => (
-              <text key={`${item.segment.id}-tick`} x={item.x} y={height - 24} textAnchor="middle" fontSize="12" fill="#71717a">
+              <text key={`${item.segment.id}-tick`} x={item.x} y={height - 30} textAnchor="middle" fontSize="14" fill="#a1a1aa">
                 {formatRange(item.segment.start, item.segment.end)}
               </text>
             ))}
-            <text x={padding.left} y={height - 6} fontSize="12" fill="#52525b">
+            <text x={padding.left} y={height - 8} fontSize="14" fill="#71717a">
               Video timeline
             </text>
-            <text x={16} y={padding.top - 18} fontSize="12" fill="#52525b">
+            <text x={20} y={padding.top - 22} fontSize="14" fill="#71717a">
               Score
             </text>
           </svg>
@@ -810,20 +816,20 @@ function EvidenceHeatmap({ segments }: { segments: Segment[] }) {
     { label: "Brand safety", guide: "Safety after claims and risky transcript flags.", value: (segment: Segment) => segment.brand_safety_score ?? 100 }
   ];
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Evidence Heatmap" guide="Rows are scoring signals; columns are video segments. Brighter cells mean stronger signal or higher risk for that timestamp." />
-      <div className="overflow-x-auto">
-        <div className="min-w-[620px] space-y-2">
-          <div className="grid gap-1" style={{ gridTemplateColumns: `150px repeat(${Math.max(1, segments.length)}, minmax(54px, 1fr))` }}>
+      <div className="overflow-x-auto pb-2">
+        <div className="min-w-[980px] space-y-3">
+          <div className="grid gap-2" style={{ gridTemplateColumns: `190px repeat(${Math.max(1, segments.length)}, minmax(68px, 1fr))` }}>
             <div />
             {segments.map((segment) => (
-              <div key={segment.id} className="truncate text-center text-xs text-slate-500" title={formatRange(segment.start, segment.end)}>
+              <div key={segment.id} className="truncate text-center text-sm text-slate-400" title={formatRange(segment.start, segment.end)}>
                 {formatRange(segment.start, segment.end)}
               </div>
             ))}
           </div>
           {rows.map((row) => (
-            <div key={row.label} className="grid gap-1" style={{ gridTemplateColumns: `150px repeat(${Math.max(1, segments.length)}, minmax(54px, 1fr))` }}>
+            <div key={row.label} className="grid gap-2" style={{ gridTemplateColumns: `190px repeat(${Math.max(1, segments.length)}, minmax(68px, 1fr))` }}>
               <div className="flex items-center">
                 <GuidedLabel label={row.label} guide={row.guide} />
               </div>
@@ -834,7 +840,7 @@ function EvidenceHeatmap({ segments }: { segments: Segment[] }) {
                 return (
                   <div
                     key={`${row.label}-${segment.id}`}
-                    className="h-10 rounded border border-white/10 text-center text-sm leading-10 text-slate-200"
+                    className="h-12 rounded border border-white/10 text-center text-base font-semibold leading-[3rem] text-slate-100"
                     style={{ background: color }}
                     title={`${row.label} ${Math.round(value)} at ${formatRange(segment.start, segment.end)}`}
                   >
@@ -863,15 +869,15 @@ function BrandFitRadar({ segments }: { segments: Segment[] }) {
       ]
     : [];
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Brand-Fit Radar" guide="Shows why the best available segment is or is not sponsor-ready across transcript, visual, object, attention, slot, and safety dimensions." />
-      <div className="h-72">
+      <div className="h-[340px] sm:h-96">
         {data.length ? (
           <ResponsiveContainer width="100%" height="100%">
             <RadarChart data={data} outerRadius="72%">
-              <PolarGrid stroke="#27272a" />
-              <PolarAngleAxis dataKey="metric" tick={{ fill: "#a1a1aa", fontSize: 12 }} />
-              <Radar dataKey="value" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.28} />
+              <PolarGrid stroke="#3f3f46" />
+              <PolarAngleAxis dataKey="metric" tick={{ fill: "#d4d4d8", fontSize: 15 }} />
+              <Radar dataKey="value" stroke="#f59e0b" strokeWidth={3} fill="#f59e0b" fillOpacity={0.3} />
               <RechartsTooltip content={<ChartTooltip />} />
             </RadarChart>
           </ResponsiveContainer>
@@ -892,15 +898,15 @@ function AttentionAdFitScatter({ segments }: { segments: Segment[] }) {
     risk: Math.round(segment.drop_risk_score ?? 0)
   }));
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Attention vs Ad-Fit" guide="Each dot is a segment. Upper-right means the timestamp is both attention-worthy and brand-relevant; low safety or high risk should still be reviewed." />
-      <div className="h-72">
+      <div className="h-[340px] sm:h-96">
         <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 12, right: 16, bottom: 16, left: 0 }}>
-            <CartesianGrid stroke="#202020" />
-            <XAxis type="number" dataKey="attention" name="Attention" domain={[0, 100]} stroke="#64748B" fontSize={12} />
-            <YAxis type="number" dataKey="adFit" name="Ad Fit" domain={[0, 100]} stroke="#64748B" fontSize={12} />
-            <ZAxis type="number" dataKey="safety" range={[70, 260]} />
+          <ScatterChart margin={{ top: 18, right: 24, bottom: 24, left: 8 }}>
+            <CartesianGrid stroke="#2f2f33" />
+            <XAxis type="number" dataKey="attention" name="Attention" domain={[0, 100]} stroke="#94a3b8" fontSize={14} tickLine={false} />
+            <YAxis type="number" dataKey="adFit" name="Ad Fit" domain={[0, 100]} stroke="#94a3b8" fontSize={14} tickLine={false} />
+            <ZAxis type="number" dataKey="safety" range={[120, 340]} />
             <RechartsTooltip
               cursor={{ strokeDasharray: "3 3" }}
               content={<ChartTooltip />}
@@ -926,7 +932,7 @@ function ScoringMethodologyTable({ catalogSize }: { catalogSize: number }) {
     ["Ad Catalog", `${catalogSize}+ generated categories considered in backend`, "Vertical x intent candidates such as Productivity - Tutorial or Travel - Review", "The catalog is not shown as recommendations unless detected evidence matches"]
   ];
   return (
-    <Card className="p-6">
+    <Card className="min-w-0 p-4 sm:p-5 md:p-6">
       <ChartHeader title="Scoring Methodology" guide="Transparent method table showing what contributes to each score and how the system avoids generic ad recommendations." />
       <SimpleRows rows={rows} headers={["Score", "Score Labels", "Inputs", "Guardrail"]} />
     </Card>
@@ -1033,8 +1039,8 @@ function TrendMoment({ title, segment, tone, showAdFit = false }: { title: strin
 
 function Moment({ title, moment, danger = false }: { title: string; moment: { start: number; end: number; score: number } | null; danger?: boolean }) {
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between text-slate-400">
+    <Card className="min-h-[180px] p-5 md:p-6">
+      <div className="flex items-start justify-between gap-4 text-slate-400">
         <GuidedLabel
           label={title}
           guide={danger ? "Lowest attention moment; use it to decide where to rewrite, trim, or avoid ad placement." : "Strongest early moment; use it to understand hook pacing and opening strength."}
@@ -1049,26 +1055,28 @@ function Moment({ title, moment, danger = false }: { title: string; moment: { st
 
 function SegmentsTab({ segments }: { segments: Segment[] }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-      <Card className="h-80 p-5">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={segments.map((segment) => ({ time: formatRange(segment.start, segment.end), attention: segment.attention_score, adFit: segment.ad_fit_score, confidence: segment.recommendation_confidence ?? 0 }))}>
-            <CartesianGrid stroke="#202020" />
-            <XAxis dataKey="time" stroke="#64748B" fontSize={13} />
-            <YAxis stroke="#64748B" fontSize={13} />
-            <RechartsTooltip content={<ChartTooltip />} />
-            <Bar dataKey="attention" fill="#F8FAFC" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="adFit" fill="#F59E0B" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="confidence" fill="#22C55E" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+    <div className="space-y-5">
+      <Card className="overflow-x-auto p-4 sm:p-5">
+        <div className="h-[340px] min-w-[760px] xl:h-[420px] xl:min-w-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={segments.map((segment) => ({ time: formatRange(segment.start, segment.end), attention: segment.attention_score, adFit: segment.ad_fit_score, confidence: segment.recommendation_confidence ?? 0 }))} margin={{ top: 16, right: 16, bottom: 24, left: 0 }}>
+              <CartesianGrid stroke="#202020" />
+              <XAxis dataKey="time" stroke="#94a3b8" fontSize={13} tickLine={false} interval="preserveStartEnd" />
+              <YAxis stroke="#94a3b8" fontSize={13} tickLine={false} />
+              <RechartsTooltip content={<ChartTooltip />} />
+              <Bar dataKey="attention" name="Attention" fill="#F8FAFC" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="adFit" name="Ad Fit" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="confidence" name="Confidence" fill="#22C55E" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </Card>
-      <div className="space-y-3">
-        {segments.slice(0, 5).map((segment) => (
-          <Card key={segment.id} className="p-5">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-lg font-semibold">{formatRange(segment.start, segment.end)}</p>
-              <Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? segment.label}</Badge>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {segments.map((segment) => (
+          <Card key={segment.id} className="min-w-0 p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <p className="shrink-0 text-lg font-semibold">{formatRange(segment.start, segment.end)}</p>
+              <span className="min-w-0 text-right"><Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? segment.label}</Badge></span>
             </div>
             <p className="mt-3 text-base leading-7 text-slate-400">{segment.summary}</p>
             <p className="mt-3 text-sm text-slate-500">Confidence {Math.round(segment.recommendation_confidence ?? 0)} · {evidenceModeLabel(segment.evidence_mode)}</p>
@@ -1135,20 +1143,74 @@ function TranscriptStat({ label, value }: { label: string; value: string }) {
 }
 
 function EvidenceTab({ segments }: { segments: Segment[] }) {
-  const rows = segments.map((segment) => [
-    formatRange(segment.start, segment.end),
-    segment.recommendation_tier ?? "Edit before monetization",
-    String(Math.round(segment.recommendation_confidence ?? 0)),
-    segment.evidence_mode ?? "weak_evidence",
-    String(Math.round(segment.drop_risk_score ?? 0)),
-    String(Math.round(segment.brand_safety_score ?? 100)),
-    String(Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0)),
-    `${Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100)}`,
-    segment.strong_signals?.join(" | ") || "No strong signals",
-    segment.failed_or_weak_signals?.join(" | ") || "No weak signals",
-    segment.score_reasons?.join(" | ") || "No score reasons captured"
-  ]);
-  return <SimpleRows rows={rows} headers={["Time", "Tier", "Confidence", "Evidence Mode", "Drop Risk", "Brand Safety", "Transcript", "Visual", "Strong Signals", "Weak Signals", "Evidence Reasons"]} />;
+  return (
+    <div className="space-y-4">
+      {segments.length ? (
+        segments.map((segment) => {
+          const transcriptDisplay = transcriptDisplayForSegment(segment);
+          const transcriptConfidence = Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0);
+          const visualQuality = Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100);
+          return (
+            <Card key={segment.id} className="p-5 md:p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone="cyan">{formatRange(segment.start, segment.end)}</Badge>
+                    <Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? "Edit before monetization"}</Badge>
+                    <Badge>{evidenceModeLabel(segment.evidence_mode)}</Badge>
+                  </div>
+                  <p className="mt-3 max-w-3xl text-base leading-7 text-slate-300">{segment.summary}</p>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-zinc-950 px-4 py-3 text-right">
+                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Confidence</p>
+                  <p className="mt-1 text-3xl font-semibold text-white">{Math.round(segment.recommendation_confidence ?? 0)}</p>
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <EvidenceMetric label="Drop risk" value={String(Math.round(segment.drop_risk_score ?? 0))} tone={(segment.drop_risk_score ?? 0) >= 65 ? "danger" : "neutral"} />
+                <EvidenceMetric label="Brand safety" value={String(Math.round(segment.brand_safety_score ?? 100))} tone={(segment.brand_safety_score ?? 100) >= 85 ? "success" : "warning"} />
+                <EvidenceMetric label="Transcript" value={String(transcriptConfidence)} detail={transcriptDisplay.text ? "speech evidence" : "no transcript text"} />
+                <EvidenceMetric label="Visual quality" value={String(visualQuality)} />
+                <EvidenceMetric label="Objects" value={String(segment.objects.length)} detail={segment.objects.slice(0, 3).map((object) => object.label).join(", ") || "none"} />
+              </div>
+
+              <div className="mt-5 grid gap-4 lg:grid-cols-3">
+                <SignalPanel title="Strong Signals" items={segment.strong_signals ?? []} empty="No strong signals." />
+                <SignalPanel title="Weak Signals" items={segment.failed_or_weak_signals ?? []} empty="No weak signals." />
+                <SignalPanel title="Score Reasons" items={segment.score_reasons ?? []} empty="No score reasons captured." />
+              </div>
+            </Card>
+          );
+        })
+      ) : (
+        <Card className="p-8 text-center text-slate-500">No matching evidence.</Card>
+      )}
+    </div>
+  );
+}
+
+function EvidenceMetric({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail?: string; tone?: "success" | "warning" | "danger" | "neutral" }) {
+  const toneClass =
+    tone === "success" ? "text-emerald-300" : tone === "warning" ? "text-amber-300" : tone === "danger" ? "text-rose-300" : "text-white";
+  return (
+    <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
+      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      <p className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</p>
+      {detail ? <p className="mt-1 truncate text-sm text-slate-500">{detail}</p> : null}
+    </div>
+  );
+}
+
+function SignalPanel({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
+      <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {items.length ? items.map((item) => <Badge key={item}>{item}</Badge>) : <p className="text-sm leading-6 text-slate-500">{empty}</p>}
+      </div>
+    </div>
+  );
 }
 
 function AdMatchesTab({ segments }: { segments: Segment[] }) {

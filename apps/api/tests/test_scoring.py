@@ -239,6 +239,16 @@ def test_transcript_for_segment_dedupes_repeated_chunks():
     assert transcript_for_segment(0, 2, transcript_segments) == "zero sugar hydration after workout"
 
 
+def test_transcript_for_segment_removes_near_duplicate_partial_chunks():
+    transcript_segments = [
+        {"start": 0, "end": 2, "text": "zero sugar hydration after workout"},
+        {"start": 0.3, "end": 1.8, "text": "sugar hydration after workout"},
+        {"start": 1.8, "end": 2.4, "text": "ready now"},
+    ]
+
+    assert transcript_for_segment(0, 2.5, transcript_segments) == "zero sugar hydration after workout ready now"
+
+
 def test_transcript_for_segment_does_not_copy_long_chunk_to_every_window():
     transcript_segments = [{"start": 0, "end": 6, "text": "long timestamped transcript"}]
     windows = [
@@ -411,3 +421,28 @@ def test_product_fit_rewards_specific_context_and_flags_prohibited_contexts():
 def test_product_url_rejects_loopback_addresses():
     with pytest.raises(HTTPException, match="Private network"):
         validate_public_product_url("http://127.0.0.1/internal-product")
+
+
+def test_repeated_person_only_detections_are_not_product_evidence():
+    detections = {
+        1: [{"label": "person", "confidence": 0.91}],
+        2: [{"label": "person", "confidence": 0.88}],
+        3: [{"label": "person", "confidence": 0.84}],
+        4: [{"label": "person", "confidence": 0.82}],
+    }
+
+    assert main.normalize_object_detections(detections) == {1: [], 2: [], 3: [], 4: []}
+
+
+def test_person_detections_do_not_hide_product_objects():
+    detections = {
+        1: [{"label": "person", "confidence": 0.91}],
+        2: [{"label": "person", "confidence": 0.88}, {"label": "bottle", "confidence": 0.74}],
+        3: [{"label": "person", "confidence": 0.84}],
+    }
+
+    normalized = main.normalize_object_detections(detections)
+
+    assert normalized[1] == []
+    assert normalized[2] == [{"label": "bottle", "confidence": 0.74}]
+    assert normalized[3] == []

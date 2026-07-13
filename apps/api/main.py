@@ -2630,14 +2630,14 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
     engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
     try:
         if engine == "mobilenet_ssd":
-            return detect_mobilenet_ssd_objects(frames)
+            return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
         if engine == "yolo":
             try:
-                return detect_yolo_objects(frames)
+                return normalize_object_detections(detect_yolo_objects(frames))
             except Exception:
                 if object_detection_required():
                     raise
-                return detect_mobilenet_ssd_objects(frames)
+                return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
         return detect_lightweight_visual_context(frames)
     except Exception:
         if object_detection_required():
@@ -2647,6 +2647,31 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
 
 def object_detection_required() -> bool:
     return os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_object_detections(detections: dict[int, list[dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:
+    if not detections:
+        return detections
+
+    total_segments = len(detections)
+    person_only_segments = 0
+    for objects in detections.values():
+        labels = {str(obj.get("label", "")).lower() for obj in objects}
+        if labels and labels.issubset({"person"}):
+            person_only_segments += 1
+
+    person_only_ratio = person_only_segments / max(1, total_segments)
+    if total_segments < 3 or person_only_ratio < 0.6:
+        return detections
+
+    normalized: dict[int, list[dict[str, Any]]] = {}
+    for segment_index, objects in detections.items():
+        non_person_objects = [obj for obj in objects if str(obj.get("label", "")).lower() != "person"]
+        if non_person_objects:
+            normalized[segment_index] = non_person_objects[:5]
+        else:
+            normalized[segment_index] = []
+    return normalized
 
 
 def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -2943,6 +2968,23 @@ def normalize_transcript_text(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", "", value.lower())).strip()
 
 
+def transcript_text_is_near_duplicate(current: str, previous: str) -> bool:
+    current_normalized = normalize_transcript_text(current)
+    previous_normalized = normalize_transcript_text(previous)
+    if not current_normalized or not previous_normalized:
+        return False
+    if current_normalized == previous_normalized:
+        return True
+    current_words = current_normalized.split()
+    previous_words = previous_normalized.split()
+    if len(current_words) < 4 or len(previous_words) < 4:
+        return False
+    current_set = set(current_words)
+    previous_set = set(previous_words)
+    overlap = len(current_set.intersection(previous_set)) / max(1, min(len(current_set), len(previous_set)))
+    return overlap >= 0.82 and (current_normalized in previous_normalized or previous_normalized in current_normalized)
+
+
 def transcript_time(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -2972,6 +3014,8 @@ def transcript_for_segment(start: float, end: float, transcript_segments: list[d
             continue
         normalized = normalize_transcript_text(text)
         if not normalized or normalized in seen:
+            continue
+        if any(transcript_text_is_near_duplicate(text, existing) for existing in chunks):
             continue
         seen.add(normalized)
         chunks.append(text)
