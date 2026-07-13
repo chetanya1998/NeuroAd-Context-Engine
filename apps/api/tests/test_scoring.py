@@ -3,6 +3,9 @@ import subprocess
 import wave
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
@@ -19,8 +22,12 @@ from main import (
     make_segments,
     public_job_error,
     score_ad_matches,
+    score_ad_slot,
     score_attention,
+    score_product_segment_fit,
+    transcript_evidence_for_segment,
     transcript_for_segment,
+    validate_public_product_url,
 )
 
 
@@ -316,3 +323,91 @@ def test_yolo_unavailable_falls_back_to_mobilenet(monkeypatch):
     monkeypatch.setattr(main, "detect_mobilenet_ssd_objects", lambda frames: {1: [{"label": "person", "confidence": 0.7}]})
 
     assert main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}}) == {1: [{"label": "person", "confidence": 0.7}]}
+
+
+def test_faster_whisper_evidence_is_aligned_to_the_segment():
+    evidence = transcript_evidence_for_segment(
+        0,
+        2,
+        [
+            {
+                "start": 0,
+                "end": 2,
+                "text": "clear hydration cue",
+                "source": "faster_whisper",
+                "language": "en",
+                "language_probability": 0.98,
+                "avg_logprob": -0.2,
+                "no_speech_prob": 0.03,
+                "compression_ratio": 1.2,
+                "words": [
+                    {"word": "clear", "probability": 0.91},
+                    {"word": "hydration", "probability": 0.94},
+                ],
+            }
+        ],
+    )
+
+    assert evidence["source"] == "faster_whisper"
+    assert evidence["language"] == "en"
+    assert evidence["word_confidence"] > 0.9
+
+
+def test_ad_slot_score_rewards_context_safety_and_low_drop_risk():
+    strong, reasons = score_ad_slot(
+        82,
+        88,
+        12,
+        96,
+        84,
+        {"word_count": 10, "words_per_second": 1.9, "silence_penalty": 0},
+        {"motion": 0.25},
+    )
+    weak, _ = score_ad_slot(
+        45,
+        20,
+        72,
+        60,
+        30,
+        {"word_count": 12, "words_per_second": 4.8, "silence_penalty": 0},
+        {"motion": 0.85},
+    )
+
+    assert strong > weak
+    assert "contextual ad fit: 88" in reasons
+
+
+def test_product_fit_rewards_specific_context_and_flags_prohibited_contexts():
+    product = {
+        "name": "Hydration Bottle",
+        "brand_name": "Aqua",
+        "description": "Reusable water bottle for active runners",
+        "category": "fitness",
+        "keywords": ["hydration", "water bottle", "running"],
+        "audience": ["runners"],
+        "prohibited_contexts": ["medical claim"],
+    }
+    aligned = {
+        "transcript": "Runners need hydration on a long running session. This water bottle stays cold.",
+        "summary": "Active running and hydration context.",
+        "label": "Running",
+        "topics": [{"label": "fitness"}],
+        "objects": [{"label": "bottle"}],
+        "brand_safety_score": 95,
+        "transcript_insights": {"transcript_confidence": 88},
+        "visual_evidence": {"visual_quality": 0.8},
+    }
+    blocked = {**aligned, "transcript": "This medical claim says hydration guarantees a cure."}
+
+    aligned_fit = score_product_segment_fit(product, aligned)
+    blocked_fit = score_product_segment_fit(product, blocked)
+
+    assert aligned_fit["fit_score"] >= 50
+    assert aligned_fit["confidence"] >= 60
+    assert blocked_fit["blocked"] is True
+    assert blocked_fit["fit_score"] < aligned_fit["fit_score"]
+
+
+def test_product_url_rejects_loopback_addresses():
+    with pytest.raises(HTTPException, match="Private network"):
+        validate_public_product_url("http://127.0.0.1/internal-product")

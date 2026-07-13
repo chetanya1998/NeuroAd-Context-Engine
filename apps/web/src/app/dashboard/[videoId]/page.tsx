@@ -21,6 +21,7 @@ import {
   ZAxis
 } from "recharts";
 import { AttentionTimeline } from "@/components/attention-timeline";
+import { BrandFitPanel } from "@/components/brand-fit-panel";
 import { SegmentDrawer } from "@/components/segment-drawer";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
@@ -141,6 +142,10 @@ export default function DashboardPage() {
         <section className="mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
           <VideoPreview analysis={analysis} />
           <PlacementDecision analysis={analysis} />
+        </section>
+
+        <section className="mt-6">
+          <BrandFitPanel videoId={videoId} />
         </section>
 
         <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
@@ -341,6 +346,17 @@ function PlacementDecision({ analysis }: { analysis: AnalysisPayload }) {
         <DecisionStat label="Best content window" value={bestWindow ? formatRange(bestWindow.start, bestWindow.end) : "--"} />
         <DecisionStat label="Confidence" value={`${Math.round(bestSlot?.recommendation_confidence ?? bestWindow?.recommendation_confidence ?? representative?.recommendation_confidence ?? 0)}`} />
       </div>
+      {representative?.ad_slot_score ? (
+        <div className="mt-4 rounded-lg border border-success/25 bg-success/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="font-semibold text-white">Strongest ad-slot evidence</p>
+            <Badge tone="success">Slot strength {Math.round(representative.ad_slot_score)}</Badge>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            {(representative.ad_slot_reasons ?? []).join(" · ") || "This window has the strongest combined attention, context, safety, boundary, and confidence signals."}
+          </p>
+        </div>
+      ) : null}
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <SignalList title="Strong Signals" signals={representative?.strong_signals ?? []} empty="No strong signals captured." tone="success" />
         <SignalList title="Weak Signals" signals={representative?.failed_or_weak_signals ?? []} empty="No weak signals captured." tone="warning" />

@@ -389,6 +389,13 @@ export default function HomePage() {
                 produces review-ready ad-fit recommendations.
               </div>
 
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+                <p className="text-sm text-zinc-400">Need an A/B decision or same-category benchmark?</p>
+                <Button variant="secondary" className="min-h-9 px-3 py-1.5 text-sm" onClick={() => router.push("/compare")}>
+                  Compare 2–5 videos <ArrowRight className="h-4 w-4" />
+                </Button>
+              </div>
+
               {/* Video URL Section commented out per current landing-page direction. */}
 
               {uploadMutation.isPending && uploadProgress !== null ? (

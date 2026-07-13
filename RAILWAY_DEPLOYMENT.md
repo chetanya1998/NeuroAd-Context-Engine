@@ -66,6 +66,7 @@ This stores:
 ```text
 /data/neuroad/storage
 /data/neuroad/neuroad.db
+/data/neuroad/models
 ```
 
 ## 4. Add Railway Variables
@@ -80,17 +81,25 @@ NEUROAD_WORKERS=1
 NEUROAD_MAX_UPLOAD_MB=200
 NEUROAD_MAX_SOURCE_SECONDS=600
 NEUROAD_MAX_ANALYSIS_SECONDS=180
-NEUROAD_MODEL_DIR=/opt/neuroad/models
+NEUROAD_MODEL_DIR=/data/neuroad/models
 NEUROAD_ENABLE_AUDIO_CLEANUP=0
 NEUROAD_AUDIO_CLEANUP_ENGINE=uvr
 NEUROAD_ENABLE_VAD=0
 NEUROAD_ENABLE_TRANSCRIPTION=1
-NEUROAD_TRANSCRIPTION_ENGINE=vosk
+NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper
 NEUROAD_ENABLE_OBJECT_DETECTION=1
 NEUROAD_OBJECT_DETECTION_ENGINE=yolo
 VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
+WHISPER_MODEL=small.en
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+WHISPER_WORD_TIMESTAMPS=1
+WHISPER_VAD_FILTER=1
+WHISPER_CPU_THREADS=4
+COMPARISON_MIN_VIDEOS=2
+COMPARISON_MAX_VIDEOS=5
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 RAPIDAPI_KEY=your_key_here
 RAPIDAPI_HOST=your_host_here
@@ -113,7 +122,7 @@ Expected:
 
 ```text
 ready: true
-vosk.model_ready: true
+faster_whisper.available: true
 mobilenet_ssd.available: true
 ```
 

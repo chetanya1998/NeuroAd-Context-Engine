@@ -34,6 +34,8 @@ This repository contains a working local MVP:
 - Real direct-video-URL analysis
 - Permitted YouTube ingestion through `yt-dlp`
 - CSV and JSON exports
+- Multi-video comparison with consolidated and individual reports
+- Product/brand URL fit checks with reviewed profiles and timestamp-level placement evidence
 - Dark pitch-black UI
 - Dashboard trend graph with annotated high/low/ad-fit moments
 
@@ -93,7 +95,7 @@ Sample/mock analysis is disabled in the current build. Completed dashboards shou
 
 - FFmpeg and FFprobe
 - OpenCV
-- OpenAI Whisper open-source package
+- faster-whisper with CTranslate2 CPU INT8 inference
 - Ultralytics YOLO
 - NumPy
 - pandas
@@ -338,6 +340,22 @@ GET /api/videos/{video_id}/analysis
 
 Returns the full dashboard payload:
 
+### Resolve and Review a Product Link
+
+```http
+POST /api/products/resolve
+```
+
+The backend fetches only public HTTP(S) pages, rejects loopback/private-network addresses and validates redirects. It extracts JSON-LD and Open Graph product fields, but the UI requires the user to review them before a profile is saved.
+
+```http
+POST /api/products
+POST /api/videos/{video_id}/product-fit
+POST /api/comparisons/{comparison_id}/product-fit
+```
+
+Product-fit results combine reviewed product/category/audience terms with transcript, topics, detected objects, brand safety, attention, drop-risk and natural-boundary signals. They return a fit tier, evidence confidence, and ranked timestamp placements. These are decision-support scores, not a claim of campaign performance or viewer conversion.
+
 ```json
 {
   "video": {},
@@ -378,7 +396,7 @@ Input media
   -> segment video
   -> sample frames with OpenCV
   -> extract audio with FFmpeg
-  -> transcribe audio with Whisper
+  -> transcribe audio with faster-whisper and word timestamps
   -> detect objects with YOLO
   -> classify topics
   -> compute Attention Proxy Score
@@ -400,7 +418,7 @@ YOLO detections are sampled from extracted frames. The app keeps the highest-con
 
 ### Transcript
 
-Whisper is used for timestamped speech-to-text. If Whisper or audio processing fails in a constrained environment, the job returns a clear failed step and error message.
+faster-whisper is used for timestamped speech-to-text with language and evidence confidence. If transcription or audio processing fails in a constrained environment, the job returns a clear failed step and error message.
 
 ### Topic Classification
 
@@ -632,7 +650,7 @@ NEUROAD_MAX_SOURCE_SECONDS=600
 NEUROAD_MAX_ANALYSIS_SECONDS=180
 NEUROAD_MODEL_DIR=./models
 NEUROAD_ENABLE_TRANSCRIPTION=1
-NEUROAD_TRANSCRIPTION_ENGINE=vosk
+NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper
 NEUROAD_REQUIRE_TRANSCRIPTION=0
 NEUROAD_ENABLE_OBJECT_DETECTION=1
 NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
@@ -651,8 +669,8 @@ Notes:
 - `NEUROAD_DB_PATH` controls the SQLite database path.
 - `NEUROAD_WORKERS` controls in-process job concurrency.
 - Keep it low on CPU-only machines.
-- `NEUROAD_TRANSCRIPTION_ENGINE=vosk` uses the small offline Vosk model installed by Docker.
-- `NEUROAD_TRANSCRIPTION_ENGINE=whisper` opts back into Whisper, but only after installing `requirements-whisper.txt`.
+- `NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper` uses the default CPU INT8 engine and downloads its configured model into `NEUROAD_MODEL_DIR`.
+- `NEUROAD_TRANSCRIPTION_ENGINE=vosk` remains available as a lightweight fallback.
 - `NEUROAD_ENABLE_TRANSCRIPTION=0` skips transcription completely.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd` uses OpenCV DNN with the MobileNet-SSD model installed by Docker.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` opts back into YOLO, but only after installing `requirements-yolo.txt`.
@@ -1025,6 +1043,7 @@ npm run build:web
 - Configurable storage and database paths
 - Configurable CORS origins
 - Better report route and share links
+- Product/brand link fit and explainable placement recommendations
 
 ### V2
 
@@ -1034,12 +1053,12 @@ npm run build:web
 - Separate worker service
 - GPU-backed processing option
 - Auth and workspaces
-- Multi-video creative comparison
+- Product-fit ranking across a multi-video comparison
 
 ### V3
 
 - Brand-safety classifier
-- Product catalog upload
+- Product catalog import and managed brand profiles
 - Creator/brand matching
 - Optional TRIBE v2 research-mode integration
 - Production-grade report sharing

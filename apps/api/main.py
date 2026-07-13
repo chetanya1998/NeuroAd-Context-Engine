@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import csv
 from collections import Counter
+from html.parser import HTMLParser
 import importlib.util
+import ipaddress
 import json
 import math
 import os
 import re
 import shutil
 import sqlite3
+import socket
 import subprocess
 import uuid
 import wave
@@ -16,9 +19,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
+from typing import Any, Optional
+from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
@@ -90,6 +93,8 @@ MOBILENET_SSD_CONFIG = path_from_env(
 MAX_UPLOAD_BYTES = int_from_env("NEUROAD_MAX_UPLOAD_MB", 200) * 1024 * 1024
 MAX_SOURCE_SECONDS = int_from_env("NEUROAD_MAX_SOURCE_SECONDS", 0)
 MAX_ANALYSIS_SECONDS = int_from_env("NEUROAD_MAX_ANALYSIS_SECONDS", 180)
+COMPARISON_MIN_VIDEOS = max(2, int_from_env("COMPARISON_MIN_VIDEOS", 2))
+COMPARISON_MAX_VIDEOS = max(COMPARISON_MIN_VIDEOS, int_from_env("COMPARISON_MAX_VIDEOS", 5))
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 CONVERTIBLE_VIDEO_EXTENSIONS = ALLOWED_EXTENSIONS | {
     ".avi",
@@ -106,6 +111,8 @@ EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS",
 FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "1.0") or "1.0")
 MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 6))
 VOSK_MODEL_CACHE: Any | None = None
+FASTER_WHISPER_MODEL_CACHE: Any | None = None
+FASTER_WHISPER_MODEL_SIGNATURE: tuple[str, str, str] | None = None
 MOBILENET_SSD_NET_CACHE: Any | None = None
 
 PROCESSING_STEPS = [
@@ -427,6 +434,7 @@ def runtime_dependency_status() -> dict[str, Any]:
     uvr_path = shutil.which(uvr_command)
     yt_dlp_available = importlib.util.find_spec("yt_dlp") is not None
     vosk_available = importlib.util.find_spec("vosk") is not None
+    faster_whisper_available = importlib.util.find_spec("faster_whisper") is not None
     ultralytics_available = importlib.util.find_spec("ultralytics") is not None
     return {
         "ffmpeg": {"available": bool(ffmpeg_path), "path": ffmpeg_path},
@@ -445,6 +453,13 @@ def runtime_dependency_status() -> dict[str, Any]:
             "rms_threshold": float_from_env("NEUROAD_VAD_RMS_THRESHOLD", 0.012),
         },
         "vosk": {"available": vosk_available, "model_path": str(VOSK_MODEL_DIR), "model_ready": VOSK_MODEL_DIR.exists()},
+        "faster_whisper": {
+            "available": faster_whisper_available,
+            "model": os.getenv("WHISPER_MODEL", "small.en"),
+            "device": os.getenv("WHISPER_DEVICE", "cpu"),
+            "compute_type": os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
+            "model_dir": str(MODEL_DIR),
+        },
         "mobilenet_ssd": {
             "available": MOBILENET_SSD_GRAPH.exists() and MOBILENET_SSD_CONFIG.exists(),
             "graph_path": str(MOBILENET_SSD_GRAPH),
@@ -483,6 +498,46 @@ class YouTubeIngestRequest(BaseModel):
 
 class VideoUrlRequest(BaseModel):
     url: str
+
+
+class ComparisonCreateRequest(BaseModel):
+    title: Optional[str] = None
+
+
+class ComparisonAnalyzeRequest(BaseModel):
+    video_ids: Optional[list[str]] = None
+
+
+class ProductResolveRequest(BaseModel):
+    url: str
+
+
+class ProductCreateRequest(BaseModel):
+    source_url: str
+    name: str
+    brand_name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    keywords: Optional[list[str]] = None
+    audience: Optional[list[str]] = None
+    prohibited_contexts: Optional[list[str]] = None
+    image_url: Optional[str] = None
+    extraction_confidence: Optional[int] = None
+
+
+class ProductUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    brand_name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    keywords: Optional[list[str]] = None
+    audience: Optional[list[str]] = None
+    prohibited_contexts: Optional[list[str]] = None
+    image_url: Optional[str] = None
+
+
+class ProductFitRequest(BaseModel):
+    product_id: str
 
 
 def utc_now() -> str:
@@ -616,6 +671,92 @@ def init_db() -> None:
               json_path text,
               created_at text not null
             );
+
+            create table if not exists comparisons (
+              id text primary key,
+              title text not null,
+              status text not null,
+              comparison_mode text default 'pending',
+              inferred_category text,
+              total_videos integer default 0,
+              completed_videos integer default 0,
+              failed_videos integer default 0,
+              summary text,
+              created_at text not null,
+              updated_at text not null
+            );
+
+            create table if not exists comparison_videos (
+              id text primary key,
+              comparison_id text not null,
+              video_id text not null,
+              display_order integer not null,
+              inferred_category text,
+              category_confidence real default 0,
+              processing_status text not null default 'uploaded',
+              error text,
+              created_at text not null,
+              unique(comparison_id, video_id)
+            );
+
+            create table if not exists comparison_reports (
+              id text primary key,
+              comparison_id text not null,
+              summary text not null,
+              csv_path text,
+              json_path text,
+              created_at text not null
+            );
+
+            create table if not exists products (
+              id text primary key,
+              source_url text not null,
+              canonical_url text,
+              name text not null,
+              brand_name text,
+              description text,
+              category text,
+              keywords text,
+              audience text,
+              prohibited_contexts text,
+              image_url text,
+              extraction_confidence integer default 0,
+              status text not null default 'verified',
+              created_at text not null,
+              updated_at text not null
+            );
+
+            create table if not exists product_snapshots (
+              id text primary key,
+              product_id text not null,
+              raw_metadata text not null,
+              extracted_at text not null,
+              fetch_status text not null
+            );
+
+            create table if not exists product_fit_runs (
+              id text primary key,
+              product_id text not null,
+              video_id text not null,
+              comparison_id text,
+              overall_fit_score integer not null,
+              fit_confidence integer not null,
+              suitability_tier text not null,
+              summary text not null,
+              created_at text not null
+            );
+
+            create table if not exists product_placements (
+              id text primary key,
+              product_fit_run_id text not null,
+              segment_id text not null,
+              placement_score integer not null,
+              placement_type text not null,
+              recommendation text not null,
+              reasons text not null,
+              is_best_placement integer default 0,
+              created_at text not null
+            );
             """
         )
         ensure_table_columns(
@@ -632,6 +773,17 @@ def init_db() -> None:
                 "evidence_mode": "text default 'weak_evidence'",
                 "strong_signals": "text",
                 "failed_or_weak_signals": "text",
+                "ad_slot_score": "real default 0",
+                "ad_slot_reasons": "text",
+                "is_best_ad_slot": "integer default 0",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "jobs",
+            {
+                "comparison_id": "text",
+                "comparison_video_id": "text",
             },
         )
         conn.commit()
@@ -664,6 +816,170 @@ def video_suffix_from_url(url: str) -> str | None:
 def convertible_video_suffix_from_url(url: str) -> str | None:
     suffix = Path(urlparse(url).path).suffix.lower()
     return suffix if suffix in CONVERTIBLE_VIDEO_EXTENSIONS else None
+
+
+class ProductPageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title = ""
+        self._in_title = False
+        self._title_parts: list[str] = []
+        self.meta: dict[str, str] = {}
+        self.json_ld: list[str] = []
+        self._in_json_ld = False
+        self._json_ld_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        values = {key.lower(): value for key, value in attrs if value is not None}
+        if tag.lower() == "title":
+            self._in_title = True
+        elif tag.lower() == "meta":
+            key = (values.get("property") or values.get("name") or values.get("itemprop") or "").lower()
+            value = values.get("content")
+            if key and value and key not in self.meta:
+                self.meta[key] = value.strip()
+        elif tag.lower() == "script" and values.get("type", "").lower() == "application/ld+json":
+            self._in_json_ld = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "title":
+            self._in_title = False
+            self.title = " ".join(self._title_parts).strip()
+        elif tag.lower() == "script" and self._in_json_ld:
+            self._in_json_ld = False
+            self.json_ld.append("".join(self._json_ld_parts))
+            self._json_ld_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._in_json_ld:
+            self._json_ld_parts.append(data)
+
+
+def validate_public_product_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="Use a public http(s) product or brand URL.")
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname in {"localhost", "0.0.0.0", "::1"} or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="Local or private product URLs are not allowed.")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)}
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="The product URL host could not be resolved.") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise HTTPException(status_code=400, detail="Private network product URLs are not allowed.")
+    return parsed.geturl()
+
+
+class ProductRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request | None:
+        safe_url = validate_public_product_url(urljoin(req.full_url, newurl))
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
+
+def normalize_profile_terms(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        term = re.sub(r"\s+", " ", str(value).strip().lower())
+        if term and term not in seen:
+            seen.add(term)
+            output.append(term[:80])
+    return output[:30]
+
+
+def product_nodes(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        nodes = [value]
+        graph = value.get("@graph")
+        if isinstance(graph, list):
+            nodes.extend(item for item in graph if isinstance(item, dict))
+        return nodes
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def extract_product_profile(url: str) -> dict[str, Any]:
+    safe_url = validate_public_product_url(url)
+    request = Request(safe_url, headers={"User-Agent": "NeuroAdProductFit/1.0", "Accept": "text/html,application/xhtml+xml"})
+    opener = build_opener(ProductRedirectHandler())
+    try:
+        with opener.open(request, timeout=10) as response:
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+            if "html" not in content_type and "xhtml" not in content_type:
+                raise HTTPException(status_code=400, detail="The product URL did not return an HTML product page.")
+            final_url = validate_public_product_url(response.geturl())
+            raw = response.read(1_000_001)
+            if len(raw) > 1_000_000:
+                raise HTTPException(status_code=400, detail="The product page is too large to analyze safely.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not retrieve product metadata from this URL. Add the product details manually.") from exc
+
+    parser = ProductPageParser()
+    parser.feed(raw.decode("utf-8", errors="replace"))
+    structured: dict[str, Any] = {}
+    for source in parser.json_ld:
+        try:
+            payload = json.loads(source)
+        except json.JSONDecodeError:
+            continue
+        for node in product_nodes(payload):
+            types = node.get("@type", [])
+            types = types if isinstance(types, list) else [types]
+            if any(str(item).lower() == "product" for item in types):
+                structured = node
+                break
+        if structured:
+            break
+
+    brand = structured.get("brand") if structured else None
+    brand_name = brand.get("name") if isinstance(brand, dict) else brand
+    image = structured.get("image") if structured else None
+    if isinstance(image, list):
+        image = image[0] if image else None
+    name = (
+        structured.get("name") if structured else None
+    ) or parser.meta.get("og:title") or parser.meta.get("twitter:title") or parser.title
+    description = (
+        structured.get("description") if structured else None
+    ) or parser.meta.get("og:description") or parser.meta.get("description") or ""
+    category = (structured.get("category") if structured else None) or parser.meta.get("product:category") or ""
+    image_url = image or parser.meta.get("og:image") or parser.meta.get("twitter:image")
+    keyword_seed = " ".join([str(name or ""), str(description), str(category), str(brand_name or "")])
+    keywords = normalize_profile_terms(re.findall(r"[A-Za-z][A-Za-z0-9'-]{3,}", keyword_seed))
+    confidence = 0
+    if structured:
+        confidence += 45
+    if parser.meta.get("og:title") or parser.title:
+        confidence += 20
+    if description:
+        confidence += 20
+    if brand_name or category:
+        confidence += 15
+    return {
+        "source_url": safe_url,
+        "canonical_url": parser.meta.get("og:url") or final_url,
+        "name": str(name or "Product page").strip()[:160],
+        "brand_name": str(brand_name or parser.meta.get("og:site_name") or "").strip()[:120] or None,
+        "description": str(description).strip()[:2000],
+        "category": str(category).strip()[:120] or None,
+        "keywords": keywords,
+        "audience": [],
+        "prohibited_contexts": [],
+        "image_url": str(image_url).strip()[:1000] if image_url else None,
+        "extraction_confidence": min(100, confidence),
+        "raw_metadata": {"title": parser.title, "meta": parser.meta, "structured_product": structured},
+        "status": "needs_review",
+    }
 
 
 def extract_video_url_from_json(data: Any) -> str | None:
@@ -1036,6 +1352,116 @@ def get_video_or_404(video_id: str) -> sqlite3.Row:
     return video
 
 
+def get_product_or_404(product_id: str) -> sqlite3.Row:
+    product = query_one("select * from products where id = ?", (product_id,))
+    if not product:
+        raise HTTPException(status_code=404, detail="Product profile not found")
+    return product
+
+
+def product_payload(product: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(product)
+    for field in ("keywords", "audience", "prohibited_contexts"):
+        try:
+            payload[field] = json.loads(payload.get(field) or "[]")
+        except (TypeError, json.JSONDecodeError):
+            payload[field] = []
+    return payload
+
+
+def product_terms(product: dict[str, Any]) -> dict[str, list[str]]:
+    keyword_values = normalize_profile_terms(product.get("keywords", []))
+    category_values = normalize_profile_terms([product.get("category", "")])
+    audience_values = normalize_profile_terms(product.get("audience", []))
+    prohibited_values = normalize_profile_terms(product.get("prohibited_contexts", []))
+    seed = " ".join(
+        str(product.get(field) or "") for field in ("name", "brand_name", "description", "category")
+    )
+    derived = normalize_profile_terms(re.findall(r"[A-Za-z][A-Za-z0-9'-]{3,}", seed))
+    return {
+        "keywords": normalize_profile_terms(keyword_values + derived)[:30],
+        "categories": category_values,
+        "audience": audience_values,
+        "prohibited": prohibited_values,
+    }
+
+
+def save_product_profile(profile: dict[str, Any], raw_metadata: dict[str, Any], fetch_status: str = "manual") -> dict[str, Any]:
+    source_url = validate_public_product_url(str(profile.get("source_url") or ""))
+    now = utc_now()
+    product_id = new_id("product")
+    keywords = normalize_profile_terms(profile.get("keywords", []))
+    audience = normalize_profile_terms(profile.get("audience", []))
+    prohibited = normalize_profile_terms(profile.get("prohibited_contexts", []))
+    name = str(profile.get("name") or "").strip()[:160]
+    if not name:
+        raise HTTPException(status_code=400, detail="A product name is required before analysis.")
+    confidence = int(profile.get("extraction_confidence") or 0)
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into products
+            (id, source_url, canonical_url, name, brand_name, description, category, keywords, audience, prohibited_contexts, image_url, extraction_confidence, status, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, ?)
+            """,
+            (
+                product_id,
+                source_url,
+                str(profile.get("canonical_url") or source_url)[:2000],
+                name,
+                str(profile.get("brand_name") or "").strip()[:120] or None,
+                str(profile.get("description") or "").strip()[:2000],
+                str(profile.get("category") or "").strip()[:120] or None,
+                json.dumps(keywords),
+                json.dumps(audience),
+                json.dumps(prohibited),
+                str(profile.get("image_url") or "").strip()[:1000] or None,
+                max(0, min(100, confidence)),
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "insert into product_snapshots (id, product_id, raw_metadata, extracted_at, fetch_status) values (?, ?, ?, ?, ?)",
+            (new_id("product_snapshot"), product_id, json.dumps(raw_metadata), now, fetch_status),
+        )
+        conn.commit()
+    return product_payload(get_product_or_404(product_id))
+
+
+def update_product_profile(product: sqlite3.Row, updates: ProductUpdateRequest) -> dict[str, Any]:
+    current = product_payload(product)
+    incoming = updates.model_dump(exclude_unset=True) if hasattr(updates, "model_dump") else updates.dict(exclude_unset=True)
+    for field, value in incoming.items():
+        if field in {"keywords", "audience", "prohibited_contexts"}:
+            current[field] = normalize_profile_terms(value)
+        elif value is not None:
+            current[field] = str(value).strip()
+    name = str(current.get("name") or "").strip()[:160]
+    if not name:
+        raise HTTPException(status_code=400, detail="A product name is required.")
+    now = utc_now()
+    execute(
+        """
+        update products set name = ?, brand_name = ?, description = ?, category = ?, keywords = ?, audience = ?, prohibited_contexts = ?, image_url = ?, updated_at = ?
+        where id = ?
+        """,
+        (
+            name,
+            str(current.get("brand_name") or "").strip()[:120] or None,
+            str(current.get("description") or "").strip()[:2000],
+            str(current.get("category") or "").strip()[:120] or None,
+            json.dumps(current.get("keywords", [])),
+            json.dumps(current.get("audience", [])),
+            json.dumps(current.get("prohibited_contexts", [])),
+            str(current.get("image_url") or "").strip()[:1000] or None,
+            now,
+            product["id"],
+        ),
+    )
+    return product_payload(get_product_or_404(product["id"]))
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     dependencies = runtime_dependency_status()
@@ -1060,8 +1486,7 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/api/videos/upload")
-async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
+async def store_uploaded_video(file: UploadFile) -> dict[str, Any]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported video format. Use MP4, MOV, WebM, or M4V.")
@@ -1093,6 +1518,72 @@ async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
         (video_id, title, duration, str(target), utc_now()),
     )
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": duration}
+
+
+def get_comparison_or_404(comparison_id: str) -> sqlite3.Row:
+    comparison = query_one("select * from comparisons where id = ?", (comparison_id,))
+    if not comparison:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return comparison
+
+
+def add_video_to_comparison(comparison_id: str, video_id: str) -> None:
+    comparison = get_comparison_or_404(comparison_id)
+    existing = query_one(
+        "select id from comparison_videos where comparison_id = ? and video_id = ?",
+        (comparison_id, video_id),
+    )
+    if existing:
+        return
+    count = int(query_one("select count(*) as count from comparison_videos where comparison_id = ?", (comparison_id,))["count"])
+    if count >= COMPARISON_MAX_VIDEOS:
+        raise HTTPException(status_code=400, detail=f"A comparison supports up to {COMPARISON_MAX_VIDEOS} videos.")
+    execute(
+        """
+        insert into comparison_videos (id, comparison_id, video_id, display_order, processing_status, created_at)
+        values (?, ?, ?, ?, 'uploaded', ?)
+        """,
+        (new_id("comparison_video"), comparison_id, video_id, count + 1, utc_now()),
+    )
+    execute(
+        "update comparisons set total_videos = ?, status = 'uploaded', updated_at = ? where id = ?",
+        (count + 1, utc_now(), comparison["id"]),
+    )
+
+
+@app.post("/api/comparisons")
+def create_comparison(payload: Optional[ComparisonCreateRequest] = None) -> dict[str, Any]:
+    comparison_id = new_id("comparison")
+    title = (payload.title if payload and payload.title else "Video comparison").strip()
+    execute(
+        """
+        insert into comparisons (id, title, status, comparison_mode, total_videos, completed_videos, failed_videos, created_at, updated_at)
+        values (?, ?, 'created', 'pending', 0, 0, 0, ?, ?)
+        """,
+        (comparison_id, title[:160] or "Video comparison", utc_now(), utc_now()),
+    )
+    return {"comparison_id": comparison_id, "status": "created"}
+
+
+@app.post("/api/comparisons/{comparison_id}/videos/upload")
+async def upload_comparison_videos(comparison_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    get_comparison_or_404(comparison_id)
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one video.")
+    existing_count = int(query_one("select count(*) as count from comparison_videos where comparison_id = ?", (comparison_id,))["count"])
+    if existing_count + len(files) > COMPARISON_MAX_VIDEOS:
+        raise HTTPException(status_code=400, detail=f"A comparison supports up to {COMPARISON_MAX_VIDEOS} videos.")
+    uploaded = []
+    for file in files:
+        result = await store_uploaded_video(file)
+        add_video_to_comparison(comparison_id, result["video_id"])
+        uploaded.append(result)
+    return {"comparison_id": comparison_id, "status": "uploaded", "videos": uploaded}
+
+
+@app.post("/api/videos/upload")
+async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await store_uploaded_video(file)
 
 
 @app.post("/api/videos/youtube")
@@ -1181,8 +1672,7 @@ def create_video_from_url(payload: VideoUrlRequest) -> dict[str, Any]:
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": 0}
 
 
-@app.post("/api/videos/{video_id}/analyze")
-def analyze_video(video_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+def create_video_analysis_job(video_id: str, comparison_id: str | None = None, comparison_video_id: str | None = None, submit: bool = True) -> dict[str, Any]:
     video = get_video_or_404(video_id)
     existing = query_one("select * from jobs where video_id = ? order by created_at desc limit 1", (video_id,))
     if existing and existing["status"] in {"queued", "processing"}:
@@ -1191,10 +1681,10 @@ def analyze_video(video_id: str, background_tasks: BackgroundTasks) -> dict[str,
     job_id = new_id("job")
     execute(
         """
-        insert into jobs (id, video_id, status, progress, current_step, error, created_at, updated_at)
-        values (?, ?, 'queued', 0, 'metadata', null, ?, ?)
+        insert into jobs (id, video_id, comparison_id, comparison_video_id, status, progress, current_step, error, created_at, updated_at)
+        values (?, ?, ?, ?, 'queued', 0, 'metadata', null, ?, ?)
         """,
-        (job_id, video_id, utc_now(), utc_now()),
+        (job_id, video_id, comparison_id, comparison_video_id, utc_now(), utc_now()),
     )
 
     if not video["file_path"] and video["source_type"] not in {"url", "youtube_ingest"}:
@@ -1208,8 +1698,86 @@ def analyze_video(video_id: str, background_tasks: BackgroundTasks) -> dict[str,
         execute("update videos set status = 'failed' where id = ?", (video_id,))
         return {"job_id": job_id, "status": "failed"}
 
-    EXECUTOR.submit(process_upload_job, job_id, video_id)
+    if submit:
+        EXECUTOR.submit(process_upload_job, job_id, video_id)
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/api/videos/{video_id}/analyze")
+def analyze_video(video_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    return create_video_analysis_job(video_id)
+
+
+@app.post("/api/comparisons/{comparison_id}/analyze")
+def analyze_comparison(comparison_id: str, payload: Optional[ComparisonAnalyzeRequest] = None) -> dict[str, Any]:
+    comparison = get_comparison_or_404(comparison_id)
+    members = query_all("select * from comparison_videos where comparison_id = ? order by display_order", (comparison_id,))
+    if payload and payload.video_ids:
+        selected = set(payload.video_ids)
+        members = [member for member in members if member["video_id"] in selected]
+    if len(members) < COMPARISON_MIN_VIDEOS:
+        raise HTTPException(status_code=400, detail=f"Add at least {COMPARISON_MIN_VIDEOS} videos before starting a comparison.")
+    if comparison["status"] == "processing":
+        return {"comparison_id": comparison_id, "status": "processing"}
+    execute("update comparisons set status = 'queued', updated_at = ? where id = ?", (utc_now(), comparison_id))
+    EXECUTOR.submit(process_comparison_job, comparison_id, [dict(member) for member in members])
+    return {"comparison_id": comparison_id, "status": "queued", "total_videos": len(members)}
+
+
+@app.post("/api/products/resolve")
+def resolve_product(payload: ProductResolveRequest) -> dict[str, Any]:
+    return extract_product_profile(payload.url)
+
+
+@app.post("/api/products")
+def create_product(payload: ProductCreateRequest) -> dict[str, Any]:
+    profile = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    profile["canonical_url"] = profile["source_url"]
+    return save_product_profile(profile, {"created_from": "reviewed_profile"}, "reviewed")
+
+
+@app.get("/api/products/{product_id}")
+def get_product(product_id: str) -> dict[str, Any]:
+    return product_payload(get_product_or_404(product_id))
+
+
+@app.patch("/api/products/{product_id}")
+def patch_product(product_id: str, payload: ProductUpdateRequest) -> dict[str, Any]:
+    return update_product_profile(get_product_or_404(product_id), payload)
+
+
+@app.post("/api/videos/{video_id}/product-fit")
+def analyze_video_product_fit(video_id: str, payload: ProductFitRequest) -> dict[str, Any]:
+    return run_product_fit(get_product_or_404(payload.product_id), get_video_or_404(video_id))
+
+
+@app.get("/api/videos/{video_id}/product-fit/{fit_run_id}")
+def get_video_product_fit(video_id: str, fit_run_id: str) -> dict[str, Any]:
+    fit_run = query_one("select * from product_fit_runs where id = ? and video_id = ?", (fit_run_id, video_id))
+    if not fit_run:
+        raise HTTPException(status_code=404, detail="Product fit analysis not found")
+    return product_fit_payload(fit_run)
+
+
+@app.post("/api/comparisons/{comparison_id}/product-fit")
+def analyze_comparison_product_fit(comparison_id: str, payload: ProductFitRequest) -> dict[str, Any]:
+    get_comparison_or_404(comparison_id)
+    product = get_product_or_404(payload.product_id)
+    members = query_all("select video_id from comparison_videos where comparison_id = ? order by display_order", (comparison_id,))
+    results = []
+    for member in members:
+        video = get_video_or_404(member["video_id"])
+        if video["status"] == "completed":
+            results.append(run_product_fit(product, video, comparison_id))
+    if not results:
+        raise HTTPException(status_code=400, detail="Complete at least one video analysis before running product fit.")
+    ranked = sorted(results, key=lambda item: item["overall_fit_score"], reverse=True)
+    return {
+        "comparison_id": comparison_id,
+        "product": product_payload(product),
+        "rankings": ranked,
+        "summary": f"{len(ranked)} completed videos ranked for {product['name']} using product-context and placement-window evidence.",
+    }
 
 
 @app.get("/api/jobs/{job_id}")
@@ -1266,6 +1834,51 @@ def get_analysis(video_id: str) -> dict[str, Any]:
     if not segments and video["status"] not in {"completed", "metadata_fetched", "uploaded", "processing"}:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return build_analysis_payload(video)
+
+
+@app.get("/api/comparisons/{comparison_id}/status")
+def get_comparison_status(comparison_id: str) -> dict[str, Any]:
+    comparison = get_comparison_or_404(comparison_id)
+    members = query_all("select * from comparison_videos where comparison_id = ? order by display_order", (comparison_id,))
+    videos = []
+    for member in members:
+        job = query_one("select * from jobs where video_id = ? order by created_at desc limit 1", (member["video_id"],))
+        videos.append(
+            {
+                "video_id": member["video_id"],
+                "status": member["processing_status"],
+                "progress": int(job["progress"]) if job else 0,
+                "job_id": job["id"] if job else None,
+                "error": member["error"],
+            }
+        )
+    return {
+        "comparison_id": comparison_id,
+        "status": comparison["status"],
+        "total_videos": comparison["total_videos"],
+        "completed_videos": comparison["completed_videos"],
+        "failed_videos": comparison["failed_videos"],
+        "consolidated_report_ready": int(comparison["completed_videos"] or 0) >= COMPARISON_MIN_VIDEOS,
+        "videos": videos,
+    }
+
+
+@app.get("/api/comparisons/{comparison_id}")
+def get_comparison(comparison_id: str) -> dict[str, Any]:
+    return build_comparison_payload(get_comparison_or_404(comparison_id))
+
+
+@app.get("/api/comparisons/{comparison_id}/export")
+def export_comparison(comparison_id: str, format: str = Query("csv", pattern="^(csv|json)$")) -> FileResponse:
+    comparison = get_comparison_or_404(comparison_id)
+    if int(comparison["completed_videos"] or 0) < COMPARISON_MIN_VIDEOS:
+        raise HTTPException(status_code=400, detail=f"At least {COMPARISON_MIN_VIDEOS} completed videos are required before export.")
+    persist_comparison_report(comparison_id)
+    report = query_one("select * from comparison_reports where comparison_id = ? order by created_at desc limit 1", (comparison_id,))
+    if not report:
+        raise HTTPException(status_code=404, detail="Comparison report not found")
+    path = Path(report["csv_path"] if format == "csv" else report["json_path"])
+    return FileResponse(path, media_type="text/csv" if format == "csv" else "application/json", filename=f"{comparison_id}-comparison.{format}")
 
 
 @app.get("/api/videos/{video_id}/export")
@@ -1374,6 +1987,66 @@ def process_upload_job(job_id: str, video_id: str) -> None:
     except Exception as exc:
         execute("update videos set status = 'failed' where id = ?", (video_id,))
         update_job(job_id, "failed", 100, "failed", public_job_error(exc))
+
+
+def refresh_comparison_progress(comparison_id: str) -> dict[str, int]:
+    rows = query_all("select processing_status from comparison_videos where comparison_id = ?", (comparison_id,))
+    completed = sum(1 for row in rows if row["processing_status"] == "completed")
+    failed = sum(1 for row in rows if row["processing_status"] == "failed")
+    return {"total": len(rows), "completed": completed, "failed": failed}
+
+
+def process_comparison_job(comparison_id: str, members: list[dict[str, Any]]) -> None:
+    execute("update comparisons set status = 'processing', updated_at = ? where id = ?", (utc_now(), comparison_id))
+    for member in members:
+        member_id = member["id"]
+        video_id = member["video_id"]
+        execute(
+            "update comparison_videos set processing_status = 'processing', error = null where id = ?",
+            (member_id,),
+        )
+        job = create_video_analysis_job(video_id, comparison_id, member_id, submit=False)
+        if job["status"] != "failed":
+            process_upload_job(job["job_id"], video_id)
+        result = query_one("select status, error from jobs where id = ?", (job["job_id"],))
+        completed = bool(result and result["status"] == "completed")
+        execute(
+            "update comparison_videos set processing_status = ?, error = ? where id = ?",
+            ("completed" if completed else "failed", None if completed else (result["error"] if result else "Analysis failed"), member_id),
+        )
+        progress = refresh_comparison_progress(comparison_id)
+        if completed:
+            video = get_video_or_404(video_id)
+            payload = build_analysis_payload(video)
+            category, confidence = infer_video_category(payload)
+            execute(
+                "update comparison_videos set inferred_category = ?, category_confidence = ? where id = ?",
+                (category, confidence, member_id),
+            )
+        status = "processing" if progress["completed"] + progress["failed"] < progress["total"] else "partial"
+        execute(
+            """
+            update comparisons
+            set status = ?, completed_videos = ?, failed_videos = ?, updated_at = ?
+            where id = ?
+            """,
+            (status, progress["completed"], progress["failed"], utc_now(), comparison_id),
+        )
+        if progress["completed"] >= COMPARISON_MIN_VIDEOS:
+            persist_comparison_report(comparison_id)
+
+    progress = refresh_comparison_progress(comparison_id)
+    final_status = "completed" if progress["failed"] == 0 else ("partial" if progress["completed"] else "failed")
+    execute(
+        """
+        update comparisons
+        set status = ?, completed_videos = ?, failed_videos = ?, updated_at = ?
+        where id = ?
+        """,
+        (final_status, progress["completed"], progress["failed"], utc_now(), comparison_id),
+    )
+    if progress["completed"] >= COMPARISON_MIN_VIDEOS:
+        persist_comparison_report(comparison_id)
 
 
 def public_job_error(exc: Exception) -> str:
@@ -1784,7 +2457,14 @@ def compute_audio_metrics(audio_path: Path, segments: list[dict[str, Any]]) -> d
 def transcribe_audio(audio_path: Path) -> list[dict[str, Any]]:
     if os.getenv("NEUROAD_ENABLE_TRANSCRIPTION", "1").lower() in {"0", "false", "no", "off"}:
         return []
-    engine = os.getenv("NEUROAD_TRANSCRIPTION_ENGINE", "vosk").lower()
+    engine = os.getenv("NEUROAD_TRANSCRIPTION_ENGINE", "faster_whisper").lower()
+    if engine in {"faster_whisper", "faster-whisper"}:
+        try:
+            return transcribe_audio_faster_whisper(audio_path)
+        except ImportError as exc:
+            if os.getenv("NEUROAD_REQUIRE_TRANSCRIPTION", "0").lower() in {"1", "true", "yes", "on"}:
+                raise RuntimeError("faster-whisper is required for transcription.") from exc
+            return transcribe_audio_vosk(audio_path)
     if engine == "vosk":
         return transcribe_audio_vosk(audio_path)
     if engine != "whisper":
@@ -1799,6 +2479,75 @@ def transcribe_audio(audio_path: Path) -> list[dict[str, Any]]:
     model = whisper.load_model(model_name)
     result = model.transcribe(str(audio_path), fp16=False)
     return result.get("segments", [])
+
+
+def get_faster_whisper_model() -> Any:
+    global FASTER_WHISPER_MODEL_CACHE, FASTER_WHISPER_MODEL_SIGNATURE
+    model_name = os.getenv("WHISPER_MODEL", "small.en")
+    device = os.getenv("WHISPER_DEVICE", "cpu")
+    compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+    signature = (model_name, device, compute_type)
+    if FASTER_WHISPER_MODEL_CACHE is not None and FASTER_WHISPER_MODEL_SIGNATURE == signature:
+        return FASTER_WHISPER_MODEL_CACHE
+    from faster_whisper import WhisperModel
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    FASTER_WHISPER_MODEL_CACHE = WhisperModel(
+        model_name,
+        device=device,
+        compute_type=compute_type,
+        download_root=str(MODEL_DIR),
+        cpu_threads=max(1, int_from_env("WHISPER_CPU_THREADS", 4)),
+        num_workers=1,
+    )
+    FASTER_WHISPER_MODEL_SIGNATURE = signature
+    return FASTER_WHISPER_MODEL_CACHE
+
+
+def transcribe_audio_faster_whisper(audio_path: Path) -> list[dict[str, Any]]:
+    model = get_faster_whisper_model()
+    vad_filter = env_enabled("WHISPER_VAD_FILTER", True)
+    segments, info = model.transcribe(
+        str(audio_path),
+        beam_size=max(1, int_from_env("WHISPER_BEAM_SIZE", 5)),
+        word_timestamps=env_enabled("WHISPER_WORD_TIMESTAMPS", True),
+        vad_filter=vad_filter,
+        vad_parameters={"min_silence_duration_ms": int_from_env("WHISPER_VAD_MIN_SILENCE_MS", 500)},
+        condition_on_previous_text=env_enabled("WHISPER_CONDITION_ON_PREVIOUS_TEXT", False),
+    )
+    output: list[dict[str, Any]] = []
+    language = getattr(info, "language", None)
+    language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
+    for index, segment in enumerate(segments):
+        text = str(getattr(segment, "text", "")).strip()
+        if not text:
+            continue
+        words = [
+            {
+                "word": str(getattr(word, "word", "")).strip(),
+                "start": float(getattr(word, "start", 0.0) or 0.0),
+                "end": float(getattr(word, "end", 0.0) or 0.0),
+                "probability": float(getattr(word, "probability", 0.0) or 0.0),
+            }
+            for word in (getattr(segment, "words", None) or [])
+            if str(getattr(word, "word", "")).strip()
+        ]
+        output.append(
+            {
+                "index": index,
+                "start": float(getattr(segment, "start", 0.0) or 0.0),
+                "end": float(getattr(segment, "end", 0.0) or 0.0),
+                "text": text,
+                "words": words,
+                "source": "faster_whisper",
+                "language": language,
+                "language_probability": language_probability,
+                "avg_logprob": float(getattr(segment, "avg_logprob", 0.0) or 0.0),
+                "no_speech_prob": float(getattr(segment, "no_speech_prob", 0.0) or 0.0),
+                "compression_ratio": float(getattr(segment, "compression_ratio", 0.0) or 0.0),
+            }
+        )
+    return output
 
 
 def get_vosk_model() -> Any | None:
@@ -2070,6 +2819,7 @@ def assemble_segments(
     for segment in segments:
         idx = segment["index"]
         transcript = transcript_for_segment(segment["start"], segment["end"], transcript_segments)
+        transcript_evidence = transcript_evidence_for_segment(segment["start"], segment["end"], transcript_segments)
         objects = detections.get(idx, [])
         topics = classify_topics(" ".join([transcript, metadata_text, " ".join(obj["label"] for obj in objects)]))
         frame = frames.get(idx)
@@ -2085,7 +2835,13 @@ def assemble_segments(
         speech_density = compute_speech_density(transcript, segment["end"] - segment["start"])
         topic_clarity = max([topic["confidence"] for topic in topics], default=0.2)
         hook_cta_signal = compute_hook_cta_signal(transcript, segment["start"])
-        transcript_insights = analyze_transcript_segment(transcript, segment_duration, segment["start"], speech_density)
+        transcript_insights = analyze_transcript_segment(
+            transcript,
+            segment_duration,
+            segment["start"],
+            speech_density,
+            transcript_evidence,
+        )
         apply_transcript_sequence_quality(transcript_insights, transcript, previous_transcript)
         if transcript.strip():
             previous_transcript = transcript.strip().lower()
@@ -2130,6 +2886,15 @@ def assemble_segments(
             objects,
             ad_matches,
         )
+        ad_slot_score, ad_slot_reasons = score_ad_slot(
+            attention,
+            ad_fit,
+            drop_risk,
+            brand_safety_score,
+            recommendation_context["confidence"],
+            transcript_insights,
+            visual_evidence,
+        )
         enriched.append(
             {
                 "start": segment["start"],
@@ -2159,12 +2924,18 @@ def assemble_segments(
                 "evidence_mode": recommendation_context["evidence_mode"],
                 "strong_signals": recommendation_context["strong_signals"],
                 "failed_or_weak_signals": recommendation_context["failed_or_weak_signals"],
+                "ad_slot_score": ad_slot_score,
+                "ad_slot_reasons": ad_slot_reasons,
+                "is_best_ad_slot": False,
                 "thumbnail_url": media_url(frame["path"]) if frame else None,
                 "objects": objects,
                 "topics": topics,
                 "ad_matches": ad_matches,
             }
         )
+    candidates = [segment for segment in enriched if segment["ad_fit_score"] > 0]
+    if candidates:
+        max(candidates, key=lambda item: item["ad_slot_score"])["is_best_ad_slot"] = True
     return enriched
 
 
@@ -2205,6 +2976,37 @@ def transcript_for_segment(start: float, end: float, transcript_segments: list[d
         seen.add(normalized)
         chunks.append(text)
     return " ".join(chunks)
+
+
+def transcript_evidence_for_segment(start: float, end: float, transcript_segments: list[dict[str, Any]]) -> dict[str, Any]:
+    overlaps: list[tuple[dict[str, Any], float]] = []
+    for item in transcript_segments:
+        item_start = transcript_time(item.get("start"), start)
+        item_end = transcript_time(item.get("end"), item_start)
+        overlap = max(0.0, min(end, item_end) - max(start, item_start))
+        if overlap > 0:
+            overlaps.append((item, overlap))
+    if not overlaps:
+        return {"source": "none", "language": None, "language_probability": 0.0, "word_confidence": 0.0}
+
+    weight = sum(item_overlap for _, item_overlap in overlaps)
+    def weighted_average(key: str, default: float = 0.0) -> float:
+        return sum(float(item.get(key, default) or default) * item_overlap for item, item_overlap in overlaps) / max(weight, 0.001)
+
+    words = [word for item, _ in overlaps for word in (item.get("words") or []) if isinstance(word, dict)]
+    word_confidence = float(np.mean([float(word.get("probability", 0.0) or 0.0) for word in words])) if words else 0.0
+    source = next((str(item.get("source")) for item, _ in overlaps if item.get("source")), "legacy")
+    language = next((item.get("language") for item, _ in overlaps if item.get("language")), None)
+    return {
+        "source": source,
+        "language": language,
+        "language_probability": round(weighted_average("language_probability"), 3),
+        "word_confidence": round(word_confidence, 3),
+        "avg_logprob": round(weighted_average("avg_logprob"), 3),
+        "no_speech_prob": round(weighted_average("no_speech_prob"), 3),
+        "compression_ratio": round(weighted_average("compression_ratio"), 3),
+        "timestamp_coverage": round(min(1.0, len(words) / max(1, len(re.findall(r"\\w+", " ".join(str(item.get("text", "")) for item, _ in overlaps))))), 3),
+    }
 
 
 def classify_topics(text: str) -> list[dict[str, Any]]:
@@ -2268,7 +3070,13 @@ def compute_hook_cta_signal(transcript: str, start: float) -> float:
     return clamp(intro_bonus + hits * 0.18)
 
 
-def analyze_transcript_segment(transcript: str, duration: float, start: float, speech_density: float) -> dict[str, Any]:
+def analyze_transcript_segment(
+    transcript: str,
+    duration: float,
+    start: float,
+    speech_density: float,
+    asr_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     lowered = transcript.lower()
     words = re.findall(r"\b[a-zA-Z][a-zA-Z']+\b", lowered)
     filler_terms = ["um", "uh", "like", "basically", "actually", "literally"]
@@ -2310,6 +3118,22 @@ def analyze_transcript_segment(transcript: str, duration: float, start: float, s
         )
     )
     transcript_confidence = clarity_score
+    asr_evidence = asr_evidence or {}
+    if asr_evidence.get("source") == "faster_whisper":
+        logprob_quality = clamp((float(asr_evidence.get("avg_logprob", -1.2)) + 1.2) / 1.2)
+        no_speech_quality = 1 - clamp(float(asr_evidence.get("no_speech_prob", 1.0)))
+        compression_ratio = float(asr_evidence.get("compression_ratio", 0.0))
+        compression_quality = 1.0 if compression_ratio <= 2.4 else clamp(1 - (compression_ratio - 2.4) / 1.6)
+        word_quality = clamp(float(asr_evidence.get("word_confidence", 0.0)))
+        transcript_confidence = int(round(
+            clamp(
+                (transcript_confidence / 100) * 0.45
+                + logprob_quality * 0.20
+                + no_speech_quality * 0.15
+                + compression_quality * 0.10
+                + word_quality * 0.10
+            ) * 100
+        ))
     if not words:
         transcript_confidence = 0
     if "unrealistic_speech_rate" in quality_flags:
@@ -2332,6 +3156,13 @@ def analyze_transcript_segment(transcript: str, duration: float, start: float, s
         "repetition_penalty": clamp((repetition_ratio - 0.16) / 0.24),
         "silence_penalty": silence_penalty,
         "early_hook": bool(start < 10 and hook_terms),
+        "source": asr_evidence.get("source", "legacy"),
+        "language": asr_evidence.get("language"),
+        "language_probability": asr_evidence.get("language_probability", 0),
+        "word_confidence": asr_evidence.get("word_confidence", 0),
+        "avg_logprob": asr_evidence.get("avg_logprob"),
+        "no_speech_probability": asr_evidence.get("no_speech_prob"),
+        "timestamp_coverage": asr_evidence.get("timestamp_coverage", 0),
     }
 
 
@@ -2396,6 +3227,42 @@ def score_drop_risk(attention: int, transcript_insights: dict[str, Any], visual_
     if visual_evidence.get("object_count", 0) == 0:
         risk += 6
     return int(round(clamp(risk / 100) * 100))
+
+
+def score_ad_slot(
+    attention: int,
+    ad_fit: int,
+    drop_risk: int,
+    brand_safety: int,
+    recommendation_confidence: int,
+    transcript_insights: dict[str, Any],
+    visual_evidence: dict[str, Any],
+) -> tuple[int, list[str]]:
+    natural_boundary = 0.55
+    if transcript_insights.get("word_count", 0) == 0:
+        natural_boundary = 0.7 if visual_evidence.get("motion", 0) < 0.45 else 0.45
+    elif transcript_insights.get("silence_penalty", 0) > 0:
+        natural_boundary = 0.8
+    elif transcript_insights.get("words_per_second", 0) <= 2.2:
+        natural_boundary = 0.7
+    context_score = clamp(ad_fit / 100)
+    score = (
+        clamp(attention / 100) * 0.25
+        + context_score * 0.25
+        + clamp(1 - drop_risk / 100) * 0.15
+        + clamp(brand_safety / 100) * 0.15
+        + natural_boundary * 0.10
+        + clamp(recommendation_confidence / 100) * 0.10
+    )
+    reasons = [
+        f"attention quality: {attention}",
+        f"contextual ad fit: {ad_fit}",
+        f"low drop risk: {100 - drop_risk}",
+        f"brand safety: {brand_safety}",
+        f"natural boundary: {round(natural_boundary * 100)}",
+        f"evidence confidence: {recommendation_confidence}",
+    ]
+    return int(round(clamp(score) * 100)), reasons
 
 
 def build_score_reasons(
@@ -2708,8 +3575,8 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
             conn.execute(
                 """
                 insert into segments
-                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, recommendation_tier, recommendation_confidence, evidence_mode, strong_signals, failed_or_weak_signals, thumbnail_url, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, recommendation_tier, recommendation_confidence, evidence_mode, strong_signals, failed_or_weak_signals, ad_slot_score, ad_slot_reasons, is_best_ad_slot, thumbnail_url, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment_id,
@@ -2732,6 +3599,9 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                     segment.get("evidence_mode", "weak_evidence"),
                     json.dumps(segment.get("strong_signals", [])),
                     json.dumps(segment.get("failed_or_weak_signals", [])),
+                    segment.get("ad_slot_score", 0),
+                    json.dumps(segment.get("ad_slot_reasons", [])),
+                    1 if segment.get("is_best_ad_slot") else 0,
                     segment["thumbnail_url"],
                     utc_now(),
                 ),
@@ -2778,6 +3648,226 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
         conn.commit()
 
 
+def fit_text_hits(terms: list[str], text: str) -> list[str]:
+    normalized = text.lower()
+    hits = []
+    for term in terms:
+        value = term.lower().strip()
+        if len(value) < 3:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(value)}(?![a-z0-9])", normalized):
+            hits.append(term)
+    return hits
+
+
+def score_product_segment_fit(product: dict[str, Any], segment: dict[str, Any]) -> dict[str, Any]:
+    terms = product_terms(product)
+    topic_labels = [str(topic.get("label", "")).lower() for topic in segment.get("topics", [])]
+    object_labels = [str(obj.get("label", "")).lower() for obj in segment.get("objects", [])]
+    context_text = " ".join(
+        [
+            str(segment.get("transcript", "")),
+            str(segment.get("summary", "")),
+            str(segment.get("label", "")),
+            " ".join(topic_labels),
+            " ".join(object_labels),
+        ]
+    ).lower()
+    keyword_hits = fit_text_hits(terms["keywords"], context_text)
+    category_hits = fit_text_hits(terms["categories"], context_text)
+    audience_hits = fit_text_hits(terms["audience"], context_text)
+    prohibited_hits = fit_text_hits(terms["prohibited"], context_text)
+    product_tokens = {token for term in terms["keywords"] + terms["categories"] for token in re.findall(r"[a-z0-9]{3,}", term.lower())}
+    visual_hits = sorted({label for label in object_labels if label in product_tokens})
+    transcript_confidence = int(segment.get("transcript_insights", {}).get("transcript_confidence", 0) or 0)
+    visual_quality = float(segment.get("visual_evidence", {}).get("visual_quality", 0) or 0)
+    keyword_signal = min(1.0, len(keyword_hits) / 3)
+    category_signal = min(1.0, len(category_hits) / max(1, len(terms["categories"])))
+    audience_signal = min(1.0, len(audience_hits) / max(1, len(terms["audience"])))
+    visual_signal = min(1.0, len(visual_hits) / 2)
+    content_signal = min(1.0, (len(keyword_hits) + len(category_hits) * 1.5) / 4)
+    evidence_signal = clamp(
+        transcript_confidence / 100 * 0.55
+        + visual_quality * 0.25
+        + min(1.0, len(object_labels) / 3) * 0.20
+    )
+    safety_signal = clamp(float(segment.get("brand_safety_score", 100) or 100) / 100)
+    score = (
+        content_signal * 0.30
+        + keyword_signal * 0.18
+        + category_signal * 0.15
+        + audience_signal * 0.10
+        + visual_signal * 0.08
+        + safety_signal * 0.10
+        + evidence_signal * 0.09
+    )
+    if prohibited_hits:
+        score *= 0.35
+    if not keyword_hits and not category_hits and not audience_hits and not visual_hits:
+        score *= 0.45
+    fit_score = int(round(clamp(score) * 100))
+    evidence_units = len(keyword_hits) + len(category_hits) + len(audience_hits) + len(visual_hits)
+    confidence = int(round(clamp(0.25 + evidence_signal * 0.35 + min(1.0, evidence_units / 4) * 0.40) * 100))
+    reasons = []
+    if keyword_hits:
+        reasons.append(f"product terms in context: {', '.join(keyword_hits[:3])}")
+    if category_hits:
+        reasons.append(f"category alignment: {', '.join(category_hits[:2])}")
+    if audience_hits:
+        reasons.append(f"audience cue: {', '.join(audience_hits[:2])}")
+    if visual_hits:
+        reasons.append(f"visual product cue: {', '.join(visual_hits[:3])}")
+    if prohibited_hits:
+        reasons.append(f"blocked context detected: {', '.join(prohibited_hits[:2])}")
+    if not reasons:
+        reasons.append("No direct product, category, audience, or visual cue was detected in this segment.")
+    return {
+        "fit_score": fit_score,
+        "confidence": confidence,
+        "reasons": reasons,
+        "blocked": bool(prohibited_hits),
+        "evidence_units": evidence_units,
+    }
+
+
+def placement_recommendation(product: dict[str, Any], segment: dict[str, Any], fit: dict[str, Any]) -> tuple[int, str, str]:
+    natural_boundary = 0.55
+    transcript = segment.get("transcript_insights", {})
+    if transcript.get("word_count", 0) == 0 or transcript.get("silence_penalty", 0) > 0:
+        natural_boundary = 0.8
+    elif transcript.get("words_per_second", 0) <= 2.2:
+        natural_boundary = 0.7
+    placement_score = int(round(clamp(
+        fit["fit_score"] / 100 * 0.38
+        + float(segment.get("ad_slot_score", 0) or 0) / 100 * 0.24
+        + float(segment.get("attention_score", 0) or 0) / 100 * 0.12
+        + (1 - float(segment.get("drop_risk_score", 100) or 100) / 100) * 0.10
+        + float(segment.get("brand_safety_score", 0) or 0) / 100 * 0.08
+        + natural_boundary * 0.08
+    ) * 100))
+    if fit["blocked"]:
+        placement_score = min(placement_score, 24)
+    if fit["fit_score"] >= 65 and segment.get("transcript"):
+        placement_type = "native spoken integration"
+    elif fit["fit_score"] >= 45:
+        placement_type = "contextual product overlay"
+    else:
+        placement_type = "brief visual placement"
+    brand = product.get("brand_name") or product.get("name")
+    timestamp = format_range(float(segment["start"]), float(segment["end"]))
+    if fit["blocked"]:
+        recommendation = f"Avoid {timestamp}: this moment conflicts with a prohibited context for {brand}."
+    elif placement_score >= 70:
+        recommendation = f"Use {timestamp} for a {placement_type} for {brand}; it combines product context with a stable ad window."
+    elif placement_score >= 45:
+        recommendation = f"Test {timestamp} for a short {placement_type} for {brand}; keep the execution light and validate performance."
+    else:
+        recommendation = f"Do not prioritize {timestamp} for {brand}; product-context evidence or viewer-window quality is limited."
+    return placement_score, placement_type, recommendation
+
+
+def product_fit_payload(fit_run: sqlite3.Row) -> dict[str, Any]:
+    product = product_payload(get_product_or_404(fit_run["product_id"]))
+    video = get_video_or_404(fit_run["video_id"])
+    placements = []
+    rows = query_all(
+        """
+        select product_placements.*, segments.start_time, segments.end_time, segments.summary
+        from product_placements join segments on segments.id = product_placements.segment_id
+        where product_fit_run_id = ? order by placement_score desc, segments.start_time
+        """,
+        (fit_run["id"],),
+    )
+    for row in rows:
+        placement = dict(row)
+        placement["start"] = placement.pop("start_time")
+        placement["end"] = placement.pop("end_time")
+        placement["reasons"] = json.loads(placement["reasons"] or "[]")
+        placement["is_best_placement"] = bool(placement["is_best_placement"])
+        placements.append(placement)
+    return {
+        "fit_run_id": fit_run["id"],
+        "video_id": video["id"],
+        "video_title": video["title"],
+        "product": product,
+        "overall_fit_score": fit_run["overall_fit_score"],
+        "fit_confidence": fit_run["fit_confidence"],
+        "suitability_tier": fit_run["suitability_tier"],
+        "summary": fit_run["summary"],
+        "created_at": fit_run["created_at"],
+        "placements": placements,
+    }
+
+
+def run_product_fit(product: sqlite3.Row, video: sqlite3.Row, comparison_id: str | None = None) -> dict[str, Any]:
+    if video["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Complete the video analysis before running product fit.")
+    analysis = build_analysis_payload(video)
+    if not analysis["segments"]:
+        raise HTTPException(status_code=400, detail="No analyzed segments are available for product fit.")
+    profile = product_payload(product)
+    placements = []
+    for segment in analysis["segments"]:
+        fit = score_product_segment_fit(profile, segment)
+        score, placement_type, recommendation = placement_recommendation(profile, segment, fit)
+        placements.append({
+            "segment_id": segment["id"],
+            "start": segment["start"],
+            "end": segment["end"],
+            "placement_score": score,
+            "placement_type": placement_type,
+            "recommendation": recommendation,
+            "reasons": fit["reasons"] + [f"product fit: {fit['fit_score']}", f"fit confidence: {fit['confidence']}"],
+            "fit_score": fit["fit_score"],
+            "fit_confidence": fit["confidence"],
+            "blocked": fit["blocked"],
+        })
+    placements.sort(key=lambda item: (item["placement_score"], item["fit_score"]), reverse=True)
+    leading = placements[:max(1, min(3, len(placements)))]
+    overall_score = int(round(float(np.mean([item["placement_score"] for item in leading]))))
+    confidence = int(round(float(np.mean([item["fit_confidence"] for item in leading]))))
+    best = placements[0]
+    if best["blocked"] or overall_score < 35:
+        tier = "Not suitable"
+    elif overall_score >= 70 and confidence >= 65:
+        tier = "Strong fit"
+    elif overall_score >= 48:
+        tier = "Conditional fit"
+    else:
+        tier = "Weak fit"
+    product_name = profile.get("brand_name") or profile.get("name")
+    if tier == "Strong fit":
+        summary = f"{product_name} is a strong contextual fit. Prioritize {format_range(best['start'], best['end'])} with evidence confidence {confidence}."
+    elif tier == "Conditional fit":
+        summary = f"{product_name} can be tested in this video, but the strongest placement needs a lightweight execution and performance validation."
+    else:
+        summary = f"{product_name} has insufficient contextual evidence for a confident placement in this video."
+    run_id = new_id("product_fit")
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into product_fit_runs (id, product_id, video_id, comparison_id, overall_fit_score, fit_confidence, suitability_tier, summary, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, product["id"], video["id"], comparison_id, overall_score, confidence, tier, summary, now),
+        )
+        for index, placement in enumerate(placements):
+            conn.execute(
+                """
+                insert into product_placements (id, product_fit_run_id, segment_id, placement_score, placement_type, recommendation, reasons, is_best_placement, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("product_placement"), run_id, placement["segment_id"], placement["placement_score"],
+                    placement["placement_type"], placement["recommendation"], json.dumps(placement["reasons"]),
+                    1 if index == 0 else 0, now,
+                ),
+            )
+        conn.commit()
+    return product_fit_payload(query_one("select * from product_fit_runs where id = ?", (run_id,)))
+
+
 def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
     segment_rows = query_all("select * from segments where video_id = ? order by start_time", (video["id"],))
     segments = []
@@ -2811,6 +3901,9 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
                 "evidence_mode": row["evidence_mode"] or "weak_evidence",
                 "strong_signals": json.loads(row["strong_signals"]) if row["strong_signals"] else [],
                 "failed_or_weak_signals": json.loads(row["failed_or_weak_signals"]) if row["failed_or_weak_signals"] else [],
+                "ad_slot_score": row["ad_slot_score"] if row["ad_slot_score"] is not None else 0,
+                "ad_slot_reasons": json.loads(row["ad_slot_reasons"]) if row["ad_slot_reasons"] else [],
+                "is_best_ad_slot": bool(row["is_best_ad_slot"]),
                 "thumbnail_url": row["thumbnail_url"],
                 "objects": objects,
                 "topics": topics,
@@ -2848,6 +3941,232 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
         "recommendations": build_recommendations(summary, segments),
         "exports": exports,
     }
+
+
+def infer_video_category(payload: dict[str, Any]) -> tuple[str, int]:
+    topic_counts: Counter[str] = Counter()
+    topic_confidences: dict[str, list[float]] = {}
+    for topic in payload.get("topics", []):
+        label = str(topic.get("label", "")).strip().lower()
+        if not label:
+            continue
+        confidence = float(topic.get("confidence", 0.0) or 0.0)
+        topic_counts[label] += 1
+        topic_confidences.setdefault(label, []).append(confidence)
+    if not topic_counts:
+        return "general", 0
+    category, count = topic_counts.most_common(1)[0]
+    confidence = int(round(clamp(float(np.mean(topic_confidences[category])) * 0.7 + min(1.0, count / 3) * 0.3) * 100))
+    return category, confidence
+
+
+def extract_video_keywords(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    stop_words = {
+        "this", "that", "with", "from", "your", "about", "there", "their", "have", "will", "just", "they",
+        "video", "watch", "today", "really", "being", "would", "could", "should", "because", "where",
+    }
+    terms: Counter[str] = Counter()
+    evidence: dict[str, set[str]] = {}
+    for topic in payload.get("topics", []):
+        label = str(topic.get("label", "")).strip().lower()
+        if label:
+            terms[label] += 4
+            evidence.setdefault(label, set()).add("topic")
+    for segment in payload.get("segments", []):
+        for match in segment.get("ad_matches", []):
+            label = str(match.get("ad_category", "")).strip().lower()
+            if label:
+                terms[label] += 3
+                evidence.setdefault(label, set()).add("ad context")
+        for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{3,}", str(segment.get("transcript", "")).lower()):
+            if word not in stop_words:
+                terms[word] += 1
+                evidence.setdefault(word, set()).add("transcript")
+    keywords = []
+    for keyword, count in terms.most_common(12):
+        source = evidence.get(keyword, set())
+        keyword_type = "advertising" if "ad context" in source else ("content" if "topic" in source else "audience")
+        keywords.append(
+            {
+                "keyword": keyword,
+                "type": keyword_type,
+                "confidence": min(95, 45 + count * 8),
+                "evidence": sorted(source),
+            }
+        )
+    return keywords
+
+
+def comparison_evidence_confidence(payload: dict[str, Any]) -> int:
+    segments = payload.get("segments", [])
+    if not segments:
+        return 0
+    transcript = float(np.mean([segment.get("transcript_insights", {}).get("transcript_confidence", 0) for segment in segments]))
+    visual = float(np.mean([segment.get("visual_evidence", {}).get("visual_quality", 0) * 100 for segment in segments]))
+    object_evidence = float(np.mean([min(100, segment.get("visual_evidence", {}).get("object_count", 0) * 35) for segment in segments]))
+    temporal = float(np.mean([segment.get("transcript_insights", {}).get("timestamp_coverage", 0) * 100 for segment in segments]))
+    return int(round(transcript * 0.40 + visual * 0.25 + object_evidence * 0.20 + temporal * 0.15))
+
+
+def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
+    members = query_all("select * from comparison_videos where comparison_id = ? order by display_order", (comparison["id"],))
+    videos: list[dict[str, Any]] = []
+    for member in members:
+        video = get_video_or_404(member["video_id"])
+        if member["processing_status"] != "completed" or video["status"] != "completed":
+            videos.append(
+                {
+                    "video_id": video["id"],
+                    "title": video["title"],
+                    "status": member["processing_status"],
+                    "error": member["error"],
+                    "individual_report_url": f"/dashboard/{video['id']}" if video["status"] == "completed" else None,
+                }
+            )
+            continue
+        payload = build_analysis_payload(video)
+        category, category_confidence = infer_video_category(payload)
+        summary = payload["summary"]
+        best_slot = max(payload["segments"], key=lambda item: item.get("ad_slot_score", 0), default=None)
+        evidence_confidence = comparison_evidence_confidence(payload)
+        composite = int(round(
+            summary.get("overall_attention_score", 0) * 0.30
+            + summary.get("monetization_opportunity_score", 0) * 0.20
+            + summary.get("creator_readiness_score", 0) * 0.20
+            + summary.get("brand_safety_score", 0) * 0.10
+            + (100 - summary.get("overall_drop_risk_score", 100)) * 0.10
+            + evidence_confidence * 0.10
+        ))
+        videos.append(
+            {
+                "video_id": video["id"],
+                "title": video["title"],
+                "status": "completed",
+                "duration": video["duration_seconds"],
+                "thumbnail": video["thumbnail_url"],
+                "individual_report_url": f"/dashboard/{video['id']}",
+                "category": category,
+                "category_confidence": category_confidence,
+                "evidence_confidence": evidence_confidence,
+                "score": composite,
+                "metrics": {
+                    "attention": summary.get("overall_attention_score", 0),
+                    "monetization": summary.get("monetization_opportunity_score", 0),
+                    "drop_risk": summary.get("overall_drop_risk_score", 0),
+                    "brand_safety": summary.get("brand_safety_score", 0),
+                    "visual_quality": summary.get("visual_quality_score", 0),
+                    "transcript_clarity": summary.get("transcript_clarity_score", 0),
+                    "creator_readiness": summary.get("creator_readiness_score", 0),
+                    "ad_slot": best_slot.get("ad_slot_score", 0) if best_slot else 0,
+                },
+                "best_hook": summary.get("best_hook"),
+                "strongest_ad_slot": {
+                    "start": best_slot.get("start"),
+                    "end": best_slot.get("end"),
+                    "score": best_slot.get("ad_slot_score", 0),
+                    "ad_fit_score": best_slot.get("ad_fit_score", 0),
+                    "reasons": best_slot.get("ad_slot_reasons", []),
+                } if best_slot else None,
+                "keywords": extract_video_keywords(payload),
+            }
+        )
+
+    completed = [video for video in videos if video["status"] == "completed"]
+    categories = {video["category"] for video in completed}
+    comparison_mode = "same_category" if len(categories) == 1 and completed else ("mixed" if completed else "pending")
+    inferred_category = next(iter(categories)) if comparison_mode == "same_category" else "mixed"
+    ranked = sorted(completed, key=lambda item: item["score"], reverse=True)
+    for index, item in enumerate(ranked):
+        item["rank"] = index + 1
+        item["percentile"] = 50 if len(ranked) == 1 else int(round(100 * (len(ranked) - index - 1) / (len(ranked) - 1)))
+        item["normalized_score"] = 50 if len(ranked) == 1 else int(round(100 * (item["score"] - ranked[-1]["score"]) / max(1, ranked[0]["score"] - ranked[-1]["score"])))
+
+    shared_keywords: set[str] = set()
+    if completed:
+        keyword_sets = [{entry["keyword"] for entry in video["keywords"]} for video in completed]
+        shared_keywords = set.intersection(*keyword_sets) if keyword_sets else set()
+    metric_names = ["attention", "monetization", "drop_risk", "brand_safety", "visual_quality", "transcript_clarity", "creator_readiness", "ad_slot"]
+    metric_comparison = [
+        {
+            "metric": metric,
+            "values": [
+                {"video_id": item["video_id"], "value": item["metrics"][metric], "rank": sorted(completed, key=lambda video: video["metrics"][metric], reverse=metric != "drop_risk").index(item) + 1}
+                for item in completed
+            ],
+        }
+        for metric in metric_names
+    ]
+    ab = None
+    if len(completed) == 2:
+        a, b = completed
+        deltas = []
+        for metric in metric_names:
+            delta = b["metrics"][metric] - a["metrics"][metric]
+            absolute_delta = abs(delta)
+            winner = "tie" if absolute_delta < 5 else ("B" if (delta > 0) != (metric == "drop_risk") else "A")
+            deltas.append({"metric": metric, "video_a": a["metrics"][metric], "video_b": b["metrics"][metric], "delta": delta, "winner": winner})
+        overall_delta = b["score"] - a["score"]
+        ab = {
+            "video_a_id": a["video_id"],
+            "video_b_id": b["video_id"],
+            "winner": "tie" if abs(overall_delta) < 5 else ("B" if overall_delta > 0 else "A"),
+            "confidence": int(round((a["evidence_confidence"] + b["evidence_confidence"]) / 2)),
+            "deltas": deltas,
+        }
+    recommendations = []
+    if ranked:
+        winner = ranked[0]
+        recommendations.append({"title": "Recommended video", "body": f"{winner['title']} ranks first in this comparison with a score of {winner['score']} and evidence confidence of {winner['evidence_confidence']}.", "video_id": winner["video_id"]})
+        if winner["strongest_ad_slot"]:
+            slot = winner["strongest_ad_slot"]
+            recommendations.append({"title": "Strongest ad slot", "body": f"Use {format_range(slot['start'], slot['end'])} in {winner['title']} for the strongest evidence-backed contextual placement.", "video_id": winner["video_id"], "timestamp": format_range(slot["start"], slot["end"])})
+    return {
+        "comparison": {
+            "id": comparison["id"],
+            "title": comparison["title"],
+            "status": comparison["status"],
+            "comparison_mode": comparison_mode,
+            "inferred_category": inferred_category,
+            "total_videos": comparison["total_videos"],
+            "completed_videos": len(completed),
+            "failed_videos": sum(1 for video in videos if video["status"] == "failed"),
+        },
+        "rankings": ranked,
+        "videos": videos,
+        "metric_comparison": metric_comparison,
+        "shared_keywords": sorted(shared_keywords),
+        "ab": ab,
+        "recommendations": recommendations,
+        "caveats": (["Cross-category comparison is directional; use category-specific benchmarks for decisions."] if comparison_mode == "mixed" else []) + (["At least two completed videos are required for a consolidated comparison."] if len(completed) < COMPARISON_MIN_VIDEOS else []),
+    }
+
+
+def persist_comparison_report(comparison_id: str) -> None:
+    comparison = get_comparison_or_404(comparison_id)
+    payload = build_comparison_payload(comparison)
+    report_dir = REPORT_DIR / comparison_id
+    report_dir.mkdir(parents=True, exist_ok=True)
+    json_path = report_dir / "comparison.json"
+    csv_path = report_dir / "comparison.csv"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["rank", "video_id", "title", "category", "score", "normalized_score", "percentile", "evidence_confidence", "attention", "ad_slot"])
+        writer.writeheader()
+        for item in payload["rankings"]:
+            writer.writerow({
+                "rank": item["rank"], "video_id": item["video_id"], "title": item["title"], "category": item["category"],
+                "score": item["score"], "normalized_score": item["normalized_score"], "percentile": item["percentile"],
+                "evidence_confidence": item["evidence_confidence"], "attention": item["metrics"]["attention"], "ad_slot": item["metrics"]["ad_slot"],
+            })
+    execute("delete from comparison_reports where comparison_id = ?", (comparison_id,))
+    execute(
+        "insert into comparison_reports (id, comparison_id, summary, csv_path, json_path, created_at) values (?, ?, ?, ?, ?, ?)",
+        (new_id("comparison_report"), comparison_id, json.dumps(payload), str(csv_path), str(json_path), utc_now()),
+    )
+    execute(
+        "update comparisons set comparison_mode = ?, inferred_category = ?, summary = ?, updated_at = ? where id = ?",
+        (payload["comparison"]["comparison_mode"], payload["comparison"]["inferred_category"], json.dumps(payload["recommendations"]), utc_now(), comparison_id),
+    )
 
 
 def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2898,7 +4217,7 @@ def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, A
     hook_pool = [segment for segment in segments if segment["start"] < 15] or segments[:3]
     best_hook = max(hook_pool, key=lambda segment: segment["attention_score"])
     strong_candidates = [segment for segment in segments if segment.get("recommendation_tier") == "Strong ad slot" and segment["ad_fit_score"] > 0 and segment["ad_matches"]]
-    best_ad = max(strong_candidates, key=lambda segment: segment.get("recommendation_confidence", segment["ad_fit_score"])) if strong_candidates else None
+    best_ad = max(strong_candidates, key=lambda segment: segment.get("ad_slot_score", segment.get("recommendation_confidence", segment["ad_fit_score"]))) if strong_candidates else None
     best_content = max(segments, key=content_window_score)
     weakest = min(segments, key=lambda segment: segment["attention_score"])
     category_counts: dict[str, int] = {}
@@ -2957,6 +4276,8 @@ def compact_segment(segment: dict[str, Any]) -> dict[str, Any]:
         "label": segment["label"],
         "recommendation_tier": segment.get("recommendation_tier", "Edit before monetization"),
         "recommendation_confidence": segment.get("recommendation_confidence", 0),
+        "ad_slot_score": segment.get("ad_slot_score", 0),
+        "ad_slot_reasons": segment.get("ad_slot_reasons", []),
     }
 
 
