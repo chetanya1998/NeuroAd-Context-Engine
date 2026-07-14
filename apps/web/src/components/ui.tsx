@@ -9,8 +9,9 @@ export function Card({
 
 export function Badge({
   children,
-  tone = "default"
-}: Readonly<{ children: React.ReactNode; tone?: "default" | "success" | "warning" | "danger" | "cyan" }>) {
+  tone = "default",
+  className
+}: Readonly<{ children: React.ReactNode; tone?: "default" | "success" | "warning" | "danger" | "cyan"; className?: string }>) {
   const tones = {
     default: "border-zinc-700 bg-zinc-950 text-zinc-200",
     success: "border-success/30 bg-success/10 text-success",
@@ -19,7 +20,7 @@ export function Badge({
     cyan: "border-zinc-500/40 bg-white/5 text-zinc-100"
   };
   return (
-    <span className={clsx("inline-flex items-center rounded-md border px-2.5 py-1 text-sm font-medium", tones[tone])}>
+    <span className={clsx("inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-sm font-medium whitespace-normal break-words", tones[tone], className)}>
       {children}
     </span>
   );

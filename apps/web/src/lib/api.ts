@@ -113,12 +113,31 @@ export async function createComparison(title?: string) {
   );
 }
 
-export async function uploadComparisonVideos(comparisonId: string, files: File[]) {
+export async function uploadComparisonVideos(comparisonId: string, files: File[], options?: UploadOptions) {
   const form = new FormData();
   files.forEach((file) => form.append("files", file));
-  return parseResponse<{ comparison_id: string; status: string; videos: Array<{ video_id: string; status: string; duration_seconds: number }> }>(
-    await apiFetch(`${API_BASE}/api/comparisons/${comparisonId}/videos/upload`, { method: "POST", body: form })
-  );
+  return new Promise<{ comparison_id: string; status: string; videos: Array<{ video_id: string; status: string; duration_seconds: number }> }>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE}/api/comparisons/${comparisonId}/videos/upload`);
+    request.timeout = 10 * 60 * 1000;
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        options?.onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+    request.onload = () => {
+      options?.onProgress?.(100);
+      const response = new Response(request.responseText, {
+        status: request.status,
+        statusText: request.statusText,
+        headers: { "Content-Type": request.getResponseHeader("Content-Type") ?? "application/json" }
+      });
+      parseResponse<{ comparison_id: string; status: string; videos: Array<{ video_id: string; status: string; duration_seconds: number }> }>(response).then(resolve).catch(reject);
+    };
+    request.onerror = () => reject(new Error(apiConnectionErrorMessage()));
+    request.ontimeout = () => reject(new Error("The comparison upload is taking too long. Try fewer or smaller videos, then retry."));
+    request.send(form);
+  });
 }
 
 export async function startComparison(comparisonId: string) {

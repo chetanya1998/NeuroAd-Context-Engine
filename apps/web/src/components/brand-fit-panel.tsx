@@ -69,9 +69,9 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
     <Card className="p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 text-slate-400"><Link2 className="h-4 w-4" /> Brand and product fit</div>
+          <div className="flex flex-wrap items-center gap-2 text-slate-400"><Link2 className="h-4 w-4" /> Brand and product fit <Badge tone="cyan">Beta</Badge></div>
           <h2 className="mt-3 text-2xl font-semibold text-white">Check a product against this video</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Paste a public product or brand URL. Review the extracted profile, then get timestamp-level placement recommendations with explicit evidence.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Paste a public product or brand link. Check the details we found, then see whether it fits this video and where it may fit best.</p>
         </div>
         <Badge tone="cyan">Human review required</Badge>
       </div>
@@ -134,7 +134,7 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
             </div>
             <Badge tone={tierTone(fit.suitability_tier)}>{fit.suitability_tier} · confidence {fit.fit_confidence}</Badge>
           </div>
-          <p className="mt-3 text-sm leading-6 text-slate-300">{fit.summary}</p>
+          <p className="mt-3 break-words text-sm leading-6 text-slate-300">{fit.summary}</p>
           <div className="mt-4 space-y-3">
             {fit.placements.slice(0, 3).map((placement) => (
               <div key={placement.id} className="rounded-md border border-white/10 bg-black/40 p-3">
@@ -142,8 +142,8 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
                   <p className="font-semibold text-white">{formatRange(placement.start, placement.end)} · {placement.placement_type}</p>
                   <Badge tone={placement.is_best_placement ? "success" : "cyan"}>{placement.placement_score}</Badge>
                 </div>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{placement.recommendation}</p>
-                <p className="mt-2 text-xs leading-5 text-slate-500">{placement.reasons.join(" · ")}</p>
+                <p className="mt-2 break-words text-sm leading-6 text-slate-300">{placement.recommendation}</p>
+                <p className="mt-2 break-words text-xs leading-5 text-slate-500">{placement.reasons.join(" · ")}</p>
               </div>
             ))}
           </div>

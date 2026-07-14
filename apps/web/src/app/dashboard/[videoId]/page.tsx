@@ -32,36 +32,36 @@ const tabs = ["Segments", "Objects", "Transcript", "Evidence", "Ad Matches", "Re
 
 const metricGuides: Record<string, { definition: string; example: string }> = {
   "Overall Attention": {
-    definition: "Weighted proxy score from visual movement, object clarity, speech pacing, topic clarity, and penalties.",
-    example: "Example: a clear hook with motion and spoken context scores higher than a silent static scene."
+    definition: "How likely the video is to hold attention, based on pace, movement, and clarity.",
+    example: "A clear opening with movement and useful speech usually scores higher."
   },
   Monetization: {
-    definition: "Opportunity score combining top ad-fit moments, brand safety, attention, drop risk, and visual quality.",
-    example: "Example: a safe productivity tutorial with visible laptop context can lift monetization."
+    definition: "How ready the video is for an ad opportunity, based on its best moments and safety checks.",
+    example: "A clear, safe tutorial can create more opportunities than an unclear video."
   },
   "Creator Ready": {
-    definition: "Upload-readiness score from attention, transcript clarity, visual quality, brand safety, and monetization.",
-    example: "Example: low drop risk plus clear CTA indicates fewer edits before posting."
+    definition: "How close the video is to being ready for a campaign review.",
+    example: "Clear speech, good visuals, and fewer weak moments make this stronger."
   },
   "Brand Safety": {
-    definition: "Safety score after transcript risk and claim flags are checked.",
-    example: "Example: risky claims like guaranteed cure reduce this score."
+    definition: "How suitable the video appears for brands after checking for risky claims and context.",
+    example: "Unverified promises can lower this score."
   },
   "Drop Risk": {
-    definition: "Estimated risk that a segment loses viewer interest based on low attention, silence, repetition, and blur.",
-    example: "Example: silent repetitive moments increase drop risk."
+    definition: "Where viewers may lose interest because a moment is slow, repetitive, quiet, or unclear.",
+    example: "Long silent moments can increase this score."
   },
   "Visual Quality": {
-    definition: "Frame quality estimate from sharpness, exposure, contrast, and sampled visual evidence.",
-    example: "Example: sharp, well-lit frames score higher than blurry or dark frames."
+    definition: "How clear and usable the video looks in the sampled frames.",
+    example: "Sharp, well-lit scenes score higher than dark or blurry ones."
   },
   "Transcript Confidence": {
-    definition: "Reliability estimate from speech density, clarity, repetition, and timestamp quality.",
-    example: "Example: repeated transcript chunks or unrealistic words per second reduce confidence."
+    definition: "How confidently the system understood the spoken words and their timing.",
+    example: "Clear speech helps this score; repeated or unclear words reduce it."
   },
   "Object Evidence": {
-    definition: "Strength of detected visual context from product-like objects, people, and scene signals.",
-    example: "Example: a bottle plus stable visual quality is stronger than person-only evidence."
+    definition: "How clearly the video shows useful visual context for a brand decision.",
+    example: "A clearly visible product is stronger evidence than a person alone."
   }
 };
 
@@ -117,10 +117,10 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-7xl px-5 py-10 lg:px-10">
         <header className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
           <div>
-            <Badge tone="cyan">Attention Proxy Score</Badge>
+            <Badge tone="cyan">Video report</Badge>
             <h1 className="mt-4 text-4xl font-semibold md:text-6xl">{analysis.video.title}</h1>
             <p className="mt-4 max-w-3xl text-base leading-7 text-slate-400 md:text-lg">
-              Moment-level context, transcript topics, ad-fit scoring, and creator recommendations.
+              Clear video findings, the best ad moment, and simple next steps for your review.
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -139,6 +139,8 @@ export default function DashboardPage() {
 
         <DashboardSnapshot analysis={analysis} />
 
+        <EvidenceReadiness analysis={analysis} />
+
         <section className="mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
           <VideoPreview analysis={analysis} />
           <PlacementDecision analysis={analysis} />
@@ -148,30 +150,34 @@ export default function DashboardPage() {
           <BrandFitPanel videoId={videoId} />
         </section>
 
+        <section className="mt-6">
+          <PrePostKeywords analysis={analysis} />
+        </section>
+
         <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
           <OverallVideoTrend segments={analysis.segments} />
 
           <div className="space-y-5">
-            <MetricGroup title="Attention">
+            <MetricGroup title="Viewer response">
               <Metric title="Overall Attention" value={analysis.summary.overall_attention_score} icon={<Zap className="h-5 w-5" />} />
               <Metric title="Drop Risk" value={analysis.summary.overall_drop_risk_score ?? 0} icon={<AlertTriangle className="h-5 w-5" />} />
               <Moment title="Best Hook" moment={analysis.summary.best_hook} />
               <Moment title="Weak Segment" moment={analysis.summary.weakest_segment} danger />
             </MetricGroup>
-            <MetricGroup title="Evidence Quality">
+            <MetricGroup title="How reliable is this report?" beta>
               <Metric title="Transcript Confidence" value={averageTranscriptConfidence(analysis.segments)} icon={<FileText className="h-5 w-5" />} />
               <Metric title="Visual Quality" value={analysis.summary.visual_quality_score ?? 0} icon={<Eye className="h-5 w-5" />} />
               <Metric title="Object Evidence" value={objectEvidenceScore(analysis.segments)} icon={<Search className="h-5 w-5" />} />
               <Metric title="Brand Safety" value={analysis.summary.brand_safety_score ?? 100} icon={<ShieldCheck className="h-5 w-5" />} />
             </MetricGroup>
-            <MetricGroup title="Monetization">
+            <MetricGroup title="Campaign opportunity" beta>
               <Metric title="Monetization" value={analysis.summary.monetization_opportunity_score} icon={<TrendingUp className="h-5 w-5" />} />
               <Metric title="Creator Ready" value={analysis.summary.creator_readiness_score ?? 0} icon={<FileText className="h-5 w-5" />} />
               <Card className="p-6 sm:col-span-2">
-                <GuidedLabel label="Top Ad Category" guide="Highest-scoring category from the flexible evidence-weighted ad catalog. If no category has enough evidence, the report says no confident match." />
+                <div className="flex flex-wrap items-center gap-2"><GuidedLabel label="Best matching ad category" guide="The category that fits this video best based on the available evidence." /><Badge tone="cyan">Beta</Badge></div>
                 <p className="mt-3 text-3xl font-semibold">{analysis.summary.top_ad_category ?? "No confident match"}</p>
                 <p className="mt-4 text-base leading-7 text-slate-500">
-                  Matched against {analysis.summary.ad_catalog_size ?? 0}+ generated ad categories using transcript, object, person, audio, visual, and safety context.
+                  We compare the spoken content, visuals, audio, and safety context with {analysis.summary.ad_catalog_size ?? 0}+ ad categories.
                 </p>
               </Card>
             </MetricGroup>
@@ -180,7 +186,7 @@ export default function DashboardPage() {
 
         <section className="mt-6">
           <div className="mb-3 flex items-center justify-between gap-4">
-            <h2 className="text-2xl font-semibold">Attention Timeline</h2>
+            <h2 className="text-2xl font-semibold">Viewer attention over time</h2>
             <div className="relative w-full max-w-sm">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
               <input
@@ -233,6 +239,104 @@ export default function DashboardPage() {
       <SegmentDrawer />
     </AppShell>
   );
+}
+
+function EvidenceReadiness({ analysis }: { analysis: AnalysisPayload }) {
+  const segments = analysis.segments;
+  const transcript = averageTranscriptConfidence(segments);
+  const visual = Math.round(analysis.summary.visual_quality_score ?? 0);
+  const objects = objectEvidenceScore(segments);
+  const safety = Math.round(analysis.summary.brand_safety_score ?? 100);
+  const directEvidence = segments.filter((segment) => segment.evidence_mode === "transcript_visual" || segment.evidence_mode === "audio_visual").length;
+  const weakEvidence = segments.filter((segment) => segment.evidence_mode === "weak_evidence" || (segment.failed_or_weak_signals?.length ?? 0) > 0).length;
+  const confidence = Math.round(transcript * 0.35 + visual * 0.25 + objects * 0.20 + safety * 0.20);
+  const rows = [
+    { label: "Speech", value: transcript, detail: "how clearly words and timing were understood" },
+    { label: "Visuals", value: visual, detail: "how clear the sampled video frames are" },
+    { label: "On-screen context", value: objects, detail: "how much useful visual context was found" },
+    { label: "Safety", value: safety, detail: "screening for risky claims and context" }
+  ];
+  return (
+    <section className="mt-6">
+      <Card className="overflow-hidden border-white/10 bg-black">
+        <div className="flex flex-col gap-4 border-b border-white/10 p-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="flex flex-wrap gap-2"><Badge tone="cyan">Evidence confidence</Badge><Badge tone="cyan">Beta</Badge></div>
+            <h2 className="mt-3 text-2xl font-semibold text-white">How much can you trust these findings?</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">A strong video score is more useful when the speech, visuals, and on-screen context are clear. Use this as a quick confidence check before you act.</p>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 text-left md:text-right">
+            <p className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Confidence in this report</p>
+            <p className="mt-1 text-3xl font-semibold text-white">{confidence}</p>
+          </div>
+        </div>
+        <div className="grid divide-y divide-white/10 md:grid-cols-4 md:divide-x md:divide-y-0">
+          {rows.map((row) => (
+            <div key={row.label} className="p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-semibold text-white">{row.label}</p>
+                <Badge tone={row.value >= 70 ? "success" : row.value >= 45 ? "warning" : "danger"}>{row.value}</Badge>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-500">{row.detail}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-col gap-2 border-t border-white/10 bg-white/[0.02] px-5 py-3 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+          <span>{directEvidence}/{segments.length} moments have clear speech or audio-and-visual support.</span>
+          <span className={weakEvidence ? "text-warning" : "text-success"}>{weakEvidence ? `${weakEvidence} moments need a closer look.` : "All moments have usable evidence."}</span>
+        </div>
+      </Card>
+    </section>
+  );
+}
+
+function PrePostKeywords({ analysis }: { analysis: AnalysisPayload }) {
+  const keywords = buildPrePostKeywords(analysis);
+  const hashtags = keywords.slice(0, 5).map((keyword) => `#${keyword.keyword.replace(/[^a-z0-9]+/gi, "")}`).filter((tag) => tag.length > 1);
+  return (
+    <Card className="min-w-0 overflow-hidden border-white/10 bg-black">
+      <div className="flex flex-col gap-4 border-b border-white/10 p-5 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex flex-wrap gap-2"><Badge tone="cyan">Pre-post keywords</Badge><Badge tone="cyan">Beta</Badge></div>
+          <h2 className="mt-3 text-2xl font-semibold text-white">Suggested words for your title, caption, and tags</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">These suggestions come from the video title, detected topics, on-screen context, and spoken content. Keep only the words that accurately describe the final video.</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3"><p className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Before posting</p><p className="mt-1 text-sm font-semibold text-white">Use 3–5 relevant keywords</p></div>
+      </div>
+      <div className="grid gap-5 p-5 lg:grid-cols-[1.1fr_0.9fr]">
+        <div>
+          <p className="text-sm font-semibold text-white">Recommended keywords</p>
+          <div className="mt-3 flex flex-wrap gap-2">{keywords.length ? keywords.map((keyword) => <span key={`${keyword.keyword}-${keyword.source}`} className="inline-flex max-w-full items-center gap-2 rounded-md border border-white/10 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"><span className="break-words">{keyword.keyword}</span><span className="text-xs text-zinc-500">{keyword.source}</span></span>) : <p className="text-sm text-slate-500">Add a clearer title or more spoken context to generate keyword ideas.</p>}</div>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-zinc-950 p-4"><p className="text-sm font-semibold text-white">Ready-to-review hashtags</p><p className="mt-1 text-xs leading-5 text-slate-500">Use only hashtags that match the actual video.</p><div className="mt-3 flex flex-wrap gap-2">{hashtags.length ? hashtags.map((tag) => <Badge key={tag} tone="cyan">{tag}</Badge>) : <p className="text-sm text-slate-500">No reliable hashtags yet.</p>}</div><p className="mt-4 border-t border-white/10 pt-3 text-xs leading-5 text-slate-500">Tip: put the clearest keyword in the first half of the title and repeat it naturally in the caption.</p></div>
+      </div>
+    </Card>
+  );
+}
+
+function buildPrePostKeywords(analysis: AnalysisPayload) {
+  const suggestions = new Map<string, { keyword: string; source: string; score: number }>();
+  const add = (keyword: string, source: string, score: number) => {
+    const cleaned = keyword.replace(/[_-]+/g, " ").replace(/\b\d{8,}\b/g, "").replace(/\s+/g, " ").trim();
+    if (cleaned.length < 3 || cleaned.length > 42) return;
+    const key = cleaned.toLowerCase();
+    const existing = suggestions.get(key);
+    if (!existing || existing.score < score) suggestions.set(key, { keyword: cleaned, source, score });
+  };
+
+  const title = analysis.video.title.replace(/[_-]+/g, " ").replace(/\b\d{8,}\b/g, "").replace(/\s+/g, " ").trim();
+  if (title) add(title, "title", 10);
+  analysis.topics.forEach((topic) => add(topic.label, "topic", 8 + topic.confidence));
+  analysis.objects.filter((object) => object.label.toLowerCase() !== "person").forEach((object) => add(object.label, "visual", 5 + object.confidence));
+  if (analysis.summary.top_ad_category && analysis.summary.top_ad_category !== "No confident match") add(analysis.summary.top_ad_category, "context", 6);
+
+  const stopWords = new Set(["this", "that", "with", "from", "have", "your", "video", "title", "about", "there", "where", "their", "they", "what", "when", "will", "into", "were", "been", "just", "more"]);
+  const words = analysis.segments.flatMap((segment) => normalizedWhitespace(segment.transcript).toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? []).filter((word) => !stopWords.has(word));
+  const counts = new Map<string, number>();
+  words.forEach((word) => counts.set(word, (counts.get(word) ?? 0) + 1));
+  [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).forEach(([word, count]) => add(word, "speech", 2 + count));
+
+  return [...suggestions.values()].sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
 function DashboardSnapshot({ analysis }: { analysis: AnalysisPayload }) {
@@ -333,7 +437,7 @@ function PlacementDecision({ analysis }: { analysis: AnalysisPayload }) {
     <Card className="p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <GuidedLabel label="Placement Decision" guide="Flexible recommendation tier based on weighted transcript, visual, object, person, audio, safety, attention, and drop-risk evidence." />
+          <div className="flex flex-wrap items-center gap-2"><GuidedLabel label="Placement recommendation" guide="A suggestion based on what the system found in the video." /><Badge tone="cyan">Beta</Badge></div>
           <h2 className="mt-3 text-3xl font-semibold text-white">{summary.recommendation_status ?? tier}</h2>
         </div>
         <Badge tone={tierTone(tier)}>{tier}</Badge>
@@ -342,9 +446,9 @@ function PlacementDecision({ analysis }: { analysis: AnalysisPayload }) {
         {summary.recommendation_message ?? "Review the best content-context window before placing an ad."}
       </p>
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <DecisionStat label="Strong ad slot" value={bestSlot ? formatRange(bestSlot.start, bestSlot.end) : "None"} />
-        <DecisionStat label="Best content window" value={bestWindow ? formatRange(bestWindow.start, bestWindow.end) : "--"} />
-        <DecisionStat label="Confidence" value={`${Math.round(bestSlot?.recommendation_confidence ?? bestWindow?.recommendation_confidence ?? representative?.recommendation_confidence ?? 0)}`} />
+        <DecisionStat label="Best moment for an ad" value={bestSlot ? formatRange(bestSlot.start, bestSlot.end) : "None yet"} />
+        <DecisionStat label="Best video moment" value={bestWindow ? formatRange(bestWindow.start, bestWindow.end) : "--"} />
+        <DecisionStat label="Confidence" value={`${Math.round(bestSlot?.recommendation_confidence ?? bestWindow?.recommendation_confidence ?? representative?.recommendation_confidence ?? 0)}/100`} />
       </div>
       {representative?.ad_slot_score ? (
         <div className="mt-4 rounded-lg border border-success/25 bg-success/5 p-4">
@@ -385,10 +489,10 @@ function SignalList({ title, signals, empty, tone }: { title: string; signals: s
   );
 }
 
-function MetricGroup({ title, children }: { title: string; children: React.ReactNode }) {
+function MetricGroup({ title, children, beta = false }: { title: string; children: React.ReactNode; beta?: boolean }) {
   return (
     <section>
-      <h2 className="mb-3 text-base font-semibold uppercase tracking-[0.14em] text-slate-500">{title}</h2>
+      <div className="mb-3 flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold uppercase tracking-[0.14em] text-slate-500">{title}</h2>{beta ? <Badge tone="cyan" className="text-xs">Beta</Badge> : null}</div>
       <div className="grid gap-4 sm:grid-cols-2">{children}</div>
     </section>
   );
@@ -397,8 +501,8 @@ function MetricGroup({ title, children }: { title: string; children: React.React
 function Metric({ title, value, icon }: { title: string; value: number; icon: React.ReactNode }) {
   const guide = metricGuides[title];
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between text-slate-400">
+    <Card className="min-w-0 p-6">
+      <div className="flex min-w-0 items-center justify-between gap-3 text-slate-400">
         <GuidedLabel label={title} guide={guide ? `${guide.definition} ${guide.example}` : undefined} />
         {icon}
       </div>
@@ -410,19 +514,20 @@ function Metric({ title, value, icon }: { title: string; value: number; icon: Re
 
 function GuidedLabel({ label, guide }: { label: string; guide?: string }) {
   return (
-    <span className="inline-flex items-center gap-2 text-base text-slate-400" title={guide}>
+    <span className="inline-flex min-w-0 items-center gap-2 text-base text-slate-400" title={guide}>
       {label}
       {guide ? <CircleHelp className="h-4 w-4 text-slate-500" aria-hidden="true" /> : null}
     </span>
   );
 }
 
-function ChartHeader({ title, guide }: { title: string; guide: string }) {
+function ChartHeader({ title, guide, action }: { title: string; guide: string; action: string }) {
   return (
     <div className="mb-4 flex items-start justify-between gap-3">
       <div>
         <GuidedLabel label={title} guide={guide} />
-        <p className="mt-2 text-sm leading-6 text-slate-500">{guide}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-500"><span className="font-medium text-slate-300">How to read it:</span> {guide}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-500"><span className="font-medium text-slate-300">Use it to:</span> {action}</p>
       </div>
     </div>
   );
@@ -558,6 +663,8 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
           <div>
             <p className="text-sm uppercase tracking-[0.18em] text-slate-500">{trendCopy.kicker}</p>
             <h2 className="mt-2 text-3xl font-semibold leading-tight text-white">{trendCopy.title}</h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400"><span className="font-medium text-slate-200">How to read it:</span> Follow the white line for viewer attention. A strong ad moment usually combines high attention, high ad fit, low drop risk, and steady brand safety.</p>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500"><span className="font-medium text-slate-300">Recommended action:</span> {trendCopy.action}</p>
           </div>
           <LegendRow
             items={[
@@ -669,16 +776,17 @@ function trendLabel(segments: Segment[]) {
   const avgAdFit = mean(segments.map((segment) => segment.ad_fit_score));
   const avgDrop = mean(segments.map((segment) => segment.drop_risk_score ?? 0));
   const avgSafety = mean(segments.map((segment) => segment.brand_safety_score ?? 100));
-  if (avgDrop >= 65) {
-    return { kicker: "Drop-risk trend", title: "High drop-risk moments need creator edits before ad placement" };
+  const score = Math.round((avgAttention * 0.4) + (avgAdFit * 0.25) + ((100 - avgDrop) * 0.2) + (avgSafety * 0.15));
+  if (avgDrop >= 75 && avgAttention < 45) {
+    return { kicker: "Overall video result", title: `Low attention (${Math.round(avgAttention)}/100) and high viewer drop risk (${Math.round(avgDrop)}/100)`, action: "Tighten the opening, remove slow moments, and re-check the next edit before using an ad break." };
   }
-  if (avgAdFit >= 60 && avgSafety >= 75) {
-    return { kicker: "Brand-fit trend", title: "Strong ad-fit windows with acceptable brand safety" };
+  if (avgSafety < 70) {
+    return { kicker: "Overall video result", title: `Brand safety needs review (${Math.round(avgSafety)}/100)`, action: "Review the flagged words and visuals before sharing this video with a brand." };
   }
-  if (avgAttention >= 70) {
-    return { kicker: "Attention trend", title: "Strong viewer-attention pattern across the timeline" };
+  if (avgAdFit >= 60 && avgAttention >= 55) {
+    return { kicker: "Overall video result", title: `Good candidate for an ad test (${score}/100 overall)`, action: "Open the best highlighted moment and review it before approving a placement." };
   }
-  return { kicker: "Overall video trend", title: "Attention, ad-fit, drop-risk, and safety movement" };
+  return { kicker: "Overall video result", title: `This video needs improvement before an ad test (${score}/100 overall)`, action: "Use the highlighted strong and weak moments below to plan the next edit." };
 }
 
 function mean(values: number[]) {
@@ -811,7 +919,7 @@ function EvidenceHeatmap({ segments }: { segments: Segment[] }) {
   ];
   return (
     <Card className="p-6">
-      <ChartHeader title="Evidence Heatmap" guide="Rows are scoring signals; columns are video segments. Brighter cells mean stronger signal or higher risk for that timestamp." />
+      <ChartHeader title="Evidence Heatmap" guide="Rows are signals and columns are moments in the video. Brighter cells mean a stronger signal; bright red drop-risk cells need attention." action="Spot patterns quickly, then open the matching segment to see the transcript and visual evidence." />
       <div className="overflow-x-auto">
         <div className="min-w-[620px] space-y-2">
           <div className="grid gap-1" style={{ gridTemplateColumns: `150px repeat(${Math.max(1, segments.length)}, minmax(54px, 1fr))` }}>
@@ -864,7 +972,7 @@ function BrandFitRadar({ segments }: { segments: Segment[] }) {
     : [];
   return (
     <Card className="p-6">
-      <ChartHeader title="Brand-Fit Radar" guide="Shows why the best available segment is or is not sponsor-ready across transcript, visual, object, attention, slot, and safety dimensions." />
+      <ChartHeader title="Brand-Fit Radar" guide="The larger the shape reaches toward each label, the stronger that part of the best available moment is." action="Check the smallest side of the shape to see what needs improvement before you approve a brand placement." />
       <div className="h-72">
         {data.length ? (
           <ResponsiveContainer width="100%" height="100%">
@@ -893,7 +1001,7 @@ function AttentionAdFitScatter({ segments }: { segments: Segment[] }) {
   }));
   return (
     <Card className="p-6">
-      <ChartHeader title="Attention vs Ad-Fit" guide="Each dot is a segment. Upper-right means the timestamp is both attention-worthy and brand-relevant; low safety or high risk should still be reviewed." />
+      <ChartHeader title="Attention vs Ad-Fit" guide="Each dot is a moment. Dots in the upper-right are stronger for both audience attention and ad relevance; safety and risk still need review." action="Shortlist upper-right moments, then use the tooltip to check their timing, safety, and drop risk." />
       <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 12, right: 16, bottom: 16, left: 0 }}>
@@ -918,17 +1026,19 @@ function AttentionAdFitScatter({ segments }: { segments: Segment[] }) {
 }
 
 function ScoringMethodologyTable({ catalogSize }: { catalogSize: number }) {
-  const rows = [
-    ["Attention Proxy", "0-24 Critical, 25-39 Weak, 40-54 Average, 55-69 Good, 70-84 Strong, 85-100 Excellent", "Visual novelty, motion, object clarity, visual quality, scene change, speech pacing, hook/CTA, audio, topic clarity", "Silence, repetition, blur"],
-    ["Ad-Fit", "0-19 Avoid, 20-39 Weak, 40-59 Maybe, 60-79 Strong test, 80-100 Use", "Transcript/category keywords, visual objects, topic match, audience cue, attention, slot quality, safety", "Requires evidence; no evidence means no match"],
-    ["Drop Risk", "0-24 Low risk, 25-49 Manageable, 50-74 Needs review, 75-100 High risk", "Inverse attention plus silence, repetition, blur, and missing context", "High score means avoid ad placement or edit"],
-    ["Brand Safety", "0-49 Unsafe, 50-69 Needs review, 70-84 Mostly safe, 85-100 Safe", "Transcript risk terms and claim flags", "Claims and sensitive terms reduce score"],
-    ["Ad Catalog", `${catalogSize}+ generated categories considered in backend`, "Vertical x intent candidates such as Productivity - Tutorial or Travel - Review", "The catalog is not shown as recommendations unless detected evidence matches"]
-  ];
+  const guides = [
+    { title: "Viewer attention", help: "How likely people are to stay interested.", bands: [["0–24", "Very low", "danger"], ["25–39", "Low", "danger"], ["40–54", "Average", "warning"], ["55–69", "Good", "warning"], ["70–100", "Strong", "success"]] },
+    { title: "Ad fit", help: "How naturally an ad may fit the moment.", bands: [["0–19", "Avoid", "danger"], ["20–39", "Weak", "danger"], ["40–59", "Maybe", "warning"], ["60–79", "Worth testing", "success"], ["80–100", "Strong fit", "success"]] },
+    { title: "Viewer drop risk", help: "How likely people are to lose interest. Lower is better.", bands: [["0–24", "Low risk", "success"], ["25–49", "Manageable", "warning"], ["50–74", "Needs review", "warning"], ["75–100", "High risk", "danger"]] },
+    { title: "Brand safety", help: "How suitable the content looks for brands.", bands: [["0–49", "Unsafe", "danger"], ["50–69", "Needs review", "warning"], ["70–84", "Mostly safe", "success"], ["85–100", "Safe", "success"]] }
+  ] as const;
   return (
     <Card className="p-6">
-      <ChartHeader title="Scoring Methodology" guide="Transparent method table showing what contributes to each score and how the system avoids generic ad recommendations." />
-      <SimpleRows rows={rows} headers={["Score", "Score Labels", "Inputs", "Guardrail"]} />
+      <ChartHeader title="What the scores mean" guide="This table explains the inputs behind each score and the checks that prevent generic recommendations." action="Use it when you need to explain a result to a client, creator, or campaign reviewer." />
+      <div className="grid gap-4 md:grid-cols-2">
+        {guides.map((guide) => <div key={guide.title} className="rounded-lg border border-white/10 bg-zinc-950 p-4"><p className="font-semibold text-white">{guide.title}</p><p className="mt-1 text-sm leading-6 text-slate-500">{guide.help}</p><div className="mt-4 flex flex-wrap gap-2">{guide.bands.map(([range, label, tone]) => <Badge key={`${range}-${label}`} tone={tone}><span className="font-mono text-xs">{range}</span><span className="ml-1">{label}</span></Badge>)}</div></div>)}
+      </div>
+      <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm leading-6 text-slate-400"><span className="font-semibold text-white">How recommendations stay relevant:</span> We only show an ad category when the transcript, visuals, or topic context gives enough evidence. {catalogSize}+ categories are checked in the background.</div>
     </Card>
   );
 }
@@ -1135,20 +1245,29 @@ function TranscriptStat({ label, value }: { label: string; value: string }) {
 }
 
 function EvidenceTab({ segments }: { segments: Segment[] }) {
-  const rows = segments.map((segment) => [
-    formatRange(segment.start, segment.end),
-    segment.recommendation_tier ?? "Edit before monetization",
-    String(Math.round(segment.recommendation_confidence ?? 0)),
-    segment.evidence_mode ?? "weak_evidence",
-    String(Math.round(segment.drop_risk_score ?? 0)),
-    String(Math.round(segment.brand_safety_score ?? 100)),
-    String(Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0)),
-    `${Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100)}`,
-    segment.strong_signals?.join(" | ") || "No strong signals",
-    segment.failed_or_weak_signals?.join(" | ") || "No weak signals",
-    segment.score_reasons?.join(" | ") || "No score reasons captured"
-  ]);
-  return <SimpleRows rows={rows} headers={["Time", "Tier", "Confidence", "Evidence Mode", "Drop Risk", "Brand Safety", "Transcript", "Visual", "Strong Signals", "Weak Signals", "Evidence Reasons"]} />;
+  return (
+    <div className="space-y-4">
+      <Card className="p-5"><p className="font-semibold text-white">What this view shows</p><p className="mt-2 text-sm leading-6 text-slate-500">Each card explains one moment in plain language. Use the coloured scores to see what is working and what needs a closer look.</p></Card>
+      {segments.map((segment) => {
+        const confidence = Math.round(segment.recommendation_confidence ?? 0);
+        const transcript = Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0);
+        const visual = Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100);
+        const safety = Math.round(segment.brand_safety_score ?? 100);
+        const risk = Math.round(segment.drop_risk_score ?? 0);
+        return <Card key={segment.id} className="min-w-0 p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap gap-2"><Badge tone="cyan">{formatRange(segment.start, segment.end)}</Badge><Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? "Edit before monetization"}</Badge></div><p className="mt-3 text-base leading-7 text-slate-300">{segment.summary || segment.recommendation || "No summary is available for this moment."}</p></div><Badge tone={confidence >= 70 ? "success" : confidence >= 45 ? "warning" : "danger"}>Confidence {confidence}/100</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><EvidenceMetric label="Speech" value={transcript} /><EvidenceMetric label="Visuals" value={visual} /><EvidenceMetric label="Safety" value={safety} /><EvidenceMetric label="Drop risk" value={risk} inverse /></div><div className="mt-5 grid gap-4 lg:grid-cols-2"><SignalBlock title="What worked" signals={segment.strong_signals ?? []} empty="No strong signals were found." tone="success" /><SignalBlock title="What needs work" signals={segment.failed_or_weak_signals ?? []} empty="No weak signals were found." tone="warning" /></div>{segment.score_reasons?.length ? <p className="mt-4 border-t border-white/10 pt-4 text-sm leading-6 text-slate-500"><span className="font-medium text-slate-300">Why the score changed:</span> {segment.score_reasons.slice(0, 4).join(" · ")}</p> : null}</Card>;
+      })}
+    </div>
+  );
+}
+
+function EvidenceMetric({ label, value, inverse = false }: { label: string; value: number; inverse?: boolean }) {
+  const tone = inverse ? value <= 25 ? "success" : value <= 50 ? "warning" : "danger" : value >= 70 ? "success" : value >= 45 ? "warning" : "danger";
+  const color = tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-danger";
+  return <div className="rounded-lg border border-white/10 bg-zinc-950 p-3"><p className="text-xs text-slate-500">{label}{inverse ? " (lower is better)" : ""}</p><p className={`mt-2 text-xl font-semibold ${color}`}>{value}/100</p></div>;
+}
+
+function SignalBlock({ title, signals, empty, tone }: { title: string; signals: string[]; empty: string; tone: "success" | "warning" }) {
+  return <div><p className="text-sm font-semibold text-white">{title}</p><div className="mt-2 flex flex-wrap gap-2">{signals.length ? signals.map((signal) => <Badge key={signal} tone={tone}>{signal}</Badge>) : <p className="text-sm text-slate-500">{empty}</p>}</div></div>;
 }
 
 function AdMatchesTab({ segments }: { segments: Segment[] }) {
