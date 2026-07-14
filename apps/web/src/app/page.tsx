@@ -4,17 +4,22 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
+  ArrowDown,
   ArrowRight,
   AudioLines,
   BarChart3,
   Brain,
   ChevronRight,
+  CheckCircle2,
+  Clock3,
   Cpu,
   FileText,
   FileVideo,
   LayoutDashboard,
+  ListVideo,
   ScanSearch,
   UploadCloud,
+  Trash2,
   Video,
   WifiOff,
   WandSparkles
@@ -27,7 +32,10 @@ import { Badge, Button, Card } from "@/components/ui";
 import HeroContextAnimation from "@/components/animations/HeroContextAnimation";
 import { useInView } from "@/lib/useInView";
 import {
+  createComparison,
   getSystemDependencies,
+  startComparison,
+  uploadComparisonVideos,
   uploadVideo
 } from "@/lib/api";
 
@@ -87,6 +95,30 @@ const featureHighlights = [
   }
 ];
 
+const betaCapabilities = [
+  {
+    icon: Video,
+    eyebrow: "Available now",
+    title: "Single-video intelligence",
+    copy: "Upload a video to review timestamped attention, context, ad-fit, and strongest-slot evidence.",
+    tone: "success" as const
+  },
+  {
+    icon: BarChart3,
+    eyebrow: "Beta preview",
+    title: "Creative comparison and A/B analysis",
+    copy: "Compare two to five videos with a consolidated ranking, category context, shared keywords, and directional A/B deltas.",
+    tone: "cyan" as const
+  },
+  {
+    icon: WandSparkles,
+    eyebrow: "Beta preview",
+    title: "Brand and product fit",
+    copy: "Review a product profile from a public link, then identify evidence-backed placement windows or a reason to avoid them.",
+    tone: "cyan" as const
+  }
+];
+
 const pipelineStages = {
   ingest: {
     icon: UploadCloud,
@@ -123,9 +155,23 @@ const pipelineStages = {
 };
 
 type PipelineStepId = keyof typeof pipelineStages;
+type UploadQueueItem = {
+  id: string;
+  file: File;
+  progress: number;
+  status: "ready" | "uploading" | "uploaded";
+};
+type RecentReport = {
+  id: string;
+  type: "video" | "comparison";
+  title: string;
+  createdAt: string;
+  videoCount?: number;
+};
 
 const FALLBACK_MAX_UPLOAD_MB = 200;
 const SUPPORTED_VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".m4v"];
+const RECENT_REPORTS_STORAGE_KEY = "neuroad-recent-reports";
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) {
@@ -168,6 +214,8 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
+  const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
   const [isDraggingUpload, setIsDraggingUpload] = useState(false);
   const [activePipelineStep, setActivePipelineStep] = useState<PipelineStepId>("score");
   const dependencyQuery = useQuery({
@@ -189,20 +237,54 @@ export default function HomePage() {
   }
 
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadVideo(file, { onProgress: setUploadProgress }),
+    mutationFn: (item: UploadQueueItem) => uploadVideo(item.file, {
+      onProgress: (progress) => {
+        setUploadProgress(progress);
+        setUploadQueue((items) => items.map((queued) => queued.id === item.id ? { ...queued, progress, status: progress >= 100 ? "uploaded" : "uploading" } : queued));
+      }
+    }),
     onMutate: () => {
       setUploadProgress(0);
       setUploadNotice("Uploading video. Keep this tab open while the file transfers.");
+      setUploadQueue((items) => items.map((item) => ({ ...item, status: "uploading", progress: 0 })));
     },
     onSuccess: (payload) => {
       setUploadProgress(100);
       setUploadNotice("Upload complete. Opening the analysis workspace...");
+      rememberReports([{ id: payload.video_id, type: "video", title: uploadQueue[0]?.file.name ?? "Video report", createdAt: new Date().toISOString() }]);
       router.push(`/analyze/${payload.video_id}`);
     },
     onError: showActionError
   });
 
-  const busy = uploadMutation.isPending;
+  const comparisonMutation = useMutation({
+    mutationFn: async (items: UploadQueueItem[]) => {
+      const comparison = await createComparison("Creative comparison");
+      const uploadedVideos: Array<{ video_id: string }> = [];
+      for (const [index, item] of items.entries()) {
+        setUploadNotice(`Uploading video ${index + 1} of ${items.length}. Keep this tab open while the batch transfers.`);
+        setUploadQueue((queue) => queue.map((queued) => queued.id === item.id ? { ...queued, status: "uploading", progress: 0 } : queued));
+        const uploaded = await uploadComparisonVideos(comparison.comparison_id, [item.file], {
+          onProgress: (progress) => setUploadQueue((queue) => queue.map((queued) => queued.id === item.id ? { ...queued, progress, status: progress >= 100 ? "uploaded" : "uploading" } : queued))
+        });
+        uploadedVideos.push(...uploaded.videos);
+      }
+      setUploadNotice("All videos uploaded. Preparing the consolidated analysis workspace...");
+      await startComparison(comparison.comparison_id);
+      return { comparison, items, uploadedVideos };
+    },
+    onSuccess: ({ comparison, items, uploadedVideos }) => {
+      const createdAt = new Date().toISOString();
+      rememberReports([
+        { id: comparison.comparison_id, type: "comparison", title: `${items.length} video comparison`, createdAt, videoCount: items.length },
+        ...uploadedVideos.map((video, index) => ({ id: video.video_id, type: "video" as const, title: items[index]?.file.name ?? `Video ${index + 1}`, createdAt }))
+      ]);
+      router.push(`/compare/analyze/${comparison.comparison_id}`);
+    },
+    onError: showActionError
+  });
+
+  const busy = uploadMutation.isPending || comparisonMutation.isPending;
   const activePipeline = pipelineStages[activePipelineStep];
   const ActivePipelineIcon = activePipeline.icon;
   const maxUploadMb = dependencyQuery.data?.limits?.max_upload_mb ?? FALLBACK_MAX_UPLOAD_MB;
@@ -218,36 +300,78 @@ export default function HomePage() {
     error?.toLowerCase().includes("insecure api url");
 
   useEffect(() => {
-    if (!uploadMutation.isPending) return;
+    if (!busy) return;
     const timer = window.setTimeout(() => {
       setUploadNotice(
         "Still uploading. Large videos can take a while on slower networks; keep this tab open until it finishes."
       );
     }, 8000);
     return () => window.clearTimeout(timer);
-  }, [uploadMutation.isPending]);
+  }, [busy]);
 
-  function handleFile(file?: File) {
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(RECENT_REPORTS_STORAGE_KEY);
+      if (saved) setRecentReports(JSON.parse(saved) as RecentReport[]);
+    } catch {
+      // Report history is a convenience only; uploads and reports remain available without it.
+    }
+  }, []);
+
+  function rememberReports(nextReports: RecentReport[]) {
+    setRecentReports((current) => {
+      const seen = new Set<string>();
+      const merged = [...nextReports, ...current].filter((report) => {
+        const key = `${report.type}:${report.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, 10);
+      window.localStorage.setItem(RECENT_REPORTS_STORAGE_KEY, JSON.stringify(merged));
+      return merged;
+    });
+  }
+
+  function addFiles(nextFiles: FileList | null) {
     setError(null);
     setUploadNotice(null);
-    if (!file) return;
+    if (!nextFiles) return;
     if (typeof window !== "undefined" && !window.navigator.onLine) {
       setError("Your internet connection appears to be offline. Reconnect, then try the upload again.");
       return;
     }
-    const suffix = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
-    if (!SUPPORTED_VIDEO_EXTENSIONS.includes(suffix)) {
-      setError("Use a supported video file: MP4, MOV, WebM, or M4V.");
-      return;
-    }
     const maxUploadBytes = maxUploadMb * 1024 * 1024;
-    if (file.size > maxUploadBytes) {
+    const incoming = Array.from(nextFiles);
+    const invalid = incoming.find((file) => {
+      const suffix = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+      return !SUPPORTED_VIDEO_EXTENSIONS.includes(suffix) || file.size > maxUploadBytes;
+    });
+    if (invalid) {
+      const suffix = `.${invalid.name.split(".").pop()?.toLowerCase() ?? ""}`;
       setError(
-        `${file.name} is ${formatFileSize(file.size)}. Upload a video under ${maxUploadMb} MB, or trim/compress it before uploading.`
+        !SUPPORTED_VIDEO_EXTENSIONS.includes(suffix)
+          ? `${invalid.name} is not supported. Use MP4, MOV, WebM, or M4V.`
+          : `${invalid.name} is ${formatFileSize(invalid.size)}. Upload each video under ${maxUploadMb} MB.`
       );
       return;
     }
-    uploadMutation.mutate(file);
+    setUploadQueue((current) => {
+      const existing = new Set(current.map((item) => `${item.file.name}-${item.file.size}-${item.file.lastModified}`));
+      const additions = incoming
+        .filter((file) => !existing.has(`${file.name}-${file.size}-${file.lastModified}`))
+        .map((file) => ({ id: `${file.name}-${file.size}-${file.lastModified}`, file, progress: 0, status: "ready" as const }));
+      const next = [...current, ...additions].slice(0, 5);
+      if (current.length + additions.length > 5) setError("An analysis set supports up to 5 videos.");
+      return next;
+    });
+  }
+
+  function startUploadSet() {
+    if (uploadQueue.length === 1) {
+      uploadMutation.mutate(uploadQueue[0]);
+      return;
+    }
+    if (uploadQueue.length >= 2) comparisonMutation.mutate(uploadQueue);
   }
 
   return (
@@ -261,7 +385,7 @@ export default function HomePage() {
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,transparent_30%,#000_80%)]" />
 
         <div className="pointer-events-auto">
-          <Badge tone="cyan">Attention Proxy Score · v0.1</Badge>
+          <Badge tone="cyan">Private Beta · V1.0</Badge>
         </div>
 
         <h1 className="hero-wordmark mt-8 w-full max-w-[96vw] whitespace-nowrap pb-3 text-center text-[clamp(1.95rem,7.2vw,5.4rem)] font-semibold leading-none">
@@ -273,7 +397,7 @@ export default function HomePage() {
           <span className="block">Place ads where they feel natural and on time.</span>
         </p>
 
-        <div className="mt-8 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
+        <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
           <Button
             className="w-full sm:w-auto"
             onClick={() =>
@@ -286,11 +410,17 @@ export default function HomePage() {
             variant="secondary"
             className="w-full sm:w-auto"
             onClick={() =>
-              document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })
+              document.getElementById("beta-features")?.scrollIntoView({ behavior: "smooth" })
             }
           >
-            How It Works
+            Explore Beta
           </Button>
+        </div>
+
+        {/* Scroll indicator */}
+        <div className="absolute bottom-8 flex flex-col items-center gap-2">
+          <span className="text-xs tracking-widest text-zinc-600">SCROLL</span>
+          <ArrowDown className="h-4 w-4 animate-bounce-arrow text-zinc-500" />
         </div>
       </section>
 
@@ -298,39 +428,41 @@ export default function HomePage() {
         {/* ═══════════════════════════════════════════════════════════
             SECTION 2 — INPUT CARD
          ═══════════════════════════════════════════════════════════ */}
-        <section id="input-section" className="flex min-h-[calc(100svh-4rem)] items-center py-12 md:py-16">
+        <section id="input-section" className="py-20">
           <Reveal>
-            <Card className="glow-border mx-auto w-full max-w-6xl border-white/10 bg-black p-6 shadow-glow-lg sm:p-8 md:p-12">
-              <div>
-                <Badge tone="cyan">Secure Upload</Badge>
-                <h2 className="signal-shimmer-title mt-6 text-4xl font-semibold tracking-tight md:text-6xl">
-                  Upload a video file
-                </h2>
-                <p className="mt-5 max-w-5xl text-lg leading-8 text-zinc-400 md:text-xl">
-                  Add an owned or permission-cleared video and the engine will open the analysis workspace when ingest is ready.
-                </p>
+            <Card className="glow-border mx-auto max-w-4xl border-white/10 bg-black p-5 shadow-glow-lg sm:p-6 md:p-8">
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center">
+                <div>
+                  <Badge tone="cyan">Analysis Set Upload</Badge>
+                  <h2 className="signal-shimmer-title mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
+                    Upload one video or compare up to five
+                  </h2>
+                  <p className="mt-3 text-sm leading-6 text-zinc-500 md:text-base">
+                    Choose 1–5 videos. Get a clear report for each video, plus a comparison report when you add more than one.
+                  </p>
 
-                <div className="mt-8 grid gap-4 text-base text-zinc-500 md:grid-cols-3">
-                  <div className="rounded-lg border border-white/10 bg-zinc-950 px-5 py-4">
-                    <span className="font-medium text-zinc-300">Formats</span>
-                    <p className="mt-2">MP4, MOV, WebM, M4V</p>
-                  </div>
-                  <div className="rounded-lg border border-white/10 bg-zinc-950 px-5 py-4">
-                    <span className="font-medium text-zinc-300">Limit</span>
-                    <p className="mt-2">Up to {maxUploadMb} MB</p>
-                  </div>
-                  <div className="rounded-lg border border-white/10 bg-zinc-950 px-5 py-4">
-                    <span className="font-medium text-zinc-300">Network</span>
-                    <p className="mt-2">Keep this tab open</p>
+                  <div className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3 lg:grid-cols-1">
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                      <span className="font-medium text-zinc-300">Formats</span>
+                      <p className="mt-1">MP4, MOV, WebM, M4V</p>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                      <span className="font-medium text-zinc-300">Limit</span>
+                      <p className="mt-1">Up to {maxUploadMb} MB</p>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-2">
+                      <span className="font-medium text-zinc-300">Set size</span>
+                      <p className="mt-1">1 individual · 2–5 compare</p>
+                    </div>
                   </div>
                 </div>
 
                 <label
                   className={[
-                    "relative mt-10 flex min-h-[430px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition md:min-h-[470px]",
+                    "relative flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-6 text-center transition",
                     isDraggingUpload
                       ? "border-white bg-white/[0.08]"
-                      : "border-white/30 bg-zinc-950 hover:border-white/60 hover:bg-white/[0.04]",
+                      : "border-white/20 bg-zinc-950 hover:border-white/45 hover:bg-white/[0.03]",
                     busy ? "pointer-events-none opacity-70" : ""
                   ].join(" ")}
                   onDragOver={(event) => {
@@ -341,44 +473,96 @@ export default function HomePage() {
                   onDrop={(event) => {
                     event.preventDefault();
                     setIsDraggingUpload(false);
-                    handleFile(event.dataTransfer.files?.[0]);
+                    addFiles(event.dataTransfer.files);
                   }}
                 >
-                  <div className="absolute inset-4 rounded-lg border border-white/5" />
-                  <div className="relative flex h-24 w-24 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_56px_rgba(255,255,255,0.18)]">
-                    <UploadCloud className="h-10 w-10" />
+                  <div className="absolute inset-3 rounded-lg border border-white/5" />
+                  <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-black shadow-[0_0_40px_rgba(255,255,255,0.14)]">
+                    <UploadCloud className="h-7 w-7" />
                   </div>
-                  <span className="relative mt-7 text-2xl font-semibold text-white">
-                    {isDraggingUpload ? "Drop video to upload" : "Drop your video here"}
+                  <span className="relative mt-5 text-lg font-semibold text-white">
+                    {isDraggingUpload ? "Drop videos to add them" : "Drop one or more videos here"}
                   </span>
-                  <span className="relative mt-3 text-base leading-7 text-zinc-500">
-                    or select a file from your computer
+                  <span className="relative mt-2 text-sm leading-6 text-zinc-500">
+                    or select up to five files from your computer
                   </span>
-                  <span className="relative mt-7 inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 text-base font-semibold text-black">
-                    Choose file <ArrowRight className="h-4 w-4" />
+                  <span className="relative mt-5 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black">
+                    Choose videos <ArrowRight className="h-4 w-4" />
                   </span>
                   <input
                     type="file"
                     accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
+                    multiple
                     className="sr-only"
                     disabled={busy}
                     onChange={(event) => {
-                      handleFile(event.target.files?.[0]);
+                      addFiles(event.target.files);
                       event.currentTarget.value = "";
                     }}
                   />
                 </label>
               </div>
 
-              <div className="mt-9 rounded-lg border border-white/10 bg-zinc-950 p-6 text-lg leading-8 text-zinc-400">
-                The engine extracts frames and audio, transcribes speech,
-                identifies visual context, scores attention by segment, and
-                produces review-ready ad-fit recommendations.
+              <div className="mt-6 rounded-lg border border-white/10 bg-zinc-950/80 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <ListVideo className="h-4 w-4 text-zinc-300" />
+                    <p className="text-sm font-semibold text-white">Analysis queue</p>
+                    <Badge tone={uploadQueue.length >= 2 ? "cyan" : "default"}>{uploadQueue.length}/5 videos</Badge>
+                  </div>
+                  {uploadQueue.length ? (
+                    <button type="button" className="text-sm text-zinc-500 transition hover:text-white" disabled={busy} onClick={() => setUploadQueue([])}>
+                      Clear queue
+                    </button>
+                  ) : null}
+                </div>
+                {uploadQueue.length ? (
+                  <div className="mt-4 space-y-3">
+                    {uploadQueue.map((item, index) => (
+                      <div key={item.id} className="rounded-md border border-white/10 bg-black/50 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-xs font-semibold text-zinc-300">{index + 1}</span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-white">{item.file.name}</p>
+                              <p className="mt-1 text-xs text-zinc-500">{formatFileSize(item.file.size)} · {item.status === "ready" ? "Ready" : item.status === "uploading" ? "Uploading" : "Uploaded"}</p>
+                            </div>
+                          </div>
+                          {item.status === "uploaded" ? <CheckCircle2 className="h-5 w-5 shrink-0 text-success" /> : (
+                            <button type="button" aria-label={`Remove ${item.file.name}`} disabled={busy} onClick={() => setUploadQueue((items) => items.filter((queued) => queued.id !== item.id))} className="rounded-md p-1 text-zinc-500 transition hover:bg-white/10 hover:text-white">
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                        {(item.status === "uploading" || item.status === "uploaded") ? (
+                          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-white transition-all duration-300" style={{ width: `${item.progress}%` }} /></div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm leading-6 text-zinc-500">Select one video for a detailed report, or two to five videos for a consolidated comparison and A/B analysis.</p>
+                )}
+              </div>
+
+              <RecentReports reports={recentReports} onClear={() => {
+                window.localStorage.removeItem(RECENT_REPORTS_STORAGE_KEY);
+                setRecentReports([]);
+              }} />
+
+              <div className="mt-4 flex flex-col gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm leading-6 text-zinc-400">
+                  {uploadQueue.length >= 2 ? "Your videos upload one at a time, so every file has a visible transfer state." : "Add a second video to unlock the comparison workflow."}
+                </p>
+                <Button disabled={uploadQueue.length === 0 || busy} onClick={startUploadSet}>
+                  {busy ? "Uploading analysis set…" : uploadQueue.length >= 2 ? `Compare ${uploadQueue.length} videos` : "Analyze video"}
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
               </div>
 
               {/* Video URL Section commented out per current landing-page direction. */}
 
-              {uploadMutation.isPending && uploadProgress !== null ? (
+              {busy && uploadProgress !== null && uploadQueue.length <= 1 ? (
                 <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-3">
                   <div className="flex items-center justify-between gap-3 text-sm">
                     <span className="font-medium text-white">Uploading video</span>
@@ -435,7 +619,50 @@ export default function HomePage() {
         </section>
 
         {/* ═══════════════════════════════════════════════════════════
-            SECTION 3 — FEATURE HIGHLIGHTS
+            SECTION 3 — BETA CAPABILITY PREVIEW
+         ═══════════════════════════════════════════════════════════ */}
+        <section id="beta-features" className="border-t border-white/10 py-16 sm:py-20">
+          <Reveal>
+            <div className="mx-auto max-w-3xl text-center">
+              <Badge tone="cyan">Beta Capability Preview</Badge>
+              <h2 className="mt-4 text-3xl font-semibold tracking-tight text-white md:text-5xl">
+                From a video report to a creative decision system
+              </h2>
+              <p className="mt-4 text-base leading-7 text-zinc-400 md:text-lg">
+                V1.0 is being prepared for a focused Beta rollout. Use the live single-video workflow today, then validate comparison and product-fit recommendations with your team before relying on them in campaigns.
+              </p>
+            </div>
+          </Reveal>
+
+          <div className="mt-10 grid gap-4 lg:grid-cols-3">
+            {betaCapabilities.map((capability, index) => {
+              const Icon = capability.icon;
+              return (
+                <Reveal key={capability.title} delay={index * 120} className="h-full">
+                  <Card className="relative flex h-full min-h-[250px] flex-col overflow-hidden border-white/10 bg-black p-6 transition hover:border-white/25">
+                    <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent" />
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] text-white">
+                        <Icon className="h-5 w-5" />
+                      </div>
+                      <Badge tone={capability.tone}>{capability.eyebrow}</Badge>
+                    </div>
+                    <h3 className="mt-7 text-xl font-semibold text-white">{capability.title}</h3>
+                    <p className="mt-3 text-sm leading-6 text-zinc-400">{capability.copy}</p>
+                    <p className="mt-auto pt-7 text-xs leading-5 text-zinc-600">
+                      {capability.eyebrow === "Available now"
+                        ? "Start with an approved video upload below."
+                        : "Beta outputs are explainable decision support and require human review."}
+                    </p>
+                  </Card>
+                </Reveal>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ═══════════════════════════════════════════════════════════
+            SECTION 4 — FEATURE HIGHLIGHTS
          ═══════════════════════════════════════════════════════════ */}
         <section className="border-t border-white/10 py-16">
           <Reveal>
@@ -806,7 +1033,7 @@ export default function HomePage() {
                           path="M 824 208 C 844 208, 856 208, 876 208"
                         />
                       </circle>
-                      
+
                       <defs>
                         <linearGradient id="data-flow-top" x1="0" y1="0" x2="1" y2="0">
                           <stop offset="0%" stopColor="transparent" />
@@ -980,7 +1207,7 @@ export default function HomePage() {
                     <img src="/assets/landing_dashboard_video_hyperreal.jpg" alt="Live analysis feed" className="absolute inset-0 h-full w-full object-cover opacity-75" />
                     {/* Shimmer background */}
                     <div className="absolute inset-0 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 bg-[length:200%_100%] animate-shimmer opacity-40 mix-blend-overlay" />
-                    
+
                     {/* Scanning Line */}
                     <div className="absolute bottom-0 top-0 w-px bg-white/50 shadow-[0_0_10px_#fff] animate-scrub" />
 
@@ -1264,6 +1491,44 @@ export default function HomePage() {
         </footer>
       </div>
     </AppShell>
+  );
+}
+
+function RecentReports({ reports, onClear }: { reports: RecentReport[]; onClear: () => void }) {
+  if (!reports.length) return null;
+  return (
+    <section className="mt-4 rounded-lg border border-white/10 bg-zinc-950/60 p-4" aria-label="Your recent reports">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Clock3 className="h-4 w-4 shrink-0 text-zinc-300" />
+          <div>
+            <p className="text-sm font-semibold text-white">Your recent reports</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">Saved in this browser for quick access.</p>
+          </div>
+        </div>
+        <button type="button" className="text-sm text-zinc-500 transition hover:text-white" onClick={onClear}>Clear</button>
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-2">
+        {reports.map((report) => (
+          <a
+            key={`${report.type}-${report.id}`}
+            href={report.type === "comparison" ? `/compare/${report.id}` : `/dashboard/${report.id}`}
+            className="group flex min-w-0 items-center justify-between gap-3 rounded-md border border-white/10 bg-black/40 px-3 py-3 transition hover:border-white/30 hover:bg-white/[0.04]"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={report.type === "comparison" ? "cyan" : "default"} className="text-xs">
+                  {report.type === "comparison" ? "Comparison report · Beta" : "Video report"}
+                </Badge>
+              </div>
+              <p className="mt-2 truncate text-sm font-medium text-white">{report.title}</p>
+              <p className="mt-1 text-xs text-zinc-500">{new Date(report.createdAt).toLocaleDateString()}</p>
+            </div>
+            <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5 group-hover:text-white" />
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 

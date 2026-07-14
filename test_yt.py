@@ -17,7 +17,7 @@ def test_download(url, use_extractor_args):
     }
     if use_extractor_args:
         options["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "web_safari", "web"]}}
-    
+
     with yt_dlp.YoutubeDL(options) as ydl:
         try:
             ydl.extract_info(url, download=False)

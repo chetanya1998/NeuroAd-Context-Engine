@@ -23,7 +23,7 @@ It analyzes video at the segment level using:
 
 ## Capabilities Being Introduced
 
-The capabilities in this section are implemented and testable on `codex/brand-fit-engine`. They are documented on `main` so stakeholders can understand the planned V1.0 expansion before the implementation is merged.
+The capabilities in this section are implemented in V1.0. They are documented here so stakeholders can understand what the product can analyse today and which decision-support features remain in beta validation.
 
 ### Analyze one video
 
@@ -70,9 +70,9 @@ This repository contains a working local MVP:
 
 Sample/mock analysis is disabled in the current build. Completed dashboards should come from real uploaded media, permitted YouTube ingestion, or direct video file URLs.
 
-### Feature-Branch Release Scope
+### V1.0 Release Scope
 
-The multi-video comparison, A/B analysis, explainable strongest ad-slot score, faster-whisper evidence improvements, and review-first product-fit engine are implemented on the `codex/brand-fit-engine` branch. They should be tested in that branch before being merged into `V1.0`.
+The multi-video comparison, A/B analysis, explainable strongest ad-slot score, faster-whisper evidence improvements, and review-first product-fit engine are included in V1.0. Treat beta metrics as evidence to review, not a guarantee of campaign performance or viewer conversion.
 
 ## Repository Structure
 
@@ -128,8 +128,8 @@ The multi-video comparison, A/B analysis, explainable strongest ad-slot score, f
 
 - FFmpeg and FFprobe
 - OpenCV
-- OpenAI Whisper open-source package in the current V1.0 runtime
-- faster-whisper with CPU INT8 inference on `codex/brand-fit-engine`
+- faster-whisper with CPU INT8 inference as the default transcription engine
+- Vosk as a lightweight offline transcription fallback
 - Ultralytics YOLO
 - NumPy
 - pandas
@@ -458,9 +458,9 @@ GET /api/videos/{video_id}/analysis
 
 Returns the full dashboard payload:
 
-### Incoming Feature-Branch APIs
+### Comparison and Product-Fit APIs
 
-The following APIs are implemented on `codex/brand-fit-engine` and documented here ahead of the V1.0 merge.
+The following APIs are available in V1.0 for comparison and review-first product-fit analysis.
 
 #### Resolve and Review a Product Link
 
@@ -869,9 +869,8 @@ Notes:
 - `NEUROAD_DB_PATH` controls the SQLite database path.
 - `NEUROAD_WORKERS` controls in-process job concurrency.
 - Keep it low on CPU-only machines.
-- On the current `main` Docker image, `NEUROAD_TRANSCRIPTION_ENGINE=vosk` uses the small offline Vosk model installed by Docker.
-- `NEUROAD_TRANSCRIPTION_ENGINE=whisper` opts into the existing Whisper path after installing `requirements-whisper.txt`.
-- On `codex/brand-fit-engine`, `NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper` is the preferred CPU INT8 path and Vosk remains the fallback.
+- `NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper` uses the default CPU INT8 path and stores the configured model under `NEUROAD_MODEL_DIR`.
+- `NEUROAD_TRANSCRIPTION_ENGINE=vosk` remains available as a lightweight offline fallback.
 - `NEUROAD_ENABLE_TRANSCRIPTION=0` skips transcription completely.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` uses the configured Ultralytics YOLO model. The current Dockerfile enables the lightweight `yolov8n.pt` path by default.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd` is available as an OpenCV DNN fallback when the MobileNet-SSD files are installed.
@@ -880,9 +879,9 @@ Notes:
 - `CORS_ORIGINS` is required for deployed Netlify origins.
 - `YTDLP_COOKIES_FILE` is preferred over browser-cookie extraction in deployed environments.
 
-### Feature-Branch Docker Model Configuration
+### Docker Model Configuration
 
-On `codex/brand-fit-engine`, the Dockerfile enables faster-whisper and YOLO by default, with Vosk and MobileNet-SSD available as fallback components. Rebuild the API image after pulling model or Docker changes:
+The Dockerfile enables faster-whisper by default, with Vosk and MobileNet-SSD available as fallback components. Rebuild the API image after pulling model or Docker changes:
 
 ```bash
 docker compose build api --no-cache
