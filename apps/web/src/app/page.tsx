@@ -388,16 +388,16 @@ export default function HomePage() {
           <Badge tone="cyan">Private Beta · v1.0</Badge>
         </div>
 
-        <h1 className="hero-wordmark mt-8 w-full max-w-[96vw] whitespace-nowrap pb-3 text-center text-[clamp(1.95rem,7.2vw,5.4rem)] font-semibold leading-none">
+        <h1 className="hero-wordmark mt-8 w-full max-w-[96vw] text-center text-[clamp(2.35rem,6.1vw,5.5rem)] font-semibold leading-none sm:whitespace-nowrap">
           <span className="hero-wordmark__shimmer">NeuroAd Context Engine</span>
         </h1>
 
-        <p className="mt-5 w-full max-w-[760px] text-center text-[clamp(1.35rem,3.2vw,2.8rem)] font-medium leading-tight text-white">
-          Your videos are saying more than you can see.
-        </p>
+        <h2 className="mt-6 w-full max-w-[760px] text-center text-[clamp(1.25rem,2.15vw,2.05rem)] font-medium leading-[1.18] text-white">
+          See what every frame is hiding.
+        </h2>
 
-        <p className="mt-5 w-full max-w-[720px] text-center text-base leading-7 text-zinc-400 sm:text-lg md:leading-8">
-          A new intelligence layer that decodes motion, speech, scenes, and meaning across every second.
+        <p className="mt-5 w-full max-w-[620px] text-center text-base leading-7 text-zinc-400 sm:text-lg md:leading-8">
+          A new intelligence layer for decoding motion, speech, scenes, and meaning.
         </p>
 
         <span className="mt-5 inline-flex rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-sm font-medium text-zinc-300 shadow-[0_0_24px_rgba(255,255,255,0.06)]">

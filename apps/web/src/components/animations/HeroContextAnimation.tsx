@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { CSSProperties } from "react";
 import {
   animate,
   createDrawable,
@@ -11,6 +12,7 @@ import {
 
 const gridCells = Array.from({ length: 143 }, (_, index) => index);
 const signalDots = Array.from({ length: 28 }, (_, index) => index);
+const orbitDots = Array.from({ length: 10 }, (_, index) => index);
 const timelineBars = [28, 42, 66, 82, 48, 74, 58];
 
 export default function HeroContextAnimation() {
@@ -38,8 +40,11 @@ export default function HeroContextAnimation() {
     const movingDot = root.querySelector(".hero-context-carrier");
     const carrierPath = root.querySelector<SVGPathElement>("#hero-context-carrier-path");
     const ambientCells = root.querySelectorAll(".hero-context-grid__cell:nth-child(3n)");
+    const depthRings = root.querySelectorAll(".hero-context-depth-ring");
+    const orbitSignals = root.querySelectorAll(".hero-context-orbit-dot");
+    const aperture = root.querySelector(".hero-context-aperture");
 
-    if (!capsule || !output || !score || !movingDot || !carrierPath) return;
+    if (!capsule || !output || !score || !movingDot || !carrierPath || !aperture) return;
 
     const drawablePaths = Array.from(paths).map((path) => createDrawable(path));
     const motionPath = createMotionPath(carrierPath);
@@ -208,14 +213,61 @@ export default function HeroContextAnimation() {
       ease: "inOutSine"
     });
 
+    const depth = animate(depthRings, {
+      scale: [0.94, 1.08],
+      opacity: [0.08, 0.28],
+      duration: 5200,
+      alternate: true,
+      loop: true,
+      delay: stagger(620),
+      ease: "inOutSine"
+    });
+
+    const orbit = animate(orbitSignals, {
+      rotate: stagger([-18, 18], { from: "center" }),
+      scale: [0.74, 1.12],
+      opacity: [0.16, 0.72],
+      duration: 2800,
+      alternate: true,
+      loop: true,
+      delay: stagger(140, { from: "center" }),
+      ease: "inOutSine"
+    });
+
+    const lens = animate(aperture, {
+      scale: [0.96, 1.04],
+      opacity: [0.22, 0.42],
+      duration: 4300,
+      alternate: true,
+      loop: true,
+      ease: "inOutSine"
+    });
+
     return () => {
       loop.revert();
       ambient.revert();
+      depth.revert();
+      orbit.revert();
+      lens.revert();
     };
   }, []);
 
   return (
     <div ref={rootRef} className="hero-context-animation" aria-hidden="true">
+      <span className="hero-context-aperture" />
+      <span className="hero-context-depth-ring hero-context-depth-ring--outer" />
+      <span className="hero-context-depth-ring hero-context-depth-ring--middle" />
+      <span className="hero-context-depth-ring hero-context-depth-ring--inner" />
+      <div className="hero-context-orbit">
+        {orbitDots.map((dot) => (
+          <span
+            key={dot}
+            className="hero-context-orbit-dot"
+            style={{ "--dot-index": dot } as CSSProperties}
+          />
+        ))}
+      </div>
+
       <div className="hero-context-grid">
         {gridCells.map((cell) => (
           <span key={cell} className="hero-context-grid__cell" />
@@ -260,7 +312,7 @@ export default function HeroContextAnimation() {
             <span key={dot} className="hero-context-source__bit" />
           ))}
         </div>
-        <span className="hero-context-source__label">approved_video.mp4</span>
+        <span className="hero-context-source__label">frame_stream.mp4</span>
       </div>
 
       <div className="hero-context-output">
@@ -268,7 +320,7 @@ export default function HeroContextAnimation() {
           <span>00:18-00:24</span>
           <strong className="hero-context-output__score">91</strong>
         </div>
-        <div className="hero-context-output__label">Best Ad Slot</div>
+        <div className="hero-context-output__label">Context Signal</div>
         <div className="hero-context-output__bars">
           {timelineBars.map((width, index) => (
             <span key={`${width}-${index}`} className="hero-context-output__bar">
