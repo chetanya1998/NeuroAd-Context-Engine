@@ -385,17 +385,24 @@ export default function HomePage() {
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,transparent_30%,#000_80%)]" />
 
         <div className="pointer-events-auto">
-          <Badge tone="cyan">Private Beta · V1.0</Badge>
+          <Badge tone="cyan">Private Beta · v1.0</Badge>
         </div>
 
         <h1 className="hero-wordmark mt-8 w-full max-w-[96vw] whitespace-nowrap pb-3 text-center text-[clamp(1.95rem,7.2vw,5.4rem)] font-semibold leading-none">
           <span className="hero-wordmark__shimmer">NeuroAd Context Engine</span>
         </h1>
 
-        <p className="mt-6 w-full max-w-[340px] text-center text-base leading-7 text-zinc-400 sm:max-w-3xl sm:text-lg md:text-xl md:leading-8">
-          <span className="block">Find the video moments that earn attention.</span>
-          <span className="block">Place ads where they feel natural and on time.</span>
+        <p className="mt-5 w-full max-w-[760px] text-center text-[clamp(1.35rem,3.2vw,2.8rem)] font-medium leading-tight text-white">
+          Your videos are saying more than you can see.
         </p>
+
+        <p className="mt-5 w-full max-w-[720px] text-center text-base leading-7 text-zinc-400 sm:text-lg md:leading-8">
+          A new intelligence layer that decodes motion, speech, scenes, and meaning across every second.
+        </p>
+
+        <span className="mt-5 inline-flex rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-sm font-medium text-zinc-300 shadow-[0_0_24px_rgba(255,255,255,0.06)]">
+          Coming soon
+        </span>
 
         <div className="mt-10 flex w-full max-w-[350px] flex-col gap-3 sm:w-auto sm:max-w-none sm:flex-row sm:gap-4 pointer-events-auto">
           <Button
