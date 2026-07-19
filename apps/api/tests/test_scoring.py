@@ -250,6 +250,28 @@ def test_transcript_for_segment_does_not_copy_long_chunk_to_every_window():
     assert windows.count("long timestamped transcript") == 1
 
 
+def test_transcript_for_segment_uses_word_timestamps_for_readable_windows():
+    transcript_segments = [
+        {
+            "start": 0,
+            "end": 6,
+            "text": "first phrase second phrase third phrase",
+            "words": [
+                {"word": "first", "start": 0.2, "end": 0.6},
+                {"word": "phrase", "start": 0.6, "end": 1.0},
+                {"word": "second", "start": 2.2, "end": 2.7},
+                {"word": "phrase", "start": 2.7, "end": 3.2},
+                {"word": "third", "start": 4.2, "end": 4.7},
+                {"word": "phrase", "start": 4.7, "end": 5.2},
+            ],
+        }
+    ]
+
+    assert transcript_for_segment(0, 2, transcript_segments) == "first phrase"
+    assert transcript_for_segment(2, 4, transcript_segments) == "second phrase"
+    assert transcript_for_segment(4, 6, transcript_segments) == "third phrase"
+
+
 def test_hydration_terms_map_to_functional_beverage():
     matches = score_ad_matches(
         [{"label": "bottle", "confidence": 0.86}],
@@ -413,7 +435,7 @@ def test_product_url_rejects_loopback_addresses():
         validate_public_product_url("http://127.0.0.1/internal-product")
 
 
-def test_repeated_person_only_detections_are_not_product_evidence():
+def test_repeated_person_only_detections_are_preserved_for_visual_evidence():
     detections = {
         1: [{"label": "person", "confidence": 0.91}],
         2: [{"label": "person", "confidence": 0.88}],
@@ -421,10 +443,10 @@ def test_repeated_person_only_detections_are_not_product_evidence():
         4: [{"label": "person", "confidence": 0.82}],
     }
 
-    assert main.normalize_object_detections(detections) == {1: [], 2: [], 3: [], 4: []}
+    assert main.normalize_object_detections(detections) == detections
 
 
-def test_person_detections_do_not_hide_product_objects():
+def test_object_normalization_preserves_mixed_detections():
     detections = {
         1: [{"label": "person", "confidence": 0.91}],
         2: [{"label": "person", "confidence": 0.88}, {"label": "bottle", "confidence": 0.74}],
@@ -433,6 +455,6 @@ def test_person_detections_do_not_hide_product_objects():
 
     normalized = main.normalize_object_detections(detections)
 
-    assert normalized[1] == []
-    assert normalized[2] == [{"label": "bottle", "confidence": 0.74}]
-    assert normalized[3] == []
+    assert normalized[1] == [{"label": "person", "confidence": 0.91}]
+    assert normalized[2] == [{"label": "person", "confidence": 0.88}, {"label": "bottle", "confidence": 0.74}]
+    assert normalized[3] == [{"label": "person", "confidence": 0.84}]

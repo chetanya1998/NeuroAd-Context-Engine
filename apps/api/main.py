@@ -2652,26 +2652,10 @@ def object_detection_required() -> bool:
 def normalize_object_detections(detections: dict[int, list[dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:
     if not detections:
         return detections
-
-    total_segments = len(detections)
-    person_only_segments = 0
-    for objects in detections.values():
-        labels = {str(obj.get("label", "")).lower() for obj in objects}
-        if labels and labels.issubset({"person"}):
-            person_only_segments += 1
-
-    person_only_ratio = person_only_segments / max(1, total_segments)
-    if total_segments < 3 or person_only_ratio < 0.6:
-        return detections
-
-    normalized: dict[int, list[dict[str, Any]]] = {}
-    for segment_index, objects in detections.items():
-        non_person_objects = [obj for obj in objects if str(obj.get("label", "")).lower() != "person"]
-        if non_person_objects:
-            normalized[segment_index] = non_person_objects[:5]
-        else:
-            normalized[segment_index] = []
-    return normalized
+    return {
+        segment_index: sorted(objects, key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True)[:5]
+        for segment_index, objects in detections.items()
+    }
 
 
 def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -2993,6 +2977,10 @@ def transcript_time(value: Any, default: float) -> float:
 
 
 def transcript_for_segment(start: float, end: float, transcript_segments: list[dict[str, Any]]) -> str:
+    word_chunks = transcript_words_for_segment(start, end, transcript_segments)
+    if word_chunks:
+        return word_chunks
+
     chunks: list[str] = []
     seen: set[str] = set()
     for item in transcript_segments:
@@ -3020,6 +3008,43 @@ def transcript_for_segment(start: float, end: float, transcript_segments: list[d
         seen.add(normalized)
         chunks.append(text)
     return " ".join(chunks)
+
+
+def transcript_words_for_segment(start: float, end: float, transcript_segments: list[dict[str, Any]]) -> str:
+    words: list[dict[str, Any]] = []
+    for item in transcript_segments:
+        item_words = item.get("words") or []
+        if not isinstance(item_words, list):
+            continue
+        for word in item_words:
+            if not isinstance(word, dict):
+                continue
+            text = str(word.get("word", "")).strip()
+            if not text:
+                continue
+            word_start = transcript_time(word.get("start"), start)
+            word_end = transcript_time(word.get("end"), word_start)
+            if word_end < word_start:
+                word_start, word_end = word_end, word_start
+            word_midpoint = word_start + max(0.0, word_end - word_start) / 2
+            overlap = max(0.0, min(end, word_end) - max(start, word_start))
+            if overlap <= 0 and not (start <= word_midpoint < end):
+                continue
+            words.append({"word": text, "start": word_start, "end": word_end})
+
+    if not words:
+        return ""
+
+    words.sort(key=lambda item: (item["start"], item["end"]))
+    output: list[str] = []
+    previous = ""
+    for item in words:
+        text = str(item["word"]).strip()
+        normalized = normalize_transcript_text(text)
+        if normalized and normalized != previous:
+            output.append(text)
+            previous = normalized
+    return " ".join(output)
 
 
 def transcript_evidence_for_segment(start: float, end: float, transcript_segments: list[dict[str, Any]]) -> dict[str, Any]:
