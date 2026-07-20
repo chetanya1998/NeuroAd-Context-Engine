@@ -189,7 +189,9 @@ export default function DashboardPage() {
             <h2 className="text-2xl font-semibold">Viewer attention over time</h2>
             <div className="relative w-full max-w-sm">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
+              <label htmlFor="segment-evidence-filter" className="sr-only">Filter segment evidence</label>
               <input
+                id="segment-evidence-filter"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Filter objects, topics, transcript..."
@@ -409,7 +411,7 @@ function VideoPreview({ analysis }: { analysis: AnalysisPayload }) {
       </div>
       <div className="aspect-video bg-zinc-950">
         {videoUrl ? (
-          <video className="h-full w-full bg-black object-contain" src={videoUrl} poster={thumbnailUrl ?? undefined} controls preload="metadata" />
+          <video id="video-preview-player" className="h-full w-full bg-black object-contain" src={videoUrl} poster={thumbnailUrl ?? undefined} controls preload="metadata" />
         ) : analysis.video.embed_url ? (
           <iframe className="h-full w-full" src={analysis.video.embed_url} title={analysis.video.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
         ) : thumbnailUrl ? (

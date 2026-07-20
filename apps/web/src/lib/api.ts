@@ -216,6 +216,12 @@ export async function createProduct(profile: ProductProfile) {
   );
 }
 
+export async function getRecentProducts(limit = 8) {
+  return parseResponse<{ products: ProductProfile[] }>(
+    await apiFetch(`${API_BASE}/api/products?limit=${limit}`)
+  );
+}
+
 export async function runVideoProductFit(videoId: string, productId: string) {
   return parseResponse<ProductFitPayload>(
     await apiFetch(`${API_BASE}/api/videos/${videoId}/product-fit`, {

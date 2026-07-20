@@ -1,6 +1,7 @@
 import sys
 import subprocess
 import wave
+import json
 from pathlib import Path
 
 import pytest
@@ -428,6 +429,179 @@ def test_product_fit_rewards_specific_context_and_flags_prohibited_contexts():
     assert aligned_fit["confidence"] >= 60
     assert blocked_fit["blocked"] is True
     assert blocked_fit["fit_score"] < aligned_fit["fit_score"]
+
+
+def product_fit_segment(**overrides):
+    base = {
+        "id": "segment_fit_fixture",
+        "start": 4,
+        "end": 6,
+        "transcript": "",
+        "summary": "",
+        "label": "",
+        "topics": [],
+        "objects": [],
+        "attention_score": 60,
+        "ad_slot_score": 65,
+        "drop_risk_score": 30,
+        "brand_safety_score": 95,
+        "transcript_insights": {"transcript_confidence": 80, "word_count": 8, "words_per_second": 2},
+        "visual_evidence": {"visual_quality": 0.75},
+    }
+    return {**base, **overrides}
+
+
+def reviewed_product_fixture(**overrides):
+    base = {
+        "name": "Aqua Hydration Bottle",
+        "brand_name": "Aqua",
+        "description": "Insulated reusable bottle for workouts and travel",
+        "category": "fitness",
+        "keywords": ["hydration", "water bottle"],
+        "features": ["insulated", "zero sugar electrolyte"],
+        "use_cases": ["running", "workout"],
+        "audience": ["runners"],
+        "prohibited_contexts": ["medical claim"],
+    }
+    return {**base, **overrides}
+
+
+def test_product_fit_ignores_generic_person_only_evidence():
+    generic = product_fit_segment(
+        summary="A person is visible.",
+        objects=[{"label": "person", "confidence": 0.95}] * 4,
+        topics=[{"label": "entertainment"}],
+    )
+
+    fit = score_product_segment_fit(reviewed_product_fixture(), generic)
+
+    assert fit["fit_score"] <= 10
+    assert fit["evidence_coverage"]["visual_matches"] == 0
+    assert fit["confidence"] <= 30
+
+
+def test_exact_category_and_feature_evidence_outweighs_vague_topic_overlap():
+    vague = product_fit_segment(summary="A general lifestyle moment.", topics=[{"label": "travel"}])
+    specific = product_fit_segment(
+        transcript="This insulated water bottle supports hydration during a running workout.",
+        topics=[{"label": "fitness"}],
+        objects=[{"label": "bottle", "confidence": 0.88}],
+    )
+
+    vague_fit = score_product_segment_fit(reviewed_product_fixture(), vague)
+    specific_fit = score_product_segment_fit(reviewed_product_fixture(), specific)
+
+    assert specific_fit["fit_score"] >= vague_fit["fit_score"] + 30
+    assert specific_fit["component_breakdown"]["brand_category_relevance"] > 0
+    assert specific_fit["evidence_coverage"]["modalities"] >= 2
+
+
+def test_low_quality_evidence_reduces_confidence_without_forcing_unsuitable_score():
+    strong_quality = product_fit_segment(transcript="Hydration for runners during a workout.", topics=[{"label": "fitness"}])
+    weak_quality = product_fit_segment(
+        transcript="Hydration for runners during a workout.",
+        topics=[{"label": "fitness"}],
+        transcript_insights={"transcript_confidence": 15, "word_count": 4, "words_per_second": 5},
+        visual_evidence={"visual_quality": 0.15},
+    )
+
+    strong_fit = score_product_segment_fit(reviewed_product_fixture(), strong_quality)
+    weak_fit = score_product_segment_fit(reviewed_product_fixture(), weak_quality)
+
+    assert weak_fit["fit_score"] == strong_fit["fit_score"]
+    assert weak_fit["confidence"] < strong_fit["confidence"]
+    assert any("Transcript confidence is low" in item for item in weak_fit["limitations"])
+
+
+def test_product_fit_scoring_is_deterministic():
+    segment = product_fit_segment(
+        transcript="Aqua hydration bottle for runners.",
+        topics=[{"label": "fitness"}],
+        objects=[{"label": "bottle", "confidence": 0.8}],
+    )
+
+    first = score_product_segment_fit(reviewed_product_fixture(), segment)
+    second = score_product_segment_fit(reviewed_product_fixture(), segment)
+
+    assert first == second
+
+
+def test_product_profile_and_fit_results_are_reused_when_inputs_are_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(main, "DB_PATH", tmp_path / "product-fit.db")
+    monkeypatch.setattr(main, "validate_public_product_url", lambda url: url)
+    main.init_db()
+    now = main.utc_now()
+    with main.connect() as conn:
+        conn.execute(
+            "insert into videos (id, source_type, title, duration_seconds, status, created_at) values (?, ?, ?, ?, ?, ?)",
+            ("video_cache", "upload", "Cache test", 6, "completed", now),
+        )
+        conn.execute(
+            """
+            insert into segments
+            (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score,
+             label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation,
+             ad_slot_score, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "segment_cache", "video_cache", 0, 2, 70, 65, 20, 98, "fitness", "Hydration workout",
+                "Aqua hydration bottle for runners", json.dumps({"transcript_confidence": 85, "word_count": 5, "words_per_second": 2}),
+                json.dumps({"visual_quality": 0.8}), "[]", "Review placement", 72, now,
+            ),
+        )
+        conn.execute("insert into topics (id, segment_id, label, confidence, created_at) values (?, ?, ?, ?, ?)", ("topic_cache", "segment_cache", "fitness", 0.9, now))
+        conn.execute("insert into detected_objects (id, segment_id, label, confidence, created_at) values (?, ?, ?, ?, ?)", ("object_cache", "segment_cache", "bottle", 0.9, now))
+        conn.commit()
+
+    profile = reviewed_product_fixture(
+        source_url="https://example.com/product",
+        canonical_url="https://example.com/product",
+        field_sources={"name": "User edited"},
+        field_confidence={"name": 100},
+        warnings=[],
+    )
+    saved = main.save_product_profile(profile, {}, "reviewed")
+    saved_again = main.save_product_profile(profile, {}, "reviewed")
+    first = main.run_product_fit(main.get_product_or_404(saved["id"]), main.get_video_or_404("video_cache"))
+    second = main.run_product_fit(main.get_product_or_404(saved["id"]), main.get_video_or_404("video_cache"))
+
+    assert saved_again["id"] == saved["id"]
+    assert first["fit_run_id"] == second["fit_run_id"]
+    assert first["cache_status"] == "miss"
+    assert second["cache_status"] == "hit"
+
+
+def test_product_resolution_cache_hits_and_expires(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(main, "DB_PATH", tmp_path / "resolution-cache.db")
+    monkeypatch.setattr(main, "validate_public_product_url", lambda url: url)
+    calls = []
+
+    def fake_extract(url):
+        calls.append(url)
+        return {
+            "source_url": url, "canonical_url": url, "name": "Cached product", "keywords": [],
+            "features": [], "use_cases": [], "audience": [], "prohibited_contexts": [],
+        }
+
+    monkeypatch.setattr(main, "extract_product_profile", fake_extract)
+    main.init_db()
+    request = main.ProductResolveRequest(url="https://example.com/product/")
+
+    first = main.resolve_product(request)
+    second = main.resolve_product(request)
+    main.execute(
+        "update product_resolution_cache set fetched_at = ?",
+        ("2000-01-01T00:00:00",),
+    )
+    third = main.resolve_product(request)
+
+    assert first["cache_status"] == "miss"
+    assert second["cache_status"] == "hit"
+    assert third["cache_status"] == "miss"
+    assert len(calls) == 2
 
 
 def test_product_url_rejects_loopback_addresses():

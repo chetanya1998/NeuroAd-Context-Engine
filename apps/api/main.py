@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from collections import Counter
 from html.parser import HTMLParser
 import importlib.util
@@ -110,6 +111,9 @@ CONVERTIBLE_VIDEO_EXTENSIONS = ALLOWED_EXTENSIONS | {
 EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS", 1)))
 FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "1.0") or "1.0")
 MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 6))
+PRODUCT_PROFILE_VERSION = "2.0"
+PRODUCT_FIT_SCORING_VERSION = "2.0"
+PRODUCT_RESOLUTION_TTL_SECONDS = 24 * 60 * 60
 VOSK_MODEL_CACHE: Any | None = None
 FASTER_WHISPER_MODEL_CACHE: Any | None = None
 FASTER_WHISPER_MODEL_SIGNATURE: tuple[str, str, str] | None = None
@@ -519,10 +523,16 @@ class ProductCreateRequest(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     keywords: Optional[list[str]] = None
+    features: Optional[list[str]] = None
+    use_cases: Optional[list[str]] = None
     audience: Optional[list[str]] = None
     prohibited_contexts: Optional[list[str]] = None
     image_url: Optional[str] = None
     extraction_confidence: Optional[int] = None
+    field_sources: Optional[dict[str, str]] = None
+    field_confidence: Optional[dict[str, int]] = None
+    warnings: Optional[list[str]] = None
+    profile_version: Optional[str] = None
 
 
 class ProductUpdateRequest(BaseModel):
@@ -531,9 +541,14 @@ class ProductUpdateRequest(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     keywords: Optional[list[str]] = None
+    features: Optional[list[str]] = None
+    use_cases: Optional[list[str]] = None
     audience: Optional[list[str]] = None
     prohibited_contexts: Optional[list[str]] = None
     image_url: Optional[str] = None
+    field_sources: Optional[dict[str, str]] = None
+    field_confidence: Optional[dict[str, int]] = None
+    warnings: Optional[list[str]] = None
 
 
 class ProductFitRequest(BaseModel):
@@ -717,10 +732,17 @@ def init_db() -> None:
               description text,
               category text,
               keywords text,
+              features text,
+              use_cases text,
               audience text,
               prohibited_contexts text,
               image_url text,
               extraction_confidence integer default 0,
+              field_sources text,
+              field_confidence text,
+              warnings text,
+              profile_fingerprint text,
+              profile_version text default '2.0',
               status text not null default 'verified',
               created_at text not null,
               updated_at text not null
@@ -734,6 +756,12 @@ def init_db() -> None:
               fetch_status text not null
             );
 
+            create table if not exists product_resolution_cache (
+              canonical_url text primary key,
+              payload text not null,
+              fetched_at text not null
+            );
+
             create table if not exists product_fit_runs (
               id text primary key,
               product_id text not null,
@@ -743,6 +771,10 @@ def init_db() -> None:
               fit_confidence integer not null,
               suitability_tier text not null,
               summary text not null,
+              product_fingerprint text,
+              video_fingerprint text,
+              scoring_version text,
+              details_json text,
               created_at text not null
             );
 
@@ -754,6 +786,17 @@ def init_db() -> None:
               placement_type text not null,
               recommendation text not null,
               reasons text not null,
+              product_relevance_score integer default 0,
+              placement_readiness_score integer default 0,
+              component_breakdown text,
+              positive_evidence text,
+              conflicting_evidence text,
+              limitations text,
+              evidence_coverage text,
+              transcript_excerpt text,
+              relevant_topics text,
+              relevant_objects text,
+              suggested_duration text,
               is_best_placement integer default 0,
               created_at text not null
             );
@@ -784,6 +827,46 @@ def init_db() -> None:
             {
                 "comparison_id": "text",
                 "comparison_video_id": "text",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "products",
+            {
+                "features": "text",
+                "use_cases": "text",
+                "field_sources": "text",
+                "field_confidence": "text",
+                "warnings": "text",
+                "profile_fingerprint": "text",
+                "profile_version": "text default '2.0'",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "product_fit_runs",
+            {
+                "product_fingerprint": "text",
+                "video_fingerprint": "text",
+                "scoring_version": "text",
+                "details_json": "text",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "product_placements",
+            {
+                "product_relevance_score": "integer default 0",
+                "placement_readiness_score": "integer default 0",
+                "component_breakdown": "text",
+                "positive_evidence": "text",
+                "conflicting_evidence": "text",
+                "limitations": "text",
+                "evidence_coverage": "text",
+                "transcript_excerpt": "text",
+                "relevant_topics": "text",
+                "relevant_objects": "text",
+                "suggested_duration": "text",
             },
         )
         conn.commit()
@@ -894,6 +977,74 @@ def normalize_profile_terms(values: list[str] | None) -> list[str]:
     return output[:30]
 
 
+PRODUCT_GENERIC_TERMS = {
+    "best", "brand", "buy", "company", "great", "high", "item", "new", "official",
+    "person", "premium", "product", "quality", "shop", "solution", "store", "thing",
+}
+
+PRODUCT_CATEGORY_ALIASES = {
+    "beverage": ["drink"],
+    "functional beverage": ["electrolyte drink", "hydration drink", "sports drink"],
+    "fitness": ["exercise", "training", "workout", "running"],
+    "food": ["meal", "snack"],
+    "skincare": ["skin care", "beauty"],
+    "technology": ["tech", "software", "device"],
+    "travel": ["trip", "journey"],
+}
+
+
+def normalize_product_term(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+    words = []
+    for word in normalized.split():
+        if len(word) > 4 and word.endswith("ies"):
+            word = f"{word[:-3]}y"
+        elif len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        words.append(word)
+    return " ".join(words)
+
+
+def canonical_product_url(url: str) -> str:
+    safe_url = validate_public_product_url(url)
+    parsed = urlparse(safe_url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    port = parsed.port
+    netloc = hostname if not port or (scheme == "http" and port == 80) or (scheme == "https" and port == 443) else f"{hostname}:{port}"
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    return parsed._replace(scheme=scheme, netloc=netloc, path=path, fragment="").geturl()
+
+
+def meaningful_product_terms(text: str, limit: int = 12) -> list[str]:
+    tokens = [
+        normalize_product_term(token)
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9'-]{3,}", text)
+    ]
+    tokens = [token for token in tokens if token and token not in PRODUCT_GENERIC_TERMS]
+    counts = Counter(tokens)
+    return [term for term, _ in counts.most_common(limit)]
+
+
+def product_profile_fingerprint(profile: dict[str, Any]) -> str:
+    stable = {
+        "source_url": str(profile.get("canonical_url") or profile.get("source_url") or "").strip(),
+        "name": str(profile.get("name") or "").strip(),
+        "brand_name": str(profile.get("brand_name") or "").strip(),
+        "description": str(profile.get("description") or "").strip(),
+        "category": str(profile.get("category") or "").strip(),
+        "keywords": normalize_profile_terms(profile.get("keywords", [])),
+        "features": normalize_profile_terms(profile.get("features", [])),
+        "use_cases": normalize_profile_terms(profile.get("use_cases", [])),
+        "audience": normalize_profile_terms(profile.get("audience", [])),
+        "prohibited_contexts": normalize_profile_terms(profile.get("prohibited_contexts", [])),
+        "profile_version": PRODUCT_PROFILE_VERSION,
+    }
+    return hashlib.sha256(json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def product_nodes(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         nodes = [value]
@@ -954,8 +1105,22 @@ def extract_product_profile(url: str) -> dict[str, Any]:
     ) or parser.meta.get("og:description") or parser.meta.get("description") or ""
     category = (structured.get("category") if structured else None) or parser.meta.get("product:category") or ""
     image_url = image or parser.meta.get("og:image") or parser.meta.get("twitter:image")
+    additional_properties = structured.get("additionalProperty", []) if structured else []
+    if isinstance(additional_properties, dict):
+        additional_properties = [additional_properties]
+    structured_features = []
+    for item in additional_properties if isinstance(additional_properties, list) else []:
+        if not isinstance(item, dict):
+            continue
+        feature = " ".join(str(item.get(key) or "").strip() for key in ("name", "value")).strip()
+        if feature:
+            structured_features.append(feature)
+    ingredients = structured.get("ingredients") if structured else None
+    if isinstance(ingredients, str):
+        structured_features.extend(part.strip() for part in re.split(r"[,;]", ingredients) if part.strip())
     keyword_seed = " ".join([str(name or ""), str(description), str(category), str(brand_name or "")])
-    keywords = normalize_profile_terms(re.findall(r"[A-Za-z][A-Za-z0-9'-]{3,}", keyword_seed))
+    keywords = meaningful_product_terms(keyword_seed)
+    features = normalize_profile_terms(structured_features + meaningful_product_terms(str(description), 8))
     confidence = 0
     if structured:
         confidence += 45
@@ -965,18 +1130,48 @@ def extract_product_profile(url: str) -> dict[str, Any]:
         confidence += 20
     if brand_name or category:
         confidence += 15
+    structured_source = "JSON-LD" if structured else "Page metadata"
+    field_sources = {
+        "name": structured_source if structured.get("name") else "Page metadata",
+        "brand_name": "JSON-LD" if brand_name else "Page metadata",
+        "description": "JSON-LD" if structured.get("description") else "Page metadata",
+        "category": "JSON-LD" if structured.get("category") else "Page metadata",
+        "features": "JSON-LD" if structured_features else "Derived from description",
+        "keywords": "Derived from public metadata",
+    }
+    field_confidence = {
+        "name": 95 if structured.get("name") else (75 if name else 20),
+        "brand_name": 90 if brand_name else (55 if parser.meta.get("og:site_name") else 0),
+        "description": 90 if structured.get("description") else (70 if description else 0),
+        "category": 90 if structured.get("category") else (60 if category else 0),
+        "features": 85 if structured_features else (45 if features else 0),
+        "keywords": 60 if keywords else 0,
+    }
+    warnings = []
+    if not brand_name:
+        warnings.append("Brand name was not found; confirm it before analysis.")
+    if not category:
+        warnings.append("Category was not found; adding it will improve relevance scoring.")
+    if not description:
+        warnings.append("Product description was not found; add features and use cases manually.")
     return {
         "source_url": safe_url,
-        "canonical_url": parser.meta.get("og:url") or final_url,
+        "canonical_url": canonical_product_url(final_url),
         "name": str(name or "Product page").strip()[:160],
         "brand_name": str(brand_name or parser.meta.get("og:site_name") or "").strip()[:120] or None,
         "description": str(description).strip()[:2000],
         "category": str(category).strip()[:120] or None,
         "keywords": keywords,
+        "features": features,
+        "use_cases": [],
         "audience": [],
         "prohibited_contexts": [],
         "image_url": str(image_url).strip()[:1000] if image_url else None,
         "extraction_confidence": min(100, confidence),
+        "field_sources": field_sources,
+        "field_confidence": field_confidence,
+        "warnings": warnings,
+        "profile_version": PRODUCT_PROFILE_VERSION,
         "raw_metadata": {"title": parser.title, "meta": parser.meta, "structured_product": structured},
         "status": "needs_review",
     }
@@ -1361,66 +1556,117 @@ def get_product_or_404(product_id: str) -> sqlite3.Row:
 
 def product_payload(product: sqlite3.Row) -> dict[str, Any]:
     payload = dict(product)
-    for field in ("keywords", "audience", "prohibited_contexts"):
+    for field in ("keywords", "features", "use_cases", "audience", "prohibited_contexts", "warnings"):
         try:
             payload[field] = json.loads(payload.get(field) or "[]")
         except (TypeError, json.JSONDecodeError):
             payload[field] = []
+    for field in ("field_sources", "field_confidence"):
+        try:
+            payload[field] = json.loads(payload.get(field) or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload[field] = {}
+    payload["profile_version"] = payload.get("profile_version") or PRODUCT_PROFILE_VERSION
+    payload["profile_fingerprint"] = payload.get("profile_fingerprint") or product_profile_fingerprint(payload)
     return payload
 
 
 def product_terms(product: dict[str, Any]) -> dict[str, list[str]]:
-    keyword_values = normalize_profile_terms(product.get("keywords", []))
+    names = normalize_profile_terms([product.get("name", ""), product.get("brand_name", "")])
     category_values = normalize_profile_terms([product.get("category", "")])
+    category_aliases = []
+    for category in category_values:
+        category_aliases.extend(PRODUCT_CATEGORY_ALIASES.get(normalize_product_term(category), []))
+    keyword_values = normalize_profile_terms(product.get("keywords", []))
+    feature_values = normalize_profile_terms((product.get("features") or []) + keyword_values)
+    use_case_values = normalize_profile_terms(product.get("use_cases", []))
     audience_values = normalize_profile_terms(product.get("audience", []))
     prohibited_values = normalize_profile_terms(product.get("prohibited_contexts", []))
-    seed = " ".join(
-        str(product.get(field) or "") for field in ("name", "brand_name", "description", "category")
-    )
-    derived = normalize_profile_terms(re.findall(r"[A-Za-z][A-Za-z0-9'-]{3,}", seed))
+
+    def usable(values: list[str]) -> list[str]:
+        output = []
+        for value in values:
+            normalized = normalize_product_term(value)
+            if normalized and normalized not in PRODUCT_GENERIC_TERMS and normalized not in output:
+                output.append(normalized)
+        return output[:30]
+
     return {
-        "keywords": normalize_profile_terms(keyword_values + derived)[:30],
-        "categories": category_values,
-        "audience": audience_values,
-        "prohibited": prohibited_values,
+        "names": usable(names),
+        "categories": usable(category_values + category_aliases),
+        "features": usable(feature_values),
+        "use_cases": usable(use_case_values),
+        "audience": usable(audience_values),
+        "prohibited": usable(prohibited_values),
     }
 
 
 def save_product_profile(profile: dict[str, Any], raw_metadata: dict[str, Any], fetch_status: str = "manual") -> dict[str, Any]:
     source_url = validate_public_product_url(str(profile.get("source_url") or ""))
     now = utc_now()
-    product_id = new_id("product")
+    canonical_url = canonical_product_url(str(profile.get("canonical_url") or source_url))
     keywords = normalize_profile_terms(profile.get("keywords", []))
+    features = normalize_profile_terms(profile.get("features", []))
+    use_cases = normalize_profile_terms(profile.get("use_cases", []))
     audience = normalize_profile_terms(profile.get("audience", []))
     prohibited = normalize_profile_terms(profile.get("prohibited_contexts", []))
     name = str(profile.get("name") or "").strip()[:160]
     if not name:
         raise HTTPException(status_code=400, detail="A product name is required before analysis.")
     confidence = int(profile.get("extraction_confidence") or 0)
+    prepared = {
+        **profile,
+        "source_url": source_url,
+        "canonical_url": canonical_url,
+        "name": name,
+        "keywords": keywords,
+        "features": features,
+        "use_cases": use_cases,
+        "audience": audience,
+        "prohibited_contexts": prohibited,
+        "profile_version": PRODUCT_PROFILE_VERSION,
+    }
+    fingerprint = product_profile_fingerprint(prepared)
+    existing = query_one(
+        "select * from products where canonical_url = ? order by updated_at desc limit 1",
+        (canonical_url,),
+    )
+    product_id = existing["id"] if existing else new_id("product")
+    field_sources = profile.get("field_sources") if isinstance(profile.get("field_sources"), dict) else {}
+    field_confidence = profile.get("field_confidence") if isinstance(profile.get("field_confidence"), dict) else {}
+    warnings = [str(item)[:240] for item in (profile.get("warnings") or [])][:12]
     with connect() as conn:
-        conn.execute(
-            """
-            insert into products
-            (id, source_url, canonical_url, name, brand_name, description, category, keywords, audience, prohibited_contexts, image_url, extraction_confidence, status, created_at, updated_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, ?)
-            """,
-            (
-                product_id,
-                source_url,
-                str(profile.get("canonical_url") or source_url)[:2000],
-                name,
-                str(profile.get("brand_name") or "").strip()[:120] or None,
-                str(profile.get("description") or "").strip()[:2000],
-                str(profile.get("category") or "").strip()[:120] or None,
-                json.dumps(keywords),
-                json.dumps(audience),
-                json.dumps(prohibited),
-                str(profile.get("image_url") or "").strip()[:1000] or None,
-                max(0, min(100, confidence)),
-                now,
-                now,
-            ),
+        values = (
+            source_url, canonical_url[:2000], name,
+            str(profile.get("brand_name") or "").strip()[:120] or None,
+            str(profile.get("description") or "").strip()[:2000],
+            str(profile.get("category") or "").strip()[:120] or None,
+            json.dumps(keywords), json.dumps(features), json.dumps(use_cases), json.dumps(audience), json.dumps(prohibited),
+            str(profile.get("image_url") or "").strip()[:1000] or None,
+            max(0, min(100, confidence)), json.dumps(field_sources), json.dumps(field_confidence), json.dumps(warnings),
+            fingerprint, PRODUCT_PROFILE_VERSION,
         )
+        if existing:
+            conn.execute(
+                """
+                update products set source_url = ?, canonical_url = ?, name = ?, brand_name = ?, description = ?, category = ?,
+                keywords = ?, features = ?, use_cases = ?, audience = ?, prohibited_contexts = ?, image_url = ?, extraction_confidence = ?,
+                field_sources = ?, field_confidence = ?, warnings = ?, profile_fingerprint = ?, profile_version = ?, status = 'verified', updated_at = ?
+                where id = ?
+                """,
+                values + (now, product_id),
+            )
+        else:
+            conn.execute(
+                """
+                insert into products
+                (id, source_url, canonical_url, name, brand_name, description, category, keywords, features, use_cases, audience,
+                prohibited_contexts, image_url, extraction_confidence, field_sources, field_confidence, warnings, profile_fingerprint,
+                profile_version, status, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, ?)
+                """,
+                (product_id,) + values + (now, now),
+            )
         conn.execute(
             "insert into product_snapshots (id, product_id, raw_metadata, extracted_at, fetch_status) values (?, ?, ?, ?, ?)",
             (new_id("product_snapshot"), product_id, json.dumps(raw_metadata), now, fetch_status),
@@ -1433,17 +1679,25 @@ def update_product_profile(product: sqlite3.Row, updates: ProductUpdateRequest) 
     current = product_payload(product)
     incoming = updates.model_dump(exclude_unset=True) if hasattr(updates, "model_dump") else updates.dict(exclude_unset=True)
     for field, value in incoming.items():
-        if field in {"keywords", "audience", "prohibited_contexts"}:
+        if field in {"keywords", "features", "use_cases", "audience", "prohibited_contexts"}:
             current[field] = normalize_profile_terms(value)
+        elif field in {"field_sources", "field_confidence"} and isinstance(value, dict):
+            current[field] = value
+        elif field == "warnings" and isinstance(value, list):
+            current[field] = [str(item)[:240] for item in value][:12]
         elif value is not None:
             current[field] = str(value).strip()
     name = str(current.get("name") or "").strip()[:160]
     if not name:
         raise HTTPException(status_code=400, detail="A product name is required.")
     now = utc_now()
+    current["profile_version"] = PRODUCT_PROFILE_VERSION
+    fingerprint = product_profile_fingerprint(current)
     execute(
         """
-        update products set name = ?, brand_name = ?, description = ?, category = ?, keywords = ?, audience = ?, prohibited_contexts = ?, image_url = ?, updated_at = ?
+        update products set name = ?, brand_name = ?, description = ?, category = ?, keywords = ?, features = ?, use_cases = ?,
+        audience = ?, prohibited_contexts = ?, image_url = ?, field_sources = ?, field_confidence = ?, warnings = ?,
+        profile_fingerprint = ?, profile_version = ?, updated_at = ?
         where id = ?
         """,
         (
@@ -1452,9 +1706,16 @@ def update_product_profile(product: sqlite3.Row, updates: ProductUpdateRequest) 
             str(current.get("description") or "").strip()[:2000],
             str(current.get("category") or "").strip()[:120] or None,
             json.dumps(current.get("keywords", [])),
+            json.dumps(current.get("features", [])),
+            json.dumps(current.get("use_cases", [])),
             json.dumps(current.get("audience", [])),
             json.dumps(current.get("prohibited_contexts", [])),
             str(current.get("image_url") or "").strip()[:1000] or None,
+            json.dumps(current.get("field_sources", {})),
+            json.dumps(current.get("field_confidence", {})),
+            json.dumps(current.get("warnings", [])),
+            fingerprint,
+            PRODUCT_PROFILE_VERSION,
             now,
             product["id"],
         ),
@@ -1726,7 +1987,24 @@ def analyze_comparison(comparison_id: str, payload: Optional[ComparisonAnalyzeRe
 
 @app.post("/api/products/resolve")
 def resolve_product(payload: ProductResolveRequest) -> dict[str, Any]:
-    return extract_product_profile(payload.url)
+    canonical_url = canonical_product_url(payload.url)
+    cached = query_one("select payload, fetched_at from product_resolution_cache where canonical_url = ?", (canonical_url,))
+    if cached:
+        try:
+            age_seconds = (datetime.utcnow() - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
+            if age_seconds <= PRODUCT_RESOLUTION_TTL_SECONDS:
+                result = json.loads(cached["payload"])
+                result["cache_status"] = "hit"
+                return result
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    result = extract_product_profile(canonical_url)
+    execute(
+        "insert or replace into product_resolution_cache (canonical_url, payload, fetched_at) values (?, ?, ?)",
+        (canonical_url, json.dumps(result), utc_now()),
+    )
+    result["cache_status"] = "miss"
+    return result
 
 
 @app.post("/api/products")
@@ -1734,6 +2012,12 @@ def create_product(payload: ProductCreateRequest) -> dict[str, Any]:
     profile = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     profile["canonical_url"] = profile["source_url"]
     return save_product_profile(profile, {"created_from": "reviewed_profile"}, "reviewed")
+
+
+@app.get("/api/products")
+def list_products(limit: int = Query(default=8, ge=1, le=25)) -> dict[str, Any]:
+    products = query_all("select * from products order by updated_at desc limit ?", (limit,))
+    return {"products": [product_payload(product) for product in products]}
 
 
 @app.get("/api/products/{product_id}")
@@ -3718,10 +4002,10 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
 
 
 def fit_text_hits(terms: list[str], text: str) -> list[str]:
-    normalized = text.lower()
+    normalized = normalize_product_term(text)
     hits = []
     for term in terms:
-        value = term.lower().strip()
+        value = normalize_product_term(term)
         if len(value) < 3:
             continue
         if re.search(rf"(?<![a-z0-9]){re.escape(value)}(?![a-z0-9])", normalized):
@@ -3729,59 +4013,87 @@ def fit_text_hits(terms: list[str], text: str) -> list[str]:
     return hits
 
 
-def score_product_segment_fit(product: dict[str, Any], segment: dict[str, Any]) -> dict[str, Any]:
+def prepare_product_segment_context(segment: dict[str, Any]) -> dict[str, Any]:
+    transcript = str(segment.get("transcript", ""))
+    topics = [normalize_product_term(str(topic.get("label", ""))) for topic in segment.get("topics", [])]
+    objects = [normalize_product_term(str(obj.get("label", ""))) for obj in segment.get("objects", [])]
+    useful_objects = sorted({label for label in objects if label and label not in PRODUCT_GENERIC_TERMS})
+    return {
+        "transcript": normalize_product_term(transcript),
+        "topic_text": " ".join(topics),
+        "object_text": " ".join(useful_objects),
+        "topics": [topic for topic in topics if topic],
+        "objects": useful_objects,
+        "context_text": normalize_product_term(" ".join([
+            transcript, str(segment.get("summary", "")), str(segment.get("label", "")), " ".join(topics), " ".join(useful_objects)
+        ])),
+    }
+
+
+def score_product_segment_fit(
+    product: dict[str, Any], segment: dict[str, Any], prepared_context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     terms = product_terms(product)
-    topic_labels = [str(topic.get("label", "")).lower() for topic in segment.get("topics", [])]
-    object_labels = [str(obj.get("label", "")).lower() for obj in segment.get("objects", [])]
-    context_text = " ".join(
-        [
-            str(segment.get("transcript", "")),
-            str(segment.get("summary", "")),
-            str(segment.get("label", "")),
-            " ".join(topic_labels),
-            " ".join(object_labels),
-        ]
-    ).lower()
-    keyword_hits = fit_text_hits(terms["keywords"], context_text)
+    context = prepared_context or prepare_product_segment_context(segment)
+    context_text = context["context_text"]
+    name_hits = fit_text_hits(terms["names"], context_text)
     category_hits = fit_text_hits(terms["categories"], context_text)
+    feature_hits = fit_text_hits(terms["features"], context_text)
+    use_case_hits = fit_text_hits(terms["use_cases"], context_text)
     audience_hits = fit_text_hits(terms["audience"], context_text)
     prohibited_hits = fit_text_hits(terms["prohibited"], context_text)
-    product_tokens = {token for term in terms["keywords"] + terms["categories"] for token in re.findall(r"[a-z0-9]{3,}", term.lower())}
-    visual_hits = sorted({label for label in object_labels if label in product_tokens})
+    relevant_terms = terms["names"] + terms["categories"] + terms["features"] + terms["use_cases"]
+    product_tokens = {
+        token for term in relevant_terms for token in normalize_product_term(term).split()
+        if len(token) >= 3 and token not in PRODUCT_GENERIC_TERMS
+    }
+    visual_hits = sorted({label for label in context["objects"] if label in product_tokens})
+    transcript_hits = {
+        group: fit_text_hits(terms[group], context["transcript"])
+        for group in ("names", "categories", "features", "use_cases", "audience")
+    }
+    topic_hits = sorted(set(
+        fit_text_hits(terms["categories"] + terms["features"] + terms["use_cases"], context["topic_text"])
+    ))
     transcript_confidence = int(segment.get("transcript_insights", {}).get("transcript_confidence", 0) or 0)
     visual_quality = float(segment.get("visual_evidence", {}).get("visual_quality", 0) or 0)
-    keyword_signal = min(1.0, len(keyword_hits) / 3)
-    category_signal = min(1.0, len(category_hits) / max(1, len(terms["categories"])))
-    audience_signal = min(1.0, len(audience_hits) / max(1, len(terms["audience"])))
-    visual_signal = min(1.0, len(visual_hits) / 2)
-    content_signal = min(1.0, (len(keyword_hits) + len(category_hits) * 1.5) / 4)
-    evidence_signal = clamp(
-        transcript_confidence / 100 * 0.55
-        + visual_quality * 0.25
-        + min(1.0, len(object_labels) / 3) * 0.20
-    )
-    safety_signal = clamp(float(segment.get("brand_safety_score", 100) or 100) / 100)
+    brand_category = min(100, len(name_hits) * 70 + len(category_hits) * 45)
+    feature_use_case = min(100, len(feature_hits) * 26 + len(use_case_hits) * 38)
+    audience_alignment = min(100, len(audience_hits) * 50)
+    visual_evidence = min(100, len(visual_hits) * 60)
+    transcript_match_count = sum(len(values) for values in transcript_hits.values())
+    transcript_evidence = min(100, transcript_match_count * 28)
+    topic_evidence = min(100, len(topic_hits) * 45)
     score = (
-        content_signal * 0.30
-        + keyword_signal * 0.18
-        + category_signal * 0.15
-        + audience_signal * 0.10
-        + visual_signal * 0.08
-        + safety_signal * 0.10
-        + evidence_signal * 0.09
-    )
+        brand_category * 0.34
+        + feature_use_case * 0.26
+        + audience_alignment * 0.12
+        + visual_evidence * 0.12
+        + transcript_evidence * 0.10
+        + topic_evidence * 0.06
+    ) / 100
     if prohibited_hits:
         score *= 0.35
-    if not keyword_hits and not category_hits and not audience_hits and not visual_hits:
-        score *= 0.45
+    modalities = sum(bool(value) for value in (transcript_match_count, topic_hits, visual_hits))
+    high_specificity = bool(name_hits or category_hits or len(feature_hits) >= 2)
+    if not high_specificity and modalities < 2:
+        score = min(score, 0.44)
     fit_score = int(round(clamp(score) * 100))
-    evidence_units = len(keyword_hits) + len(category_hits) + len(audience_hits) + len(visual_hits)
-    confidence = int(round(clamp(0.25 + evidence_signal * 0.35 + min(1.0, evidence_units / 4) * 0.40) * 100))
+    evidence_units = len(name_hits) + len(category_hits) + len(feature_hits) + len(use_case_hits) + len(audience_hits) + len(visual_hits)
+    input_groups = sum(bool(terms[group]) for group in ("names", "categories", "features", "use_cases", "audience"))
+    input_quality = input_groups / 5
+    evidence_quality = clamp(transcript_confidence / 100 * 0.65 + visual_quality * 0.35)
+    coverage = clamp((modalities / 3) * 0.55 + min(1, evidence_units / 4) * 0.45)
+    confidence = int(round(clamp(input_quality * 0.25 + evidence_quality * 0.35 + coverage * 0.40) * 100))
+    if evidence_units == 0 and not topic_hits:
+        confidence = min(confidence, 30)
     reasons = []
-    if keyword_hits:
-        reasons.append(f"product terms in context: {', '.join(keyword_hits[:3])}")
+    if name_hits:
+        reasons.append(f"brand or product match: {', '.join(name_hits[:2])}")
     if category_hits:
         reasons.append(f"category alignment: {', '.join(category_hits[:2])}")
+    if feature_hits or use_case_hits:
+        reasons.append(f"feature or use-case alignment: {', '.join((feature_hits + use_case_hits)[:3])}")
     if audience_hits:
         reasons.append(f"audience cue: {', '.join(audience_hits[:2])}")
     if visual_hits:
@@ -3790,22 +4102,81 @@ def score_product_segment_fit(product: dict[str, Any], segment: dict[str, Any]) 
         reasons.append(f"blocked context detected: {', '.join(prohibited_hits[:2])}")
     if not reasons:
         reasons.append("No direct product, category, audience, or visual cue was detected in this segment.")
+    limitations = []
+    if not transcript_match_count:
+        limitations.append("No product-specific transcript evidence was found.")
+    if not visual_hits:
+        limitations.append("No product-specific visual object was detected.")
+    if transcript_confidence < 45:
+        limitations.append("Transcript confidence is low, so spoken-context matches may be incomplete.")
+    if not terms["audience"]:
+        limitations.append("No target audience was provided in the reviewed product profile.")
+    conflicting = [f"Prohibited context: {value}" for value in prohibited_hits]
+    if float(segment.get("drop_risk_score", 100) or 100) >= 75:
+        conflicting.append(f"High viewer drop risk: {int(float(segment.get('drop_risk_score', 100) or 100))}")
     return {
         "fit_score": fit_score,
+        "product_relevance_score": fit_score,
         "confidence": confidence,
         "reasons": reasons,
+        "positive_evidence": reasons if not prohibited_hits else [reason for reason in reasons if not reason.startswith("blocked")],
+        "conflicting_evidence": conflicting,
+        "limitations": limitations,
         "blocked": bool(prohibited_hits),
         "evidence_units": evidence_units,
+        "evidence_coverage": {
+            "transcript_matches": transcript_match_count,
+            "topic_matches": len(topic_hits),
+            "visual_matches": len(visual_hits),
+            "modalities": modalities,
+        },
+        "component_breakdown": {
+            "brand_category_relevance": brand_category,
+            "feature_use_case_alignment": feature_use_case,
+            "audience_alignment": audience_alignment,
+            "visual_evidence": visual_evidence,
+            "transcript_evidence": transcript_evidence,
+            "topic_evidence": topic_evidence,
+            "brand_safety": int(float(segment.get("brand_safety_score", 100) or 100)),
+        },
+        "matched_terms": {
+            "names": name_hits,
+            "categories": category_hits,
+            "features": feature_hits,
+            "use_cases": use_case_hits,
+            "audience": audience_hits,
+            "prohibited": prohibited_hits,
+        },
+        "relevant_topics": topic_hits,
+        "relevant_objects": visual_hits,
     }
 
 
-def placement_recommendation(product: dict[str, Any], segment: dict[str, Any], fit: dict[str, Any]) -> tuple[int, str, str]:
+def natural_boundary_score(segment: dict[str, Any]) -> float:
     natural_boundary = 0.55
     transcript = segment.get("transcript_insights", {})
     if transcript.get("word_count", 0) == 0 or transcript.get("silence_penalty", 0) > 0:
         natural_boundary = 0.8
     elif transcript.get("words_per_second", 0) <= 2.2:
         natural_boundary = 0.7
+    return natural_boundary
+
+
+def placement_readiness_breakdown(segment: dict[str, Any], fit: dict[str, Any]) -> dict[str, int]:
+    boundary = natural_boundary_score(segment)
+    transcript_confidence = int(segment.get("transcript_insights", {}).get("transcript_confidence", 0) or 0)
+    return {
+        "ad_slot_quality": int(float(segment.get("ad_slot_score", 0) or 0)),
+        "attention": int(float(segment.get("attention_score", 0) or 0)),
+        "low_drop_risk": 100 - int(float(segment.get("drop_risk_score", 100) or 100)),
+        "brand_safety": int(float(segment.get("brand_safety_score", 0) or 0)),
+        "natural_placement_boundary": int(round(boundary * 100)),
+        "evidence_quality": int(round((fit["confidence"] + transcript_confidence) / 2)),
+    }
+
+
+def placement_recommendation(product: dict[str, Any], segment: dict[str, Any], fit: dict[str, Any]) -> tuple[int, str, str]:
+    natural_boundary = natural_boundary_score(segment)
     placement_score = int(round(clamp(
         fit["fit_score"] / 100 * 0.38
         + float(segment.get("ad_slot_score", 0) or 0) / 100 * 0.24
@@ -3835,13 +4206,30 @@ def placement_recommendation(product: dict[str, Any], segment: dict[str, Any], f
     return placement_score, placement_type, recommendation
 
 
+def video_analysis_fingerprint(video: sqlite3.Row, segments: list[dict[str, Any]]) -> str:
+    stable = {
+        "video_id": video["id"],
+        "status": video["status"],
+        "segments": [
+            {
+                "id": segment["id"], "start": segment["start"], "end": segment["end"],
+                "attention": segment.get("attention_score"), "ad_fit": segment.get("ad_fit_score"),
+                "drop": segment.get("drop_risk_score"), "safety": segment.get("brand_safety_score"),
+                "transcript": segment.get("transcript"), "objects": segment.get("objects"), "topics": segment.get("topics"),
+            }
+            for segment in segments
+        ],
+    }
+    return hashlib.sha256(json.dumps(stable, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def product_fit_payload(fit_run: sqlite3.Row) -> dict[str, Any]:
     product = product_payload(get_product_or_404(fit_run["product_id"]))
     video = get_video_or_404(fit_run["video_id"])
     placements = []
     rows = query_all(
         """
-        select product_placements.*, segments.start_time, segments.end_time, segments.summary
+        select product_placements.*, segments.start_time, segments.end_time, segments.summary, segments.thumbnail_url
         from product_placements join segments on segments.id = product_placements.segment_id
         where product_fit_run_id = ? order by placement_score desc, segments.start_time
         """,
@@ -3851,9 +4239,21 @@ def product_fit_payload(fit_run: sqlite3.Row) -> dict[str, Any]:
         placement = dict(row)
         placement["start"] = placement.pop("start_time")
         placement["end"] = placement.pop("end_time")
-        placement["reasons"] = json.loads(placement["reasons"] or "[]")
+        for field, default in (
+            ("reasons", []), ("component_breakdown", {}), ("positive_evidence", []),
+            ("conflicting_evidence", []), ("limitations", []), ("evidence_coverage", {}),
+            ("relevant_topics", []), ("relevant_objects", []),
+        ):
+            try:
+                placement[field] = json.loads(placement.get(field) or json.dumps(default))
+            except (TypeError, json.JSONDecodeError):
+                placement[field] = default
         placement["is_best_placement"] = bool(placement["is_best_placement"])
         placements.append(placement)
+    try:
+        details = json.loads(fit_run["details_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        details = {}
     return {
         "fit_run_id": fit_run["id"],
         "video_id": video["id"],
@@ -3865,6 +4265,17 @@ def product_fit_payload(fit_run: sqlite3.Row) -> dict[str, Any]:
         "summary": fit_run["summary"],
         "created_at": fit_run["created_at"],
         "placements": placements,
+        "product_relevance_score": details.get("product_relevance_score", fit_run["overall_fit_score"]),
+        "placement_readiness_score": details.get("placement_readiness_score", fit_run["overall_fit_score"]),
+        "component_scores": details.get("component_scores", {}),
+        "evidence_coverage": details.get("evidence_coverage", {}),
+        "positive_evidence": details.get("positive_evidence", []),
+        "conflicting_evidence": details.get("conflicting_evidence", []),
+        "limitations": details.get("limitations", []),
+        "missing_input_warnings": details.get("missing_input_warnings", []),
+        "recommended_action": details.get("recommended_action", "Review the strongest timestamp before approving placement."),
+        "cache_status": details.get("cache_status", "miss"),
+        "scoring_version": fit_run["scoring_version"] or PRODUCT_FIT_SCORING_VERSION,
     }
 
 
@@ -3875,10 +4286,36 @@ def run_product_fit(product: sqlite3.Row, video: sqlite3.Row, comparison_id: str
     if not analysis["segments"]:
         raise HTTPException(status_code=400, detail="No analyzed segments are available for product fit.")
     profile = product_payload(product)
+    product_fingerprint = profile.get("profile_fingerprint") or product_profile_fingerprint(profile)
+    video_fingerprint = video_analysis_fingerprint(video, analysis["segments"])
+    cached_run = query_one(
+        """
+        select * from product_fit_runs
+        where product_id = ? and video_id = ? and product_fingerprint = ? and video_fingerprint = ? and scoring_version = ?
+        order by created_at desc limit 1
+        """,
+        (product["id"], video["id"], product_fingerprint, video_fingerprint, PRODUCT_FIT_SCORING_VERSION),
+    )
+    if cached_run:
+        cached_payload = product_fit_payload(cached_run)
+        cached_payload["cache_status"] = "hit"
+        return cached_payload
+
     placements = []
+    prepared_segments = {segment["id"]: prepare_product_segment_context(segment) for segment in analysis["segments"]}
     for segment in analysis["segments"]:
-        fit = score_product_segment_fit(profile, segment)
+        fit = score_product_segment_fit(profile, segment, prepared_segments[segment["id"]])
         score, placement_type, recommendation = placement_recommendation(profile, segment, fit)
+        readiness_components = placement_readiness_breakdown(segment, fit)
+        readiness_score = int(round(
+            readiness_components["ad_slot_quality"] * 0.30
+            + readiness_components["attention"] * 0.15
+            + readiness_components["low_drop_risk"] * 0.15
+            + readiness_components["brand_safety"] * 0.15
+            + readiness_components["natural_placement_boundary"] * 0.15
+            + readiness_components["evidence_quality"] * 0.10
+        ))
+        component_breakdown = {**fit["component_breakdown"], **readiness_components}
         placements.append({
             "segment_id": segment["id"],
             "start": segment["start"],
@@ -3888,17 +4325,30 @@ def run_product_fit(product: sqlite3.Row, video: sqlite3.Row, comparison_id: str
             "recommendation": recommendation,
             "reasons": fit["reasons"] + [f"product fit: {fit['fit_score']}", f"fit confidence: {fit['confidence']}"],
             "fit_score": fit["fit_score"],
+            "product_relevance_score": fit["fit_score"],
+            "placement_readiness_score": readiness_score,
             "fit_confidence": fit["confidence"],
             "blocked": fit["blocked"],
+            "component_breakdown": component_breakdown,
+            "positive_evidence": fit["positive_evidence"],
+            "conflicting_evidence": fit["conflicting_evidence"],
+            "limitations": fit["limitations"],
+            "evidence_coverage": fit["evidence_coverage"],
+            "transcript_excerpt": str(segment.get("transcript") or "").strip()[:320],
+            "relevant_topics": fit["relevant_topics"],
+            "relevant_objects": fit["relevant_objects"],
+            "suggested_duration": f"{max(1, int(round(float(segment['end']) - float(segment['start']))))} seconds",
         })
     placements.sort(key=lambda item: (item["placement_score"], item["fit_score"]), reverse=True)
     leading = placements[:max(1, min(3, len(placements)))]
     overall_score = int(round(float(np.mean([item["placement_score"] for item in leading]))))
+    product_relevance_score = int(round(float(np.mean([item["product_relevance_score"] for item in leading]))))
+    placement_readiness_score = int(round(float(np.mean([item["placement_readiness_score"] for item in leading]))))
     confidence = int(round(float(np.mean([item["fit_confidence"] for item in leading]))))
     best = placements[0]
     if best["blocked"] or overall_score < 35:
         tier = "Not suitable"
-    elif overall_score >= 70 and confidence >= 65:
+    elif overall_score >= 70 and product_relevance_score >= 60 and confidence >= 65:
         tier = "Strong fit"
     elif overall_score >= 48:
         tier = "Conditional fit"
@@ -3911,26 +4361,76 @@ def run_product_fit(product: sqlite3.Row, video: sqlite3.Row, comparison_id: str
         summary = f"{product_name} can be tested in this video, but the strongest placement needs a lightweight execution and performance validation."
     else:
         summary = f"{product_name} has insufficient contextual evidence for a confident placement in this video."
+    missing_input_warnings = list(profile.get("warnings") or [])
+    if not profile.get("audience"):
+        missing_input_warnings.append("Add a target audience to improve audience-alignment scoring.")
+    if not profile.get("prohibited_contexts"):
+        missing_input_warnings.append("Add prohibited contexts to make the safety gate product-specific.")
+    if tier == "Strong fit":
+        recommended_action = f"Use {format_range(best['start'], best['end'])} as the primary {best['placement_type']} candidate, then validate the final creative."
+    elif tier == "Conditional fit":
+        recommended_action = f"Test a lightweight integration at {format_range(best['start'], best['end'])} and review the weak evidence before launch."
+    elif tier == "Weak fit":
+        recommended_action = "Improve the product profile or video context before prioritizing an integration."
+    else:
+        recommended_action = "Do not place this product in the current edit unless the blocking context or missing evidence is resolved."
+
+    component_keys = sorted({key for item in leading for key in item["component_breakdown"]})
+    component_scores = {
+        key: int(round(float(np.mean([item["component_breakdown"].get(key, 0) for item in leading]))))
+        for key in component_keys
+    }
+    coverage_keys = ("transcript_matches", "topic_matches", "visual_matches")
+    evidence_coverage = {
+        key: sum(int(item["evidence_coverage"].get(key, 0)) for item in leading) for key in coverage_keys
+    }
+    evidence_coverage["modalities"] = max(int(item["evidence_coverage"].get("modalities", 0)) for item in leading)
+    details = {
+        "product_relevance_score": product_relevance_score,
+        "placement_readiness_score": placement_readiness_score,
+        "component_scores": component_scores,
+        "evidence_coverage": evidence_coverage,
+        "positive_evidence": best["positive_evidence"],
+        "conflicting_evidence": best["conflicting_evidence"],
+        "limitations": best["limitations"],
+        "missing_input_warnings": list(dict.fromkeys(missing_input_warnings)),
+        "recommended_action": recommended_action,
+        "cache_status": "miss",
+    }
     run_id = new_id("product_fit")
     now = utc_now()
     with connect() as conn:
         conn.execute(
             """
-            insert into product_fit_runs (id, product_id, video_id, comparison_id, overall_fit_score, fit_confidence, suitability_tier, summary, created_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            insert into product_fit_runs
+            (id, product_id, video_id, comparison_id, overall_fit_score, fit_confidence, suitability_tier, summary,
+             product_fingerprint, video_fingerprint, scoring_version, details_json, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, product["id"], video["id"], comparison_id, overall_score, confidence, tier, summary, now),
+            (
+                run_id, product["id"], video["id"], comparison_id, overall_score, confidence, tier, summary,
+                product_fingerprint, video_fingerprint, PRODUCT_FIT_SCORING_VERSION, json.dumps(details), now,
+            ),
         )
         for index, placement in enumerate(placements):
             conn.execute(
                 """
-                insert into product_placements (id, product_fit_run_id, segment_id, placement_score, placement_type, recommendation, reasons, is_best_placement, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                insert into product_placements
+                (id, product_fit_run_id, segment_id, placement_score, placement_type, recommendation, reasons,
+                 product_relevance_score, placement_readiness_score, component_breakdown, positive_evidence,
+                 conflicting_evidence, limitations, evidence_coverage, transcript_excerpt, relevant_topics,
+                 relevant_objects, suggested_duration, is_best_placement, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id("product_placement"), run_id, placement["segment_id"], placement["placement_score"],
                     placement["placement_type"], placement["recommendation"], json.dumps(placement["reasons"]),
-                    1 if index == 0 else 0, now,
+                    placement["product_relevance_score"], placement["placement_readiness_score"],
+                    json.dumps(placement["component_breakdown"]), json.dumps(placement["positive_evidence"]),
+                    json.dumps(placement["conflicting_evidence"]), json.dumps(placement["limitations"]),
+                    json.dumps(placement["evidence_coverage"]), placement["transcript_excerpt"],
+                    json.dumps(placement["relevant_topics"]), json.dumps(placement["relevant_objects"]),
+                    placement["suggested_duration"], 1 if index == 0 else 0, now,
                 ),
             )
         conn.commit()

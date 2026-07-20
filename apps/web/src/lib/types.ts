@@ -230,10 +230,18 @@ export type ProductProfile = {
   description?: string | null;
   category?: string | null;
   keywords: string[];
+  features: string[];
+  use_cases: string[];
   audience: string[];
   prohibited_contexts: string[];
   image_url?: string | null;
   extraction_confidence?: number;
+  field_sources?: Record<string, string>;
+  field_confidence?: Record<string, number>;
+  warnings?: string[];
+  profile_fingerprint?: string;
+  profile_version?: string;
+  cache_status?: "hit" | "miss" | string;
   status?: string;
   created_at?: string;
   updated_at?: string;
@@ -250,6 +258,23 @@ export type ProductPlacement = {
   start: number;
   end: number;
   summary: string;
+  thumbnail_url?: string | null;
+  product_relevance_score: number;
+  placement_readiness_score: number;
+  component_breakdown: Record<string, number>;
+  positive_evidence: string[];
+  conflicting_evidence: string[];
+  limitations: string[];
+  evidence_coverage: {
+    transcript_matches?: number;
+    topic_matches?: number;
+    visual_matches?: number;
+    modalities?: number;
+  };
+  transcript_excerpt?: string | null;
+  relevant_topics: string[];
+  relevant_objects: string[];
+  suggested_duration?: string | null;
 };
 
 export type ProductFitPayload = {
@@ -263,4 +288,20 @@ export type ProductFitPayload = {
   summary: string;
   created_at: string;
   placements: ProductPlacement[];
+  product_relevance_score: number;
+  placement_readiness_score: number;
+  component_scores: Record<string, number>;
+  evidence_coverage: {
+    transcript_matches?: number;
+    topic_matches?: number;
+    visual_matches?: number;
+    modalities?: number;
+  };
+  positive_evidence: string[];
+  conflicting_evidence: string[];
+  limitations: string[];
+  missing_input_warnings: string[];
+  recommended_action: string;
+  cache_status: "hit" | "miss" | string;
+  scoring_version: string;
 };
