@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
-from insight_report import BRAND_PROSPECT_DISCLAIMER, normalize_report
+from insight_report import BRAND_PROSPECT_DISCLAIMER, normalize_report, write_report_pdf
 
 
 def test_redact_insight_text_removes_contact_identifiers():
@@ -39,6 +39,8 @@ def test_report_validation_drops_hallucinated_evidence_and_adds_disclaimer():
             "ad_categories": [{"category": "Beverages", "contextual_fit_score": -2, "confidence": 1000, "evidence_refs": ["made_up"]}],
             "brand_prospects": [{"brand": "Example", "category": "Beverages", "evidence_refs": ["seg_1"]}],
             "placement_opportunities": [{"segment_id": "made_up", "start": 999, "end": 1000}],
+            "audience_personas": [{"persona": "Office worker", "evidence_refs": ["seg_1"], "recommended_additions": ["Show a workday use case"]}],
+            "attention_improvements": [{"segment_id": "seg_1", "priority": 110, "issue": "Slow opening", "recommended_change": "Open with the benefit", "evidence_refs": ["seg_1"]}],
         },
         report_type="video", report_id="report_1", target_id="video_1", fingerprint="fingerprint", model="model",
         valid_segments={"seg_1": {"video_id": "video_1", "start": 1.0, "end": 4.0}}, valid_video_ids={"video_1"},
@@ -46,7 +48,31 @@ def test_report_validation_drops_hallucinated_evidence_and_adds_disclaimer():
     assert report["keywords"] == [{"term": "hydration", "type": "content", "confidence": 100, "evidence_refs": ["seg_1"]}]
     assert report["ad_categories"] == []
     assert report["placement_opportunities"] == []
+    assert report["audience_personas"][0]["persona"] == "Office worker"
+    assert report["attention_improvements"][0]["priority"] == 100
     assert report["brand_prospect_disclaimer"] == BRAND_PROSPECT_DISCLAIMER
+
+
+def test_pdf_export_uses_reportlab_paragraphs_without_global_name_error(tmp_path):
+    output = tmp_path / "insight.pdf"
+    write_report_pdf(
+        {
+            "report_type": "video",
+            "executive_summary": "A grounded summary.",
+            "content_profile": {"themes": ["hydration"]},
+            "audience_personas": [],
+            "ad_categories": [],
+            "keywords": [],
+            "brand_prospects": [],
+            "placement_opportunities": [],
+            "attention_improvements": [],
+            "creative_recommendations": [],
+            "brand_safety": {"findings": []},
+            "limitations": [],
+        },
+        output,
+    )
+    assert output.read_bytes().startswith(b"%PDF")
 
 
 def test_insight_job_is_idempotent_and_completes_with_fake_runpod(monkeypatch, tmp_path):

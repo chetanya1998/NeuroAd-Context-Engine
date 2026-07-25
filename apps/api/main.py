@@ -28,7 +28,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -39,6 +39,7 @@ from insight_report import (
     VIDEO_PROMPT_VERSION,
     VIDEO_SYSTEM_PROMPT,
     normalize_report,
+    write_report_pdf,
 )
 from runpod_client import RunPodClient, RunPodError, RunPodSettings
 
@@ -2248,6 +2249,31 @@ def get_insight_report(report_id: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="Insight report data is invalid.") from exc
     return content
+
+
+@app.get("/api/insight-reports/{report_id}/export")
+def export_insight_report(report_id: str, format: str = Query("pdf", pattern="^(pdf|json)$")) -> Response:
+    """Create a download from the same validated report object rendered by the dashboard."""
+    report = query_one("select * from insight_reports where id = ?", (report_id,))
+    if not report or report["status"] != "completed" or not report["content_json"]:
+        raise HTTPException(status_code=404, detail="Completed insight report not found")
+    try:
+        content = json.loads(report["content_json"])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Insight report data is invalid.") from exc
+    if format == "json":
+        return Response(
+            content=json.dumps(content, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{report_id}.json"'},
+        )
+    path = REPORT_DIR / "insights" / f"{report_id}.pdf"
+    try:
+        write_report_pdf(content, path)
+    except Exception as exc:
+        INSIGHT_LOGGER.exception("Insight PDF export failed: report_id=%s", report_id)
+        raise HTTPException(status_code=500, detail="The insight PDF could not be created.") from exc
+    return FileResponse(path, media_type="application/pdf", filename=f"{report_id}.pdf")
 
 
 @app.get("/api/jobs/{job_id}")

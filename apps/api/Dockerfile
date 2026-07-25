@@ -45,6 +45,7 @@ RUN apt-get update \
         libgomp1 \
         python3-dev \
         tesseract-ocr \
+        fonts-dejavu-core \
         unzip \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data/neuroad/storage /opt/neuroad/models

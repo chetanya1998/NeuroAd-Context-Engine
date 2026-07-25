@@ -25,6 +25,10 @@ Return only a JSON object with:
     "tone": ["up to 4"],
     "campaign_intents": ["up to 5"]
   },
+  "audience_personas": [
+    {"persona":"", "motivation":"", "attention_triggers":[""], "content_gaps":[""],
+     "recommended_additions":[""], "evidence_refs":["segment id"]}
+  ],
   "keywords": [
     {"term":"", "type":"content|audience|advertising|brand", "confidence":0, "evidence_refs":["segment id"]}
   ],
@@ -37,6 +41,10 @@ Return only a JSON object with:
   ],
   "brand_safety": {"summary":"", "findings":[""]},
   "creative_recommendations": [""],
+  "attention_improvements": [
+    {"segment_id":"", "start":0, "end":0, "priority":0, "issue":"", "recommended_change":"",
+     "execution_tip":"", "expected_attention_impact":"", "evidence_refs":["segment id"]}
+  ],
   "limitations": [""]
 }
 """.strip()
@@ -55,7 +63,7 @@ Also include:
 "avoidance_zones": [
   {{"segment_id":"", "start":0, "end":0, "reason":""}}
 ]
-Limits: 15 keywords, 5 ad categories, 8 brand prospects, 8 placement opportunities.
+Limits: 15 keywords, 5 ad categories, 8 brand prospects, 4 audience personas, 6 attention improvements, and 8 placement opportunities.
 """.strip()
 
 COMPARISON_SYSTEM_PROMPT = f"""
@@ -75,7 +83,7 @@ Also include:
 "comparative_placements": [
   {{"video_id":"", "segment_id":"", "start":0, "end":0, "score":0, "rationale":""}}
 ]
-Limits: 15 keywords, 5 ad categories, 8 brand prospects, 20 matrix rows, 12 comparative placements.
+Limits: 15 keywords, 5 ad categories, 8 brand prospects, 4 audience personas, 6 attention improvements, 20 matrix rows, and 12 comparative placements.
 """.strip()
 
 
@@ -209,6 +217,7 @@ def normalize_report(
             "tone": _strings(content_profile.get("tone"), 4),
             "campaign_intents": _strings(content_profile.get("campaign_intents"), 5),
         },
+        "audience_personas": _normalize_personas(raw.get("audience_personas"), valid_segment_ids),
         "keywords": keywords,
         "ad_categories": categories,
         "brand_prospects": brands,
@@ -217,6 +226,7 @@ def normalize_report(
             "findings": _strings(safety.get("findings"), 8),
         },
         "creative_recommendations": _strings(raw.get("creative_recommendations"), 10, 500),
+        "attention_improvements": _normalize_attention_improvements(raw.get("attention_improvements"), valid_segments),
         "limitations": _strings(raw.get("limitations"), 8, 500),
         "brand_prospect_disclaimer": BRAND_PROSPECT_DISCLAIMER,
         "metadata": {
@@ -289,6 +299,52 @@ def _normalize_timed_items(value: Any, valid_segments: dict[str, dict[str, Any]]
             }
         )
         if len(result) >= limit:
+            break
+    return result
+
+
+def _normalize_personas(value: Any, valid_segment_ids: set[str]) -> list[dict[str, Any]]:
+    result = []
+    for item in _dedupe_records(value, "persona", 4):
+        refs = _valid_refs(item.get("evidence_refs"), valid_segment_ids)
+        if not refs:
+            continue
+        result.append(
+            {
+                "persona": item["persona"],
+                "motivation": _text(item.get("motivation"), 500),
+                "attention_triggers": _strings(item.get("attention_triggers"), 4, 220),
+                "content_gaps": _strings(item.get("content_gaps"), 4, 220),
+                "recommended_additions": _strings(item.get("recommended_additions"), 4, 260),
+                "evidence_refs": refs,
+            }
+        )
+    return result
+
+
+def _normalize_attention_improvements(value: Any, valid_segments: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        segment_id = _text(item.get("segment_id"), 120)
+        segment = valid_segments.get(segment_id)
+        if not segment:
+            continue
+        result.append(
+            {
+                "segment_id": segment_id,
+                "start": segment["start"],
+                "end": segment["end"],
+                "priority": _score(item.get("priority")),
+                "issue": _text(item.get("issue"), 500),
+                "recommended_change": _text(item.get("recommended_change"), 600),
+                "execution_tip": _text(item.get("execution_tip"), 500),
+                "expected_attention_impact": _text(item.get("expected_attention_impact"), 400),
+                "evidence_refs": _valid_refs(item.get("evidence_refs"), set(valid_segments)),
+            }
+        )
+        if len(result) >= 6:
             break
     return result
 
@@ -383,7 +439,27 @@ def write_report_pdf(report: dict[str, Any], path: Path) -> None:
         Spacer(1, 12),
     ]
 
-    _pdf_list_section(story, "Themes", report.get("content_profile", {}).get("themes", []), styles)
+    _pdf_list_section(story, "Themes", report.get("content_profile", {}).get("themes", []), styles, Paragraph, Spacer)
+    _pdf_table_section(
+        story,
+        "Audience personas",
+        ["Persona", "Motivation", "Attention triggers", "Recommended additions"],
+        [
+            [
+                item.get("persona", ""),
+                item.get("motivation", ""),
+                "; ".join(item.get("attention_triggers", [])),
+                "; ".join(item.get("recommended_additions", [])),
+            ]
+            for item in report.get("audience_personas", [])
+        ],
+        styles,
+        Table,
+        TableStyle,
+        colors,
+        Paragraph,
+        Spacer,
+    )
     _pdf_table_section(
         story,
         "Advertising categories",
@@ -401,6 +477,8 @@ def write_report_pdf(report: dict[str, Any], path: Path) -> None:
         Table,
         TableStyle,
         colors,
+        Paragraph,
+        Spacer,
     )
     _pdf_table_section(
         story,
@@ -411,6 +489,8 @@ def write_report_pdf(report: dict[str, Any], path: Path) -> None:
         Table,
         TableStyle,
         colors,
+        Paragraph,
+        Spacer,
     )
     story.extend([PageBreak(), Paragraph("Brand prospects", styles["Heading1"])])
     for brand in report.get("brand_prospects", []):
@@ -442,10 +522,32 @@ def write_report_pdf(report: dict[str, Any], path: Path) -> None:
             for item in report.get(placement_key, [])
         ],
         styles,
+        Paragraph,
+        Spacer,
     )
-    _pdf_list_section(story, "Creative recommendations", report.get("creative_recommendations", []), styles)
-    _pdf_list_section(story, "Brand safety", report.get("brand_safety", {}).get("findings", []), styles)
-    _pdf_list_section(story, "Limitations", report.get("limitations", []), styles)
+    _pdf_table_section(
+        story,
+        "Attention uplift plan",
+        ["Moment", "Issue", "Recommended change", "Expected impact"],
+        [
+            [
+                f"{item.get('start', 0):g}–{item.get('end', 0):g}s",
+                item.get("issue", ""),
+                item.get("recommended_change", ""),
+                item.get("expected_attention_impact", ""),
+            ]
+            for item in report.get("attention_improvements", [])
+        ],
+        styles,
+        Table,
+        TableStyle,
+        colors,
+        Paragraph,
+        Spacer,
+    )
+    _pdf_list_section(story, "Creative recommendations", report.get("creative_recommendations", []), styles, Paragraph, Spacer)
+    _pdf_list_section(story, "Brand safety", report.get("brand_safety", {}).get("findings", []), styles, Paragraph, Spacer)
+    _pdf_list_section(story, "Limitations", report.get("limitations", []), styles, Paragraph, Spacer)
     story.extend(
         [
             Spacer(1, 10),
@@ -466,14 +568,14 @@ def write_report_pdf(report: dict[str, Any], path: Path) -> None:
     doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
 
 
-def _pdf_list_section(story: list[Any], title: str, items: Any, styles: Any) -> None:
+def _pdf_list_section(story: list[Any], title: str, items: Any, styles: Any, paragraph_cls: Any, spacer_cls: Any) -> None:
     values = items if isinstance(items, list) else []
-    story.append(Paragraph(title, styles["Heading1"]))
+    story.append(paragraph_cls(title, styles["Heading1"]))
     if not values:
-        story.append(Paragraph("No evidence-backed items were returned.", styles["BodyText"]))
+        story.append(paragraph_cls("No evidence-backed items were returned.", styles["BodyText"]))
     for item in values:
-        story.append(Paragraph(f"• {_text(item, 1600)}", styles["BodyText"]))
-    story.append(Spacer(1, 10))
+        story.append(paragraph_cls(f"• {_text(item, 1600)}", styles["BodyText"]))
+    story.append(spacer_cls(1, 10))
 
 
 def _pdf_table_section(
@@ -485,13 +587,15 @@ def _pdf_table_section(
     table_cls: Any,
     table_style_cls: Any,
     colors: Any,
+    paragraph_cls: Any,
+    spacer_cls: Any,
 ) -> None:
-    story.append(Paragraph(title, styles["Heading1"]))
+    story.append(paragraph_cls(title, styles["Heading1"]))
     if not rows:
-        story.extend([Paragraph("No evidence-backed items were returned.", styles["BodyText"]), Spacer(1, 10)])
+        story.extend([paragraph_cls("No evidence-backed items were returned.", styles["BodyText"]), spacer_cls(1, 10)])
         return
-    data = [[Paragraph(_text(cell, 900), styles["BodyText"]) for cell in headers]]
-    data.extend([[Paragraph(_text(cell, 900), styles["BodyText"]) for cell in row] for row in rows])
+    data = [[paragraph_cls(_text(cell, 900), styles["BodyText"]) for cell in headers]]
+    data.extend([[paragraph_cls(_text(cell, 900), styles["BodyText"]) for cell in row] for row in rows])
     table = table_cls(data, repeatRows=1)
     table.setStyle(
         table_style_cls(
@@ -504,4 +608,4 @@ def _pdf_table_section(
             ]
         )
     )
-    story.extend([table, Spacer(1, 10)])
+    story.extend([table, spacer_cls(1, 10)])
