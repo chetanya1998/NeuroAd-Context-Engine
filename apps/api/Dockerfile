@@ -24,14 +24,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WHISPER_COMPUTE_TYPE=int8 \
     WHISPER_WORD_TIMESTAMPS=1 \
     WHISPER_VAD_FILTER=1 \
-    YOLO_MODEL=yolov8n.pt
+    YOLO_MODEL=/opt/neuroad/models/yolo11n.pt \
+    NEUROAD_ENABLE_OCR=1
 
 WORKDIR /app
 
 ARG INSTALL_VOSK=1
 ARG INSTALL_MOBILENET_SSD=1
 ARG INSTALL_WHISPER=1
-ARG INSTALL_YOLO=0
+ARG INSTALL_YOLO=1
 ARG INSTALL_UVR=0
 
 RUN apt-get update \
@@ -43,6 +44,8 @@ RUN apt-get update \
         libglib2.0-0 \
         libgomp1 \
         python3-dev \
+        tesseract-ocr \
+        fonts-dejavu-core \
         unzip \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data/neuroad/storage /opt/neuroad/models
@@ -67,9 +70,13 @@ RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         && cp /tmp/ssd_mobilenet_v1_coco_2017_11_17/frozen_inference_graph.pb /opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb \
         && curl -fL --retry 5 --retry-delay 5 --retry-connrefused -o /opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/ssd_mobilenet_v1_coco.pbtxt \
         && rm -rf /tmp/ssd_mobilenet.tar.gz /tmp/ssd_mobilenet_v1_coco_2017_11_17; \
+    fi \
+    && if [ "$INSTALL_YOLO" = "1" ]; then \
+        python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')" \
+        && find /root/.cache -name yolo11n.pt -exec cp {} /opt/neuroad/models/yolo11n.pt \;; \
     fi
 
-COPY main.py .
+COPY main.py runpod_client.py insight_report.py .
 
 EXPOSE 8000
 

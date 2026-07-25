@@ -23,6 +23,7 @@ import {
 import { AttentionTimeline } from "@/components/attention-timeline";
 import { BrandFitPanel } from "@/components/brand-fit-panel";
 import { SegmentDrawer } from "@/components/segment-drawer";
+import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
 import { absoluteMediaUrl, exportUrl, formatRange, getAnalysis } from "@/lib/api";
@@ -145,6 +146,8 @@ export default function DashboardPage() {
           <VideoPreview analysis={analysis} />
           <PlacementDecision analysis={analysis} />
         </section>
+
+        <InsightReportLauncher targetType="video" targetId={analysis.video.id} initial={analysis.detailed_insight_report} />
 
         <section className="mt-6">
           <BrandFitPanel videoId={videoId} />

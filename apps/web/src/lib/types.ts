@@ -42,6 +42,7 @@ export type Segment = {
   failed_or_weak_signals?: string[];
   thumbnail_url?: string | null;
   objects: DetectedObject[];
+  detected_text?: Array<{ id?: string; text: string; confidence: number; bbox?: number[] | null; frame_timestamp?: number }>;
   topics: Topic[];
   ad_matches: AdMatch[];
   ad_slot_score?: number;
@@ -122,10 +123,39 @@ export type AnalysisPayload = {
   ad_matches: AdMatch[];
   ad_categories?: string[];
   recommendations: Recommendation[];
+  detailed_insight_report?: DetailedInsightReportStatus | null;
   exports: {
     csv?: string | null;
     json?: string | null;
   };
+};
+
+export type DetailedInsightReportStatus = { report_id: string; job_id?: string | null; status: string; progress?: number; stage?: string; error?: string | null; report_url?: string | null };
+export type InsightJob = { id: string; report_id: string; status: string; progress: number; stage: string; error?: string | null; report_url?: string | null };
+export type InsightReport = {
+  report_id: string; report_type: "video" | "comparison"; executive_summary: string;
+  content_profile: { themes: string[]; audience_signals: string[]; tone: string[]; campaign_intents: string[] };
+  keywords: Array<{ term: string; type: string; confidence: number; evidence_refs: string[] }>;
+  ad_categories: Array<{ category: string; contextual_fit_score: number; confidence: number; rationale: string; evidence_refs: string[] }>;
+  brand_prospects: Array<{ brand: string; category: string; contextual_fit_score: number; confidence: number; why_fit: string; activation_idea: string; risks: string[]; evidence_refs: string[] }>;
+  brand_safety: { summary: string; findings: string[] }; creative_recommendations: string[]; limitations: string[];
+  brand_prospect_disclaimer: string; placement_opportunities?: Array<{ segment_id: string; start: number; end: number; score: number; format: string; messaging_angle: string; rationale: string }>;
+  exports: { pdf: string; json: string };
+};
+
+export type AIInsights = {
+  provider: "runpod" | string;
+  model: string;
+  status: "completed" | "failed" | "not_configured" | string;
+  content?: {
+    executive_summary: string;
+    placement_strategy: string;
+    creative_actions: string[];
+    brand_safety_notes: string[];
+    confidence_notes: string[];
+  } | null;
+  error?: string | null;
+  updated_at?: string;
 };
 
 export type SummaryMoment = {
@@ -209,6 +239,7 @@ export type ComparisonPayload = {
   } | null;
   recommendations: Recommendation[];
   caveats: string[];
+  detailed_insight_report?: DetailedInsightReportStatus | null;
 };
 
 export type ComparisonStatus = {

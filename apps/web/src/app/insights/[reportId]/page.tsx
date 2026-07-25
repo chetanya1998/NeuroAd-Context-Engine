@@ -1,0 +1,19 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { Download, FileJson, FileText } from "lucide-react";
+import { useParams } from "next/navigation";
+import { AppShell } from "@/components/shell";
+import { Badge, Button, Card } from "@/components/ui";
+import { getInsightReport, insightExportUrl } from "@/lib/api";
+
+export default function InsightReportPage() {
+  const params = useParams<{ reportId: string }>();
+  const query = useQuery({ queryKey: ["insight-report", params.reportId], queryFn: () => getInsightReport(params.reportId) });
+  if (query.isLoading) return <AppShell><main className="p-8 text-zinc-400">Loading detailed insight report…</main></AppShell>;
+  if (!query.data) return <AppShell><main className="p-8 text-danger">{query.error instanceof Error ? query.error.message : "Report not found."}</main></AppShell>;
+  const report = query.data;
+  return <AppShell><main className="mx-auto max-w-6xl px-5 py-10 lg:px-10"><header className="flex flex-wrap justify-between gap-5"><div><Badge tone="cyan">GPT-OSS detailed insight</Badge><h1 className="mt-4 text-4xl font-semibold text-white">Campaign insight report</h1><p className="mt-3 max-w-3xl leading-7 text-zinc-400">{report.executive_summary}</p></div><div className="flex h-fit gap-2"><a href={insightExportUrl(report.report_id, "pdf")}><Button variant="secondary"><Download className="h-4 w-4" /> PDF</Button></a><a href={insightExportUrl(report.report_id, "json")}><Button variant="secondary"><FileJson className="h-4 w-4" /> JSON</Button></a></div></header><section className="mt-8 grid gap-5 md:grid-cols-2"><Panel title="Advertising categories">{report.ad_categories.map(item => <div key={item.category} className="border-b border-white/10 py-3"><p className="font-semibold text-white">{item.category} · {item.contextual_fit_score}/100</p><p className="mt-1 text-sm text-zinc-400">{item.rationale}</p></div>)}</Panel><Panel title="Keywords"><div className="flex flex-wrap gap-2">{report.keywords.map(item => <Badge key={item.term} tone="cyan">{item.term} · {item.confidence}</Badge>)}</div></Panel></section><section className="mt-5"><Panel title="Brand prospects">{report.brand_prospects.map(item => <div key={item.brand} className="rounded-lg border border-white/10 p-4"><p className="font-semibold text-white">{item.brand} <span className="text-zinc-500">· {item.category} · {item.contextual_fit_score}/100</span></p><p className="mt-2 text-sm leading-6 text-zinc-400">{item.why_fit}</p><p className="mt-2 text-sm text-cyan">Activation: {item.activation_idea}</p></div>)}<p className="mt-5 text-xs leading-5 text-zinc-500">{report.brand_prospect_disclaimer}</p></Panel></section>{report.placement_opportunities?.length ? <section className="mt-5"><Panel title="Placement opportunities">{report.placement_opportunities.map(item => <div key={item.segment_id} className="border-b border-white/10 py-3 text-sm text-zinc-300"><b>{item.start.toFixed(1)}–{item.end.toFixed(1)}s</b> · {item.messaging_angle || item.rationale}</div>)}</Panel></section> : null}<section className="mt-5 grid gap-5 md:grid-cols-2"><Panel title="Creative actions"><List items={report.creative_recommendations} /></Panel><Panel title="Safety and limitations"><p className="text-sm text-zinc-300">{report.brand_safety.summary}</p><List items={[...report.brand_safety.findings, ...report.limitations]} /></Panel></section></main></AppShell>;
+}
+function Panel({ title, children }: { title: string; children: React.ReactNode }) { return <Card className="p-6"><h2 className="flex items-center gap-2 text-xl font-semibold text-white"><FileText className="h-5 w-5 text-cyan" />{title}</h2><div className="mt-4 space-y-3">{children}</div></Card>; }
+function List({ items }: { items: string[] }) { return <ul className="space-y-2 text-sm leading-6 text-zinc-400">{items.map(item => <li key={item}>• {item}</li>)}</ul>; }

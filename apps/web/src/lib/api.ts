@@ -1,4 +1,4 @@
-import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, JobStatus, ProductFitPayload, ProductProfile } from "./types";
+import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, ProductFitPayload, ProductProfile } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -195,6 +195,16 @@ export async function getJob(jobId: string) {
 export async function getAnalysis(videoId: string) {
   return parseResponse<AnalysisPayload>(await apiFetch(`${API_BASE}/api/videos/${videoId}/analysis`));
 }
+
+export async function createVideoInsightReport(videoId: string) {
+  return parseResponse<{ job_id?: string; report_id: string; status: string; progress?: number; stage?: string; report_url?: string }>(await apiFetch(`${API_BASE}/api/videos/${videoId}/insight-reports`, { method: "POST" }));
+}
+export async function createComparisonInsightReport(comparisonId: string) {
+  return parseResponse<{ job_id?: string; report_id: string; status: string; progress?: number; stage?: string; report_url?: string }>(await apiFetch(`${API_BASE}/api/comparisons/${comparisonId}/insight-reports`, { method: "POST" }));
+}
+export async function getInsightJob(jobId: string) { return parseResponse<InsightJob>(await apiFetch(`${API_BASE}/api/insight-jobs/${jobId}`)); }
+export async function getInsightReport(reportId: string) { return parseResponse<InsightReport>(await apiFetch(`${API_BASE}/api/insight-reports/${reportId}`)); }
+export function insightExportUrl(reportId: string, format: "pdf" | "json") { return `${API_BASE}/api/insight-reports/${reportId}/export?format=${format}`; }
 
 export async function resolveProduct(url: string) {
   return parseResponse<ProductProfile>(

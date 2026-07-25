@@ -104,9 +104,24 @@ CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 RAPIDAPI_KEY=your_key_here
 RAPIDAPI_HOST=your_host_here
 RAPIDAPI_URL=your_endpoint_here
+RUNPOD_API_KEY=your_runpod_api_key
+RUNPOD_ENDPOINT_ID=your_endpoint_id
+RUNPOD_BASE_URL=https://api.runpod.ai/v2/your_endpoint_id/openai/v1
+RUNPOD_MODEL=neuroad-reasoner
+RUNPOD_TIMEOUT_SECONDS=300
+RUNPOD_MAX_TOKENS=2500
+RUNPOD_MAX_RETRIES=2
+NEUROAD_ENABLE_RUNPOD_INSIGHTS=1
+NEUROAD_REQUIRE_RUNPOD_INSIGHTS=0
+NEUROAD_INSIGHT_WORKERS=1
+NEUROAD_INSIGHT_JOB_MAX_ATTEMPTS=3
+NEUROAD_ENABLE_OCR=1
+NEUROAD_YOLO_CONFIDENCE=0.25
 ```
 
-Railway MVP should keep `NEUROAD_ENABLE_AUDIO_CLEANUP=0` unless you move to a larger worker. With the default Docker build, `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` tries YOLO Tiny only when Ultralytics was installed with `INSTALL_YOLO=1`; otherwise it falls back to MobileNet/OpenCV.
+Railway MVP should keep `NEUROAD_ENABLE_AUDIO_CLEANUP=0` unless you move to a larger worker. The production image includes YOLO11n and Tesseract; it falls back to MobileNet/OpenCV visual context when YOLO is unavailable.
+
+RunPod is invoked only by the Railway backend when a user requests a Detailed Insight Report after deterministic video analysis completes. The API key must not be added to Netlify or to any `NEXT_PUBLIC_*` variable. A RunPod cold start or report failure does not fail the underlying video analysis and can be retried within the configured limit.
 
 After Netlify deploys, update `CORS_ORIGINS` with your Netlify URL.
 

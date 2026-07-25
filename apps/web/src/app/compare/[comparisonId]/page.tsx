@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowUpRight, BarChart3, CircleCheckBig, Download, FileJ
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/shell";
+import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { Badge, Button, Card } from "@/components/ui";
 import { comparisonExportUrl, formatRange, getComparison } from "@/lib/api";
 import type { ComparisonVideo } from "@/lib/types";
@@ -66,6 +67,7 @@ export default function ComparisonDashboardPage() {
           <DecisionCard title="Why it ranked first" value={winner && runnerUp ? `${scoreGap} points ahead` : "—"} detail={winner && runnerUp ? `${displayTitle(winner.title)} scored ${winner.score}/100. The next video scored ${runnerUp.score}/100.` : "A comparison needs at least two completed videos."} icon={<GitCompareArrows className="h-5 w-5" />} score={winner && runnerUp ? scoreGap : undefined} />
           <DecisionCard title="Ad placement check" value={bestSlot ? slotLabel(bestSlot.score) : "Not ready"} detail={bestSlot ? `Best time: ${formatRange(bestSlot.start, bestSlot.end)}. Placement score ${bestSlot.score}/100 — review the clip before approval.` : "No suitable ad moment was found yet."} icon={<CircleCheckBig className="h-5 w-5" />} score={bestSlot?.score} />
         </section>
+        {data.comparison.completed_videos >= 2 ? <InsightReportLauncher targetType="comparison" targetId={data.comparison.id} initial={data.detailed_insight_report} /> : null}
 
         <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
           <ComparisonScoreboard rankings={data.rankings} />

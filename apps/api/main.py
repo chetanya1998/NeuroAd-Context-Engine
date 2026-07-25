@@ -31,6 +31,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from insight_report import (
+    BRAND_PROSPECT_DISCLAIMER,
+    COMPARISON_PROMPT_VERSION,
+    COMPARISON_SYSTEM_PROMPT,
+    VIDEO_PROMPT_VERSION,
+    VIDEO_SYSTEM_PROMPT,
+    normalize_report,
+    write_report_pdf,
+)
+from runpod_client import RunPodClient, RunPodError, RunPodSettings
+
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -90,6 +101,7 @@ MOBILENET_SSD_CONFIG = path_from_env(
     "MOBILENET_SSD_CONFIG",
     MODEL_DIR / "mobilenet-ssd" / "ssd_mobilenet_v1_coco.pbtxt",
 )
+YOLO_MODEL_PATH = path_from_env("YOLO_MODEL", MODEL_DIR / "yolo11n.pt")
 
 MAX_UPLOAD_BYTES = int_from_env("NEUROAD_MAX_UPLOAD_MB", 200) * 1024 * 1024
 MAX_SOURCE_SECONDS = int_from_env("NEUROAD_MAX_SOURCE_SECONDS", 0)
@@ -109,8 +121,16 @@ CONVERTIBLE_VIDEO_EXTENSIONS = ALLOWED_EXTENSIONS | {
     ".ogv",
 }
 EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS", 1)))
+INSIGHT_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_INSIGHT_WORKERS", 1)))
 FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "1.0") or "1.0")
 MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 6))
+DETECTION_MAX_FRAMES = max(1, int_from_env("NEUROAD_DETECTION_MAX_FRAMES", 90))
+DETECTION_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_DETECTION_FRAMES_PER_SEGMENT", 2))
+YOLO_CONFIDENCE = float_from_env("NEUROAD_YOLO_CONFIDENCE", 0.25)
+YOLO_IMAGE_SIZE = max(320, int_from_env("NEUROAD_YOLO_IMAGE_SIZE", 640))
+MAX_OBJECTS_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_OBJECTS_PER_SEGMENT", 12))
+OCR_MAX_FRAMES = max(1, int_from_env("NEUROAD_OCR_MAX_FRAMES", 45))
+OCR_CONFIDENCE = float_from_env("NEUROAD_OCR_CONFIDENCE", 55)
 PRODUCT_PROFILE_VERSION = "2.0"
 PRODUCT_FIT_SCORING_VERSION = "2.0"
 PRODUCT_RESOLUTION_TTL_SECONDS = 24 * 60 * 60
@@ -118,6 +138,9 @@ VOSK_MODEL_CACHE: Any | None = None
 FASTER_WHISPER_MODEL_CACHE: Any | None = None
 FASTER_WHISPER_MODEL_SIGNATURE: tuple[str, str, str] | None = None
 MOBILENET_SSD_NET_CACHE: Any | None = None
+YOLO_MODEL_CACHE: Any | None = None
+YOLO_MODEL_CACHE_PATH: str | None = None
+OBJECT_DETECTOR_FALLBACK_REASON: str | None = None
 
 PROCESSING_STEPS = [
     ("metadata", "Metadata fetched"),
@@ -440,6 +463,9 @@ def runtime_dependency_status() -> dict[str, Any]:
     vosk_available = importlib.util.find_spec("vosk") is not None
     faster_whisper_available = importlib.util.find_spec("faster_whisper") is not None
     ultralytics_available = importlib.util.find_spec("ultralytics") is not None
+    pytesseract_available = importlib.util.find_spec("pytesseract") is not None
+    tesseract_path = shutil.which("tesseract")
+    runpod_settings = RunPodSettings.from_env()
     return {
         "ffmpeg": {"available": bool(ffmpeg_path), "path": ffmpeg_path},
         "ffprobe": {"available": bool(ffprobe_path), "path": ffprobe_path},
@@ -469,13 +495,29 @@ def runtime_dependency_status() -> dict[str, Any]:
             "graph_path": str(MOBILENET_SSD_GRAPH),
             "config_path": str(MOBILENET_SSD_CONFIG),
         },
-        "ultralytics": {"available": ultralytics_available, "path": None, "model": os.getenv("YOLO_MODEL", "yolov8n.pt")},
+        "ultralytics": {
+            "available": ultralytics_available, "model_path": str(YOLO_MODEL_PATH), "model_ready": YOLO_MODEL_PATH.exists(),
+            "cached": YOLO_MODEL_CACHE is not None, "confidence": YOLO_CONFIDENCE, "image_size": YOLO_IMAGE_SIZE,
+            "fallback_reason": OBJECT_DETECTOR_FALLBACK_REASON,
+        },
+        "ocr": {"enabled": env_enabled("NEUROAD_ENABLE_OCR", True), "available": bool(pytesseract_available and tesseract_path), "tesseract_path": tesseract_path, "confidence": OCR_CONFIDENCE},
+        "runpod": {
+            **runpod_settings.public_status(),
+            "enabled": runpod_insights_enabled(runpod_settings),
+        },
     }
+
+
+def runpod_insights_enabled(settings: RunPodSettings | None = None) -> bool:
+    settings = settings or RunPodSettings.from_env()
+    configured_default = settings.configured
+    return env_enabled("NEUROAD_ENABLE_RUNPOD_INSIGHTS", configured_default)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    recover_insight_jobs()
     yield
 
 
@@ -660,6 +702,16 @@ def init_db() -> None:
               created_at text not null
             );
 
+            create table if not exists detected_text (
+              id text primary key,
+              segment_id text not null,
+              text text not null,
+              confidence real not null,
+              bbox text,
+              frame_timestamp real,
+              created_at text not null
+            );
+
             create table if not exists topics (
               id text primary key,
               segment_id text not null,
@@ -686,6 +738,57 @@ def init_db() -> None:
               json_path text,
               created_at text not null
             );
+
+            create table if not exists ai_insights (
+              video_id text primary key,
+              provider text not null,
+              model text not null,
+              status text not null,
+              content_json text,
+              error text,
+              created_at text not null,
+              updated_at text not null
+            );
+
+            create table if not exists insight_reports (
+              id text primary key,
+              target_type text not null,
+              target_id text not null,
+              report_type text not null,
+              input_fingerprint text not null,
+              prompt_version text not null,
+              provider text not null,
+              model text not null,
+              status text not null,
+              content_json text,
+              pdf_path text,
+              json_path text,
+              created_at text not null,
+              updated_at text not null,
+              unique(target_type, target_id, input_fingerprint, prompt_version)
+            );
+
+            create table if not exists insight_jobs (
+              id text primary key,
+              report_id text not null,
+              target_type text not null,
+              target_id text not null,
+              input_fingerprint text not null,
+              prompt_version text not null,
+              status text not null,
+              progress integer default 0,
+              stage text not null,
+              model text not null,
+              error text,
+              attempts integer default 0,
+              created_at text not null,
+              updated_at text not null
+            );
+
+            create index if not exists idx_insight_jobs_target
+              on insight_jobs(target_type, target_id, input_fingerprint, prompt_version);
+            create index if not exists idx_insight_reports_target
+              on insight_reports(target_type, target_id, input_fingerprint, prompt_version);
 
             create table if not exists comparisons (
               id text primary key,
@@ -2064,6 +2167,99 @@ def analyze_comparison_product_fit(comparison_id: str, payload: ProductFitReques
     }
 
 
+def create_insight_report_job(target_type: str, target_id: str) -> dict[str, Any]:
+    if target_type == "video":
+        video = get_video_or_404(target_id)
+        if video["status"] != "completed":
+            raise HTTPException(status_code=400, detail="Complete video analysis before generating a detailed insight report.")
+        fingerprint = video_insight_fingerprint(target_id)
+    else:
+        comparison = get_comparison_or_404(target_id)
+        completed = int(comparison["completed_videos"] or 0)
+        if completed < COMPARISON_MIN_VIDEOS:
+            raise HTTPException(status_code=400, detail=f"At least {COMPARISON_MIN_VIDEOS} completed videos are required.")
+        fingerprint = comparison_insight_fingerprint(target_id)
+    prompt_version = insight_prompt_version(target_type)
+    report = query_one(
+        "select * from insight_reports where target_type = ? and target_id = ? and input_fingerprint = ? and prompt_version = ?",
+        (target_type, target_id, fingerprint, prompt_version),
+    )
+    if report and report["status"] == "completed":
+        return {"report_id": report["id"], "status": "completed", "report_url": f"/api/insight-reports/{report['id']}"}
+    if not report:
+        report_id = new_id("insight_report")
+        now = utc_now()
+        execute(
+            """insert into insight_reports
+               (id, target_type, target_id, report_type, input_fingerprint, prompt_version, provider, model, status, created_at, updated_at)
+               values (?, ?, ?, ?, ?, ?, 'runpod', ?, 'queued', ?, ?)""",
+            (report_id, target_type, target_id, target_type, fingerprint, prompt_version, RunPodSettings.from_env().model, now, now),
+        )
+        report = query_one("select * from insight_reports where id = ?", (report_id,))
+    latest = query_one("select * from insight_jobs where report_id = ? order by updated_at desc limit 1", (report["id"],))
+    if latest and latest["status"] in {"queued", "processing"}:
+        return {"job_id": latest["id"], "report_id": report["id"], "status": latest["status"], "progress": latest["progress"], "stage": latest["stage"]}
+    if latest and int(latest["attempts"] or 0) >= INSIGHT_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Insight retry limit reached. Re-run the analysis to create a new evidence fingerprint.")
+    job_id = new_id("insight_job")
+    attempts = int(latest["attempts"] or 0) if latest else 0
+    now = utc_now()
+    execute(
+        """insert into insight_jobs
+           (id, report_id, target_type, target_id, input_fingerprint, prompt_version, status, progress, stage, model, attempts, created_at, updated_at)
+           values (?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', ?, ?, ?, ?)""",
+        (job_id, report["id"], target_type, target_id, fingerprint, prompt_version, RunPodSettings.from_env().model, attempts, now, now),
+    )
+    execute("update insight_reports set status = 'queued', updated_at = ? where id = ?", (now, report["id"]))
+    INSIGHT_EXECUTOR.submit(process_insight_job, job_id)
+    return {"job_id": job_id, "report_id": report["id"], "status": "queued", "progress": 0, "stage": "queued"}
+
+
+@app.post("/api/videos/{video_id}/insight-reports")
+def create_video_insight_report(video_id: str) -> dict[str, Any]:
+    return create_insight_report_job("video", video_id)
+
+
+@app.post("/api/comparisons/{comparison_id}/insight-reports")
+def create_comparison_insight_report(comparison_id: str) -> dict[str, Any]:
+    return create_insight_report_job("comparison", comparison_id)
+
+
+@app.get("/api/insight-jobs/{job_id}")
+def get_insight_job(job_id: str) -> dict[str, Any]:
+    job = query_one("select * from insight_jobs where id = ?", (job_id,))
+    if not job:
+        raise HTTPException(status_code=404, detail="Insight job not found")
+    data = dict(job)
+    data["report_url"] = f"/api/insight-reports/{job['report_id']}" if job["status"] == "completed" else None
+    return data
+
+
+@app.get("/api/insight-reports/{report_id}")
+def get_insight_report(report_id: str) -> dict[str, Any]:
+    report = query_one("select * from insight_reports where id = ?", (report_id,))
+    if not report:
+        raise HTTPException(status_code=404, detail="Insight report not found")
+    if report["status"] != "completed" or not report["content_json"]:
+        raise HTTPException(status_code=409, detail="Insight report is not complete yet.")
+    try:
+        content = json.loads(report["content_json"])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Insight report data is invalid.") from exc
+    return {**content, "exports": {"pdf": f"/api/insight-reports/{report_id}/export?format=pdf", "json": f"/api/insight-reports/{report_id}/export?format=json"}}
+
+
+@app.get("/api/insight-reports/{report_id}/export")
+def export_insight_report(report_id: str, format: str = Query("pdf", pattern="^(pdf|json)$")) -> FileResponse:
+    report = query_one("select * from insight_reports where id = ?", (report_id,))
+    if not report or report["status"] != "completed":
+        raise HTTPException(status_code=404, detail="Completed insight report not found")
+    path = Path(report["pdf_path"] if format == "pdf" else report["json_path"])
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Insight export file is unavailable")
+    return FileResponse(path, media_type="application/pdf" if format == "pdf" else "application/json", filename=f"{report_id}.{format}")
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
     job = query_one("select * from jobs where id = ?", (job_id,))
@@ -2183,6 +2379,364 @@ def update_job(job_id: str, status: str, progress: int, step: str, error: str | 
     )
 
 
+RUNPOD_INSIGHT_SYSTEM_PROMPT = """
+You are NeuroAd's evidence synthesis layer. Analyze only the supplied deterministic video evidence.
+Do not invent objects, transcript, audience facts, performance claims, or brand-safety events.
+Treat scores as inputs, not facts to override. If evidence is missing or weak, say so explicitly.
+Return only one JSON object with exactly these keys:
+{
+  "executive_summary": "2-4 concise sentences",
+  "placement_strategy": "1-3 concise sentences",
+  "creative_actions": ["up to 5 concrete actions"],
+  "brand_safety_notes": ["up to 4 evidence-grounded notes"],
+  "confidence_notes": ["up to 3 limitations or confidence notes"]
+}
+Do not include markdown or hidden reasoning.
+""".strip()
+
+
+def bounded_text(value: Any, limit: int) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def bounded_string_list(value: Any, limit: int, item_limit: int = 280) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    output = []
+    for item in value:
+        text = bounded_text(item, item_limit)
+        if text and text not in output:
+            output.append(text)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def normalize_runpod_insights(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "executive_summary": bounded_text(payload.get("executive_summary"), 1200),
+        "placement_strategy": bounded_text(payload.get("placement_strategy"), 900),
+        "creative_actions": bounded_string_list(payload.get("creative_actions"), 5),
+        "brand_safety_notes": bounded_string_list(payload.get("brand_safety_notes"), 4),
+        "confidence_notes": bounded_string_list(payload.get("confidence_notes"), 3),
+    }
+
+
+def build_runpod_evidence_payload(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, Any]:
+    summary_segments = []
+    for segment in segments:
+        normalized_matches = [
+            {
+                **match,
+                "ad_category": match.get("ad_category") or match.get("category") or "Unknown",
+            }
+            for match in segment.get("ad_matches", [])
+        ]
+        summary_segments.append({**segment, "ad_matches": normalized_matches})
+    summary = summarize(video, summary_segments)
+    ranked = sorted(segments, key=lambda item: float(item.get("ad_slot_score", 0) or 0), reverse=True)[:5]
+    weakest = sorted(segments, key=lambda item: float(item.get("attention_score", 0) or 0))[:2]
+    selected: list[dict[str, Any]] = []
+    seen_ranges: set[tuple[float, float]] = set()
+    for segment in ranked + weakest:
+        key = (float(segment.get("start", 0)), float(segment.get("end", 0)))
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        selected.append(
+            {
+                "start": segment.get("start"),
+                "end": segment.get("end"),
+                "attention_score": segment.get("attention_score"),
+                "ad_fit_score": segment.get("ad_fit_score"),
+                "drop_risk_score": segment.get("drop_risk_score"),
+                "brand_safety_score": segment.get("brand_safety_score"),
+                "recommendation_tier": segment.get("recommendation_tier"),
+                "recommendation_confidence": segment.get("recommendation_confidence"),
+                "transcript": bounded_text(segment.get("transcript"), 700),
+                "topics": [
+                    {"label": topic.get("label"), "confidence": topic.get("confidence")}
+                    for topic in segment.get("topics", [])[:4]
+                ],
+                "objects": [
+                    {"label": item.get("label"), "confidence": item.get("confidence")}
+                    for item in segment.get("objects", [])[:5]
+                ],
+                "ad_matches": [
+                    {
+                        "category": match.get("category") or match.get("ad_category"),
+                        "score": match.get("ad_fit_score"),
+                        "confidence": match.get("confidence"),
+                    }
+                    for match in segment.get("ad_matches", [])[:4]
+                ],
+                "strong_signals": segment.get("strong_signals", [])[:5],
+                "weak_signals": segment.get("failed_or_weak_signals", [])[:5],
+            }
+        )
+    return {
+        "video": {
+            "title": bounded_text(video["title"], 240),
+            "description": bounded_text(video["description"], 800),
+            "duration_seconds": video["duration_seconds"],
+        },
+        "deterministic_summary": {
+            "overall_attention_score": summary.get("overall_attention_score"),
+            "monetization_opportunity_score": summary.get("monetization_opportunity_score"),
+            "overall_drop_risk_score": summary.get("overall_drop_risk_score"),
+            "brand_safety_score": summary.get("brand_safety_score"),
+            "transcript_clarity_score": summary.get("transcript_clarity_score"),
+            "visual_quality_score": summary.get("visual_quality_score"),
+            "creator_readiness_score": summary.get("creator_readiness_score"),
+            "recommendation_status": summary.get("recommendation_status"),
+            "recommendation_message": summary.get("recommendation_message"),
+            "top_ad_category": summary.get("top_ad_category"),
+        },
+        "selected_segments": selected,
+    }
+
+
+def persist_runpod_insights(
+    video_id: str,
+    settings: RunPodSettings,
+    status: str,
+    content: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    now = utc_now()
+    execute(
+        """
+        insert into ai_insights (video_id, provider, model, status, content_json, error, created_at, updated_at)
+        values (?, 'runpod', ?, ?, ?, ?, ?, ?)
+        on conflict(video_id) do update set
+          provider = excluded.provider,
+          model = excluded.model,
+          status = excluded.status,
+          content_json = excluded.content_json,
+          error = excluded.error,
+          updated_at = excluded.updated_at
+        """,
+        (
+            video_id,
+            settings.model,
+            status,
+            json.dumps(content) if content is not None else None,
+            bounded_text(error, 500) if error else None,
+            now,
+            now,
+        ),
+    )
+
+
+def generate_runpod_insights(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    settings = RunPodSettings.from_env()
+    if not runpod_insights_enabled(settings):
+        return None
+    if not settings.configured:
+        persist_runpod_insights(video["id"], settings, "not_configured", error="RunPod configuration is incomplete.")
+        return None
+    try:
+        result = RunPodClient(settings).chat_json(
+            system_prompt=RUNPOD_INSIGHT_SYSTEM_PROMPT,
+            user_payload=build_runpod_evidence_payload(video, segments),
+            temperature=0.2,
+        )
+        normalized = normalize_runpod_insights(result)
+        if not normalized["executive_summary"]:
+            raise RunPodError("RunPod response did not include an executive summary.")
+        persist_runpod_insights(video["id"], settings, "completed", content=normalized)
+        return normalized
+    except RunPodError as exc:
+        persist_runpod_insights(video["id"], settings, "failed", error=str(exc))
+        if env_enabled("NEUROAD_REQUIRE_RUNPOD_INSIGHTS", False):
+            raise
+        return None
+
+
+def get_runpod_insights(video_id: str) -> dict[str, Any] | None:
+    row = query_one("select * from ai_insights where video_id = ?", (video_id,))
+    if not row:
+        return None
+    content: dict[str, Any] | None = None
+    if row["content_json"]:
+        try:
+            parsed = json.loads(row["content_json"])
+            content = parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            content = None
+    return {
+        "provider": row["provider"],
+        "model": row["model"],
+        "status": row["status"],
+        "content": content,
+        "error": row["error"],
+        "updated_at": row["updated_at"],
+    }
+
+
+INSIGHT_MAX_ATTEMPTS = max(1, int_from_env("NEUROAD_INSIGHT_JOB_MAX_ATTEMPTS", 3))
+
+
+def redact_insight_text(value: Any) -> str:
+    """Remove contact identifiers before OCR or transcript snippets leave Railway."""
+    text = str(value or "")
+    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[redacted email]", text)
+    text = re.sub(r"\b(?:https?://|www\.)\S+\b", "[redacted URL]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!\w)(?:\+?\d[\d() .-]{7,}\d)(?!\w)", "[redacted phone]", text)
+    return bounded_text(text, 1200)
+
+
+def video_insight_fingerprint(video_id: str) -> str:
+    video = get_video_or_404(video_id)
+    segments = query_all("select * from segments where video_id = ? order by start_time", (video_id,))
+    evidence: list[dict[str, Any]] = []
+    for segment in segments:
+        segment_id = segment["id"]
+        evidence.append(
+            {
+                "segment": {key: segment[key] for key in (
+                    "id", "start_time", "end_time", "attention_score", "ad_fit_score", "drop_risk_score",
+                    "brand_safety_score", "transcript", "transcript_insights", "visual_evidence", "score_reasons",
+                    "recommendation", "ad_slot_score", "ad_slot_reasons",
+                )},
+                "objects": [dict(row) for row in query_all("select label, confidence, bbox, frame_timestamp from detected_objects where segment_id = ? order by confidence desc", (segment_id,))],
+                "topics": [dict(row) for row in query_all("select label, confidence from topics where segment_id = ? order by confidence desc", (segment_id,))],
+                "matches": [dict(row) for row in query_all("select ad_category, ad_fit_score, reason, confidence from ad_matches where segment_id = ? order by ad_fit_score desc", (segment_id,))],
+                "ocr": [dict(row) for row in query_all("select text, confidence, bbox, frame_timestamp from detected_text where segment_id = ? order by confidence desc", (segment_id,))],
+            }
+        )
+    raw = json.dumps({"video_id": video_id, "title": video["title"], "duration": video["duration_seconds"], "evidence": evidence}, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def comparison_insight_fingerprint(comparison_id: str) -> str:
+    members = query_all("select video_id, display_order from comparison_videos where comparison_id = ? order by display_order", (comparison_id,))
+    raw = json.dumps(
+        {"comparison_id": comparison_id, "videos": [{"video_id": row["video_id"], "fingerprint": video_insight_fingerprint(row["video_id"])} for row in members]},
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def insight_prompt_version(target_type: str) -> str:
+    return VIDEO_PROMPT_VERSION if target_type == "video" else COMPARISON_PROMPT_VERSION
+
+
+def detailed_insight_status(target_type: str, target_id: str) -> dict[str, Any] | None:
+    try:
+        fingerprint = video_insight_fingerprint(target_id) if target_type == "video" else comparison_insight_fingerprint(target_id)
+    except HTTPException:
+        return None
+    row = query_one(
+        "select * from insight_reports where target_type = ? and target_id = ? and input_fingerprint = ? and prompt_version = ?",
+        (target_type, target_id, fingerprint, insight_prompt_version(target_type)),
+    )
+    if not row:
+        return None
+    job = query_one("select * from insight_jobs where report_id = ? order by updated_at desc limit 1", (row["id"],))
+    return {
+        "report_id": row["id"], "status": row["status"], "job_id": job["id"] if job else None,
+        "progress": job["progress"] if job else (100 if row["status"] == "completed" else 0),
+        "stage": job["stage"] if job else row["status"],
+        "report_url": f"/api/insight-reports/{row['id']}" if row["status"] == "completed" else None,
+    }
+
+
+def build_video_insight_evidence(video_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]], set[str]]:
+    video = get_video_or_404(video_id)
+    payload = build_analysis_payload(video)
+    valid_segments: dict[str, dict[str, Any]] = {}
+    evidence_segments: list[dict[str, Any]] = []
+    ranked = sorted(payload["segments"], key=lambda item: (item.get("ad_slot_score", 0), item.get("ad_fit_score", 0)), reverse=True)
+    selected_ids = {item["id"] for item in (ranked[:6] + sorted(payload["segments"], key=lambda item: item.get("attention_score", 0))[:2])}
+    for segment in payload["segments"]:
+        segment_evidence = {
+            "video_id": video_id, "start": segment["start"], "end": segment["end"],
+            "transcript": redact_insight_text(segment.get("transcript")),
+            "objects": [{"label": item["label"], "confidence": item["confidence"], "timestamp": item.get("frame_timestamp")} for item in segment.get("objects", [])[:12]],
+            "topics": [{"label": item["label"], "confidence": item["confidence"]} for item in segment.get("topics", [])[:8]],
+            "ocr": [redact_insight_text(item.get("text")) for item in segment.get("detected_text", [])[:6]],
+            "scores": {key: segment.get(key, 0) for key in ("attention_score", "ad_fit_score", "ad_slot_score", "brand_safety_score", "drop_risk_score")},
+            "ad_matches": [{"category": item["ad_category"], "score": item["ad_fit_score"], "reason": item["reason"]} for item in segment.get("ad_matches", [])[:5]],
+        }
+        valid_segments[segment["id"]] = segment_evidence
+        if segment["id"] in selected_ids:
+            evidence_segments.append({"segment_id": segment["id"], **segment_evidence})
+    return {
+        "target": {"type": "video", "id": video_id, "title": video["title"], "summary": payload["summary"]},
+        "keywords": extract_video_keywords(payload), "segments": evidence_segments,
+        "instructions": "Only cite listed segment_id values as evidence_refs.",
+    }, valid_segments, {video_id}
+
+
+def build_comparison_insight_evidence(comparison_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]], set[str]]:
+    comparison = get_comparison_or_404(comparison_id)
+    member_rows = query_all("select video_id from comparison_videos where comparison_id = ? order by display_order limit 5", (comparison_id,))
+    valid_segments: dict[str, dict[str, Any]] = {}
+    videos: list[dict[str, Any]] = []
+    for member in member_rows:
+        video = get_video_or_404(member["video_id"])
+        if video["status"] != "completed":
+            continue
+        evidence, segments, _ = build_video_insight_evidence(video["id"])
+        selected = sorted(segments.items(), key=lambda item: item[1]["scores"].get("ad_slot_score", 0), reverse=True)[:4]
+        valid_segments.update(segments)
+        videos.append({"video_id": video["id"], "title": video["title"], "summary": evidence["target"]["summary"], "segments": [{"segment_id": segment_id, **item} for segment_id, item in selected]})
+    return {"target": {"type": "comparison", "id": comparison_id, "title": comparison["title"]}, "videos": videos, "instructions": "Only cite listed segment_id and video_id values."}, valid_segments, {item["video_id"] for item in videos}
+
+
+def update_insight_job(job_id: str, status: str, progress: int, stage: str, error: str | None = None) -> None:
+    execute("update insight_jobs set status = ?, progress = ?, stage = ?, error = ?, updated_at = ? where id = ?", (status, progress, stage, bounded_text(error, 800) if error else None, utc_now(), job_id))
+
+
+def process_insight_job(job_id: str) -> None:
+    job = query_one("select * from insight_jobs where id = ?", (job_id,))
+    if not job or job["status"] == "completed":
+        return
+    settings = RunPodSettings.from_env()
+    if not runpod_insights_enabled(settings) or not settings.configured:
+        update_insight_job(job_id, "failed", 100, "failed", "RunPod insight generation is not configured.")
+        execute("update insight_reports set status = 'failed', updated_at = ? where id = ?", (utc_now(), job["report_id"]))
+        return
+    execute("update insight_jobs set attempts = attempts + 1 where id = ?", (job_id,))
+    try:
+        update_insight_job(job_id, "processing", 15, "preparing_evidence")
+        if job["target_type"] == "video":
+            evidence, valid_segments, valid_video_ids = build_video_insight_evidence(job["target_id"])
+            system_prompt = VIDEO_SYSTEM_PROMPT
+        else:
+            evidence, valid_segments, valid_video_ids = build_comparison_insight_evidence(job["target_id"])
+            system_prompt = COMPARISON_SYSTEM_PROMPT
+        if not valid_segments:
+            raise RunPodError("No completed deterministic evidence is available for this report.")
+        update_insight_job(job_id, "processing", 35, "generating")
+        raw = RunPodClient(settings).chat_json(system_prompt=system_prompt, user_payload=evidence, temperature=0.2)
+        update_insight_job(job_id, "processing", 75, "validating")
+        report = normalize_report(raw, report_type=job["target_type"], report_id=job["report_id"], target_id=job["target_id"], fingerprint=job["input_fingerprint"], model=settings.model, valid_segments=valid_segments, valid_video_ids=valid_video_ids)
+        update_insight_job(job_id, "processing", 90, "exporting")
+        export_dir = REPORT_DIR / "insights"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        json_path, pdf_path = export_dir / f"{job['report_id']}.json", export_dir / f"{job['report_id']}.pdf"
+        json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        write_report_pdf(report, pdf_path)
+        execute("update insight_reports set status = 'completed', content_json = ?, json_path = ?, pdf_path = ?, updated_at = ? where id = ?", (json.dumps(report), str(json_path), str(pdf_path), utc_now(), job["report_id"]))
+        update_insight_job(job_id, "completed", 100, "completed")
+    except Exception as exc:
+        update_insight_job(job_id, "failed", 100, "failed", public_job_error(exc))
+        execute("update insight_reports set status = 'failed', updated_at = ? where id = ?", (utc_now(), job["report_id"]))
+
+
+def recover_insight_jobs() -> None:
+    """Requeue unfinished jobs after a Railway process restart."""
+    jobs = query_all("select * from insight_jobs where status in ('queued', 'processing')")
+    for job in jobs:
+        if int(job["attempts"] or 0) >= INSIGHT_MAX_ATTEMPTS:
+            update_insight_job(job["id"], "failed", 100, "failed", "Insight retry limit reached after restart.")
+            continue
+        update_insight_job(job["id"], "queued", 0, "queued")
+        INSIGHT_EXECUTOR.submit(process_insight_job, job["id"])
+
+
 def process_upload_job(job_id: str, video_id: str) -> None:
     video = query_one("select * from videos where id = ?", (video_id,))
     if not video:
@@ -2253,9 +2807,10 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "processing", 48, "transcript")
 
         detections = detect_objects(frames)
+        detected_text = detect_ocr_text(frames)
         update_job(job_id, "processing", 62, "objects")
 
-        enriched_segments = assemble_segments(segments, frames, transcript_segments, detections, audio_metrics, video)
+        enriched_segments = assemble_segments(segments, frames, transcript_segments, detections, detected_text, audio_metrics, video)
         update_job(job_id, "processing", 74, "topics")
 
         update_job(job_id, "processing", 82, "attention")
@@ -2520,6 +3075,7 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
     output_dir.mkdir(parents=True, exist_ok=True)
     frame_data: dict[int, dict[str, Any]] = {}
     previous_gray_small: Any | None = None
+    saved_detection_frames = 0
 
     for segment in segments:
         timestamps = sample_timestamps(segment["start"], segment["end"])
@@ -2528,6 +3084,7 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
         representative_frame: Any | None = None
         representative_timestamp = (segment["start"] + segment["end"]) / 2
         representative_gray_small: Any | None = None
+        candidates: list[tuple[float, float, Any]] = []
 
         for index, timestamp in enumerate(timestamps):
             cap.set(cv2.CAP_PROP_POS_MSEC, max(0, timestamp) * 1000)
@@ -2546,11 +3103,28 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
                 motion_values.append(float(np.mean(np.abs(gray_small.astype(np.float32) - previous_gray_small.astype(np.float32))) / 255))
             previous_gray_small = gray_small
             snapshots.append(frame_metric_snapshot(frame))
+            candidates.append((float(snapshots[-1]["sharpness"]), timestamp, frame.copy()))
 
         if representative_frame is None or not snapshots:
             continue
         frame_path = output_dir / f"frame_{segment['index']:03d}.jpg"
         cv2.imwrite(str(frame_path), representative_frame)
+        # Save a small, sharp/diverse set for real multi-frame inference and OCR.
+        selected_samples: list[dict[str, Any]] = [{"path": frame_path, "timestamp": representative_timestamp}]
+        if saved_detection_frames < DETECTION_MAX_FRAMES:
+            remaining = min(DETECTION_FRAMES_PER_SEGMENT, DETECTION_MAX_FRAMES - saved_detection_frames)
+            chosen: list[tuple[float, float, Any]] = []
+            for candidate in sorted(candidates, key=lambda item: item[0], reverse=True):
+                if all(abs(candidate[1] - existing[1]) >= 0.35 for existing in chosen):
+                    chosen.append(candidate)
+                if len(chosen) >= remaining:
+                    break
+            selected_samples = []
+            for sample_index, (_, timestamp, image) in enumerate(chosen):
+                sample_path = output_dir / f"frame_{segment['index']:03d}_{sample_index + 1}.jpg"
+                cv2.imwrite(str(sample_path), image)
+                selected_samples.append({"path": sample_path, "timestamp": timestamp})
+            saved_detection_frames += len(selected_samples)
         grayscale = cv2.cvtColor(representative_frame, cv2.COLOR_BGR2GRAY)
         averaged = {
             key: float(np.mean([snapshot[key] for snapshot in snapshots]))
@@ -2558,6 +3132,7 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
         }
         frame_data[segment["index"]] = {
             "path": frame_path,
+            "sample_frames": selected_samples or [{"path": frame_path, "timestamp": representative_timestamp}],
             "timestamp": representative_timestamp,
             "mean": float(np.mean(grayscale)),
             "std": float(np.std(grayscale)),
@@ -2909,6 +3484,8 @@ def vosk_words_to_segment(words: list[dict[str, Any]], index: int) -> dict[str, 
 
 
 def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    global OBJECT_DETECTOR_FALLBACK_REASON
+    OBJECT_DETECTOR_FALLBACK_REASON = None
     if os.getenv("NEUROAD_ENABLE_OBJECT_DETECTION", "1").lower() in {"0", "false", "no", "off"}:
         return detect_lightweight_visual_context(frames)
     engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
@@ -2918,7 +3495,8 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
         if engine == "yolo":
             try:
                 return normalize_object_detections(detect_yolo_objects(frames))
-            except Exception:
+            except Exception as exc:
+                OBJECT_DETECTOR_FALLBACK_REASON = f"YOLO unavailable: {bounded_text(exc, 180)}"
                 if object_detection_required():
                     raise
                 return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
@@ -2936,38 +3514,40 @@ def object_detection_required() -> bool:
 def normalize_object_detections(detections: dict[int, list[dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:
     if not detections:
         return detections
-    return {
-        segment_index: sorted(objects, key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True)[:5]
-        for segment_index, objects in detections.items()
-    }
+    normalized: dict[int, list[dict[str, Any]]] = {}
+    for segment_index, objects in detections.items():
+        strongest_by_label: dict[str, dict[str, Any]] = {}
+        for obj in sorted(objects, key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True):
+            label = str(obj.get("label", "")).lower()
+            if label and label not in strongest_by_label:
+                strongest_by_label[label] = obj
+        # One strongest person is retained, while non-person labels cannot be crowded out.
+        normalized[segment_index] = sorted(strongest_by_label.values(), key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True)[:MAX_OBJECTS_PER_SEGMENT]
+    return normalized
 
 
 def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    global YOLO_MODEL_CACHE, YOLO_MODEL_CACHE_PATH
     try:
         from ultralytics import YOLO
     except ImportError as exc:
         raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
-    model_name = os.getenv("YOLO_MODEL", "yolov8n.pt")
-    model = YOLO(model_name)
+    model_name = str(YOLO_MODEL_PATH)
+    if YOLO_MODEL_CACHE is None or YOLO_MODEL_CACHE_PATH != model_name:
+        YOLO_MODEL_CACHE = YOLO(model_name)
+        YOLO_MODEL_CACHE_PATH = model_name
+    model = YOLO_MODEL_CACHE
     output: dict[int, list[dict[str, Any]]] = {}
     for segment_index, frame in frames.items():
-        results = model(str(frame["path"]), verbose=False)
         detections: list[dict[str, Any]] = []
-        for result in results:
-            names = result.names
-            for box in result.boxes:
-                cls_id = int(box.cls[0])
-                confidence = float(box.conf[0])
-                xyxy = [float(value) for value in box.xyxy[0].tolist()]
-                detections.append(
-                    {
-                        "label": names.get(cls_id, str(cls_id)),
-                        "confidence": confidence,
-                        "bbox": xyxy,
-                        "frame_timestamp": frame["timestamp"],
-                    }
-                )
-        output[segment_index] = sorted(detections, key=lambda item: item["confidence"], reverse=True)[:5]
+        for sample in frame.get("sample_frames", [{"path": frame["path"], "timestamp": frame["timestamp"]}]):
+            results = model(str(sample["path"]), verbose=False, imgsz=YOLO_IMAGE_SIZE, conf=YOLO_CONFIDENCE)
+            for result in results:
+                names = result.names
+                for box in result.boxes:
+                    cls_id = int(box.cls[0])
+                    detections.append({"label": names.get(cls_id, str(cls_id)), "confidence": float(box.conf[0]), "bbox": [float(value) for value in box.xyxy[0].tolist()], "frame_timestamp": sample["timestamp"]})
+        output[segment_index] = detections
     return output
 
 
@@ -3096,11 +3676,56 @@ def detect_lightweight_visual_context(frames: dict[int, dict[str, Any]]) -> dict
     return output
 
 
+def detect_ocr_text(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """Extract high-confidence visible text from one best frame per segment."""
+    if not env_enabled("NEUROAD_ENABLE_OCR", True):
+        return {}
+    try:
+        import cv2
+        import pytesseract
+    except ImportError:
+        return {}
+    if not shutil.which("tesseract"):
+        return {}
+    output: dict[int, list[dict[str, Any]]] = {}
+    seen: set[str] = set()
+    processed = 0
+    for segment_index, frame in frames.items():
+        if processed >= OCR_MAX_FRAMES:
+            break
+        samples = frame.get("sample_frames", [{"path": frame["path"], "timestamp": frame["timestamp"]}])[:1]
+        records: list[dict[str, Any]] = []
+        for sample in samples:
+            processed += 1
+            image = cv2.imread(str(sample["path"]))
+            if image is None:
+                continue
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+            prepared = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+            data = pytesseract.image_to_data(prepared, output_type=pytesseract.Output.DICT, config="--psm 6")
+            for index, value in enumerate(data.get("text", [])):
+                text = redact_insight_text(value).strip()
+                try:
+                    confidence = float(data.get("conf", [0])[index])
+                except (ValueError, TypeError, IndexError):
+                    confidence = 0.0
+                normalized = re.sub(r"[^a-z0-9]+", "", text.lower())
+                if confidence < OCR_CONFIDENCE or len(normalized) < 3 or normalized in seen:
+                    continue
+                seen.add(normalized)
+                x, y, width, height = (float(data[key][index]) for key in ("left", "top", "width", "height"))
+                records.append({"text": text, "confidence": confidence / 100, "bbox": [x, y, x + width, y + height], "frame_timestamp": sample["timestamp"]})
+        output[segment_index] = records[:12]
+    return output
+
+
 def assemble_segments(
     segments: list[dict[str, Any]],
     frames: dict[int, dict[str, Any]],
     transcript_segments: list[dict[str, Any]],
     detections: dict[int, list[dict[str, Any]]],
+    detected_text_by_segment: dict[int, list[dict[str, Any]]],
     audio_metrics: dict[int, float],
     video: sqlite3.Row,
 ) -> list[dict[str, Any]]:
@@ -3114,7 +3739,9 @@ def assemble_segments(
         transcript = transcript_for_segment(segment["start"], segment["end"], transcript_segments)
         transcript_evidence = transcript_evidence_for_segment(segment["start"], segment["end"], transcript_segments)
         objects = detections.get(idx, [])
-        topics = classify_topics(" ".join([transcript, metadata_text, " ".join(obj["label"] for obj in objects)]))
+        detected_text = detected_text_by_segment.get(idx, [])
+        ocr_text = " ".join(str(item.get("text", "")) for item in detected_text)
+        topics = classify_topics(" ".join([transcript, ocr_text, metadata_text, " ".join(obj["label"] for obj in objects)]))
         frame = frames.get(idx)
         visual_novelty = compute_visual_novelty(frame, previous_frame)
         motion = float(frame.get("motion", 0.0)) if frame else 0.0
@@ -3166,7 +3793,7 @@ def assemble_segments(
             visual_quality,
             drop_risk,
         )
-        ad_matches = score_ad_matches(objects, topics, metadata_text, attention, transcript, brand_safety_score, drop_risk)
+        ad_matches = score_ad_matches(objects, topics, metadata_text, attention, f"{transcript} {ocr_text}", brand_safety_score, drop_risk)
         ad_fit = max([match["ad_fit_score"] for match in ad_matches], default=0)
         label = attention_label(attention)
         recommendation_context = evaluate_recommendation(
@@ -3222,6 +3849,7 @@ def assemble_segments(
                 "is_best_ad_slot": False,
                 "thumbnail_url": media_url(frame["path"]) if frame else None,
                 "objects": objects,
+                "detected_text": detected_text,
                 "topics": topics,
                 "ad_matches": ad_matches,
             }
@@ -3922,6 +4550,8 @@ def build_recommendation(
 
 def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
     with connect() as conn:
+        for table in ("detected_objects", "detected_text", "topics", "ad_matches"):
+            conn.execute(f"delete from {table} where segment_id in (select id from segments where video_id = ?)", (video_id,))
         conn.execute("delete from segments where video_id = ?", (video_id,))
         for segment in segments:
             segment_id = new_id("seg")
@@ -3976,6 +4606,12 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                         utc_now(),
                     ),
                 )
+            for text in segment.get("detected_text", []):
+                conn.execute(
+                    """insert into detected_text (id, segment_id, text, confidence, bbox, frame_timestamp, created_at)
+                       values (?, ?, ?, ?, ?, ?, ?)""",
+                    (new_id("ocr"), segment_id, text["text"], text["confidence"], json.dumps(text.get("bbox")), text.get("frame_timestamp"), utc_now()),
+                )
             for topic in segment["topics"]:
                 conn.execute(
                     "insert into topics (id, segment_id, label, confidence, created_at) values (?, ?, ?, ?, ?)",
@@ -4015,17 +4651,18 @@ def fit_text_hits(terms: list[str], text: str) -> list[str]:
 
 def prepare_product_segment_context(segment: dict[str, Any]) -> dict[str, Any]:
     transcript = str(segment.get("transcript", ""))
+    ocr_text = " ".join(str(item.get("text", "")) for item in segment.get("detected_text", []))
     topics = [normalize_product_term(str(topic.get("label", ""))) for topic in segment.get("topics", [])]
     objects = [normalize_product_term(str(obj.get("label", ""))) for obj in segment.get("objects", [])]
     useful_objects = sorted({label for label in objects if label and label not in PRODUCT_GENERIC_TERMS})
     return {
-        "transcript": normalize_product_term(transcript),
+        "transcript": normalize_product_term(f"{transcript} {ocr_text}"),
         "topic_text": " ".join(topics),
         "object_text": " ".join(useful_objects),
         "topics": [topic for topic in topics if topic],
         "objects": useful_objects,
         "context_text": normalize_product_term(" ".join([
-            transcript, str(segment.get("summary", "")), str(segment.get("label", "")), " ".join(topics), " ".join(useful_objects)
+            transcript, ocr_text, str(segment.get("summary", "")), str(segment.get("label", "")), " ".join(topics), " ".join(useful_objects)
         ])),
     }
 
@@ -4445,10 +5082,13 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
     all_ad_matches = []
     for row in segment_rows:
         objects = [dict(item) for item in query_all("select * from detected_objects where segment_id = ?", (row["id"],))]
+        detected_text = [dict(item) for item in query_all("select * from detected_text where segment_id = ? order by confidence desc", (row["id"],))]
         topics = [dict(item) for item in query_all("select * from topics where segment_id = ?", (row["id"],))]
         matches = [dict(item) for item in query_all("select * from ad_matches where segment_id = ? order by ad_fit_score desc", (row["id"],))]
         for obj in objects:
             obj["bbox"] = json.loads(obj["bbox"]) if obj.get("bbox") else None
+        for item in detected_text:
+            item["bbox"] = json.loads(item["bbox"]) if item.get("bbox") else None
         segments.append(
             {
                 "id": row["id"],
@@ -4475,6 +5115,7 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
                 "is_best_ad_slot": bool(row["is_best_ad_slot"]),
                 "thumbnail_url": row["thumbnail_url"],
                 "objects": objects,
+                "detected_text": detected_text,
                 "topics": topics,
                 "ad_matches": matches,
             }
@@ -4508,6 +5149,7 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
         "ad_matches": all_ad_matches,
         "ad_categories": [item["category"] for item in AD_CATALOG],
         "recommendations": build_recommendations(summary, segments),
+        "detailed_insight_report": detailed_insight_status("video", video["id"]),
         "exports": exports,
     }
 
@@ -4551,6 +5193,11 @@ def extract_video_keywords(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if word not in stop_words:
                 terms[word] += 1
                 evidence.setdefault(word, set()).add("transcript")
+        for item in segment.get("detected_text", []):
+            for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{3,}", str(item.get("text", "")).lower()):
+                if word not in stop_words:
+                    terms[word] += 2
+                    evidence.setdefault(word, set()).add("on-screen text")
     keywords = []
     for keyword, count in terms.most_common(12):
         source = evidence.get(keyword, set())
@@ -4706,6 +5353,7 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
         "shared_keywords": sorted(shared_keywords),
         "ab": ab,
         "recommendations": recommendations,
+        "detailed_insight_report": detailed_insight_status("comparison", comparison["id"]),
         "caveats": (["Cross-category comparison is directional; use category-specific benchmarks for decisions."] if comparison_mode == "mixed" else []) + (["At least two completed videos are required for a consolidated comparison."] if len(completed) < COMPARISON_MIN_VIDEOS else []),
     }
 
