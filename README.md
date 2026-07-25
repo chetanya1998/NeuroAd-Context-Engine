@@ -10,6 +10,37 @@ The app answers a practical creator/adtech question:
 
 > Which exact moments inside a video are strongest, weakest, or best suited for contextual ad placement?
 
+## Version History / What's New
+
+Release notes describe the product milestone documented in this repository. Times are shown in IST; they are release milestones, not a claim that every feature was first built at that exact time.
+
+### V1.1 Beta — 26 July 2026 (IST)
+
+| Feature introduced | Status | Who it helps | What it does | How to use it |
+| --- | --- | --- | --- | --- |
+| Multi-video upload and consolidated reports | Beta | Agencies, creative teams, and brand reviewers | Analyzes two to five approved videos together, while preserving an individual report for every completed video. | Open **Upload Video**, add two to five files, create a comparison, then wait for the consolidated report. |
+| Same-category benchmarks and A/B comparison | Beta | Creative strategists and performance teams | Compares like-for-like videos with the same metric schema; exactly two completed videos receive directional A/B deltas. Mixed-category results remain directional. | Choose same-category mode when the videos serve the same content category; open the comparison report to review rankings and A/B differences. |
+| Individual reports from a comparison | Live | Creators and reviewers | Keeps timestamped evidence, strengths, weaknesses, keywords, and placement guidance available for each uploaded video. | Select **Open video report** beside any video in a consolidated comparison. |
+| Explainable ad-slot recommendations | Beta | Sponsorship, media, and brand teams | Identifies the strongest generic placement window using attention, contextual fit, natural boundaries, safety, drop risk, and evidence confidence. | Open an individual or comparison report and review **Best moments for an ad** before approving a placement. |
+| Brand and product URL fit checks | Beta | Brand teams and agencies | Extracts a public product profile for user review, then evaluates contextual fit and suitable placement windows against a completed video. | Paste a public brand or product URL in the report, review the extracted profile, and run the fit check. |
+| Pre-publishing keyword recommendations | Beta | Creators and social teams | Suggests evidence-backed keywords and hashtags from the video title, transcript, visual context, and detected topics. | In an individual video report, use the **Pre-post keywords** section to select three to five relevant terms before publishing. |
+| GPT-OSS detailed insight reports | Beta | Campaign reviewers, strategists, and client-facing teams | Produces a structured, evidence-grounded report covering audience, keywords, advertiser fit, creative actions, safety, and placement opportunities. | After analysis completes, select **Generate Detailed Insight Report**, then open it or export PDF/JSON. |
+| RunPod + Railway insight-report architecture | Live | Product and operations teams | Railway prepares deterministic evidence and calls the RunPod Serverless vLLM endpoint only for an optional detailed insight report. | Configure the Railway RunPod environment variables, then enable detailed insight reports for completed analyses. |
+| GPT-OSS 20B adapter fine-tuning track | In progress | NeuroAd product and ML team | Evaluates a versioned adapter for product-specific reporting quality; it is not yet a production capability. | No user action is required. Adapters must pass evaluation and safety checks before deployment. |
+
+### Choose your workflow
+
+- **Creator:** Upload one video, wait for analysis, then review quality signals, pre-post keywords, and recommended placement moments before publishing.
+- **Agency:** Upload two to five candidate videos, use the consolidated comparison to choose a direction, then open individual reports to identify the edits behind the result.
+- **Brand team:** Add a product or brand URL after a video completes, review the extracted product profile, and assess fit, safety, and suggested placement windows before approving an integration.
+- **Campaign reviewer:** Generate the Detailed Insight Report after evidence collection, inspect its evidence-backed guidance, and export PDF or JSON for the review process.
+
+### What the status labels mean
+
+- **Live:** Implemented workflow available in the product today.
+- **Beta:** Implemented decision support that should be reviewed by a human before campaign, publishing, or placement decisions.
+- **In progress:** Being developed or evaluated; it is not presented as a production capability.
+
 It analyzes video at the segment level using:
 
 - Frame sampling
@@ -72,7 +103,7 @@ Sample/mock analysis is disabled in the current build. Completed dashboards shou
 
 ### V1.0 Release Scope
 
-The multi-video comparison, A/B analysis, explainable strongest ad-slot score, faster-whisper evidence improvements, and review-first product-fit engine are included in V1.0. Treat beta metrics as evidence to review, not a guarantee of campaign performance or viewer conversion.
+The multi-video comparison, A/B analysis, explainable strongest ad-slot score, faster-whisper evidence improvements, review-first product-fit engine, pre-post keyword suggestions, and optional GPT-OSS Detailed Insight Reports are included in the current release line. Treat beta metrics and model-generated guidance as evidence to review, not a guarantee of campaign performance, viewer conversion, or legal suitability.
 
 ## Repository Structure
 
@@ -135,23 +166,28 @@ The multi-video comparison, A/B analysis, explainable strongest ad-slot score, f
 - pandas
 - yt-dlp for permitted YouTube media ingestion
 
-## Target Feature-Branch Architecture
+## Current Deployment Architecture
 
 ```mermaid
 flowchart LR
     U["Creator, media team, or brand user"] --> W["Netlify / Next.js web app"]
     W -->|"Upload, URL, comparison, product-fit requests"| A["Railway / FastAPI API"]
     A --> J["In-process job executor\nsequential on Railway"]
-    A <--> D["SQLite\nvideos, jobs, segments, comparisons, products, fit runs"]
+    A <--> D["SQLite\nvideos, jobs, segments, comparisons, products, fit runs, insight reports"]
     A <--> S["Persistent Railway volume\nmedia, audio, frames, reports, model cache"]
     A -->|"Permitted source download"| Y["yt-dlp / public video source"]
     J --> P["Media analysis pipeline"]
     P --> F["FFprobe + FFmpeg\nprobe, clip, audio"]
     P --> T["faster-whisper\ntimestamped transcript + confidence"]
     P --> O["YOLO / OpenCV\nframe and object evidence"]
-    P --> C["Scoring layer\nattention, safety, ad slot, product fit"]
+    P --> C["Deterministic scoring\nattention, safety, ad slot, product fit, keywords"]
     C --> D
-    A --> R["Dashboard payloads + CSV/JSON exports"]
+    A --> I["Insight-report executor\noptional, background, retryable"]
+    I --> G["RunPod Serverless vLLM\nGPT-OSS 20B"]
+    G -->|"Structured report JSON"| A
+    A --> V["Validate and ground\nmodel output against saved evidence"]
+    V --> D
+    A --> R["Dashboard payloads + CSV/JSON/PDF exports"]
     R --> W
     W --> U
 ```
@@ -159,7 +195,8 @@ flowchart LR
 ### Deployment Boundary
 
 - **Netlify** serves the Next.js application. It handles the user interface and calls the API URL configured through `NEXT_PUBLIC_API_BASE`.
-- **Railway** runs FastAPI, FFmpeg/FFprobe, the in-process job executor, local SQLite database, and the persistent volume. Video analysis must remain on the backend because it requires long-running processes and file writes. The expanded comparison and product-fit records shown in the diagram are part of the feature-branch release scope.
+- **Railway** runs FastAPI, FFmpeg/FFprobe, the in-process job executor, local SQLite database, and the persistent volume. It performs the deterministic media analysis and validates all insight-report output before publishing it. Video analysis must remain on the backend because it requires long-running processes and file writes.
+- **RunPod Serverless vLLM** serves the deployed GPT-OSS 20B model through an OpenAI-compatible endpoint. Railway calls it only after video evidence is complete and only for a user-requested Detailed Insight Report. GPT-OSS is used to synthesize text from evidence; frame, audio, and transcript extraction remain in the Railway analysis pipeline.
 - **Railway volume** is required in the current MVP so uploaded media, generated reports, SQLite records, and downloaded model files survive restarts.
 - **Future production architecture** replaces local SQLite and file storage with PostgreSQL plus object storage, and replaces in-process jobs with a queue and separate workers.
 
@@ -184,6 +221,14 @@ sequenceDiagram
     API-->>Web: Return progress and completed dashboard payload
     Web-->>User: Show individual or consolidated report
 ```
+
+### GPT-OSS 20B: role, status, and fine-tuning boundary
+
+The deployed GPT-OSS 20B endpoint is an optional insight-writing layer. It receives compact, saved evidence from the completed analysis—such as transcript excerpts, on-screen text, detected objects, topics, safety flags, segment timestamps, and deterministic scores—and returns structured report content. Railway validates that result, limits it to the known evidence, and stores the finished report for dashboard, PDF, and JSON access.
+
+Fine-tuning is **in progress**, not live. The intended path is a separately trained, versioned adapter (for example, LoRA/QLoRA), evaluated against the base model with held-out examples and safety checks before it is deployed to the RunPod serving endpoint. This is separate from the serverless vLLM inference service.
+
+Customer videos, transcripts, product links, and generated reports are **not used for training or fine-tuning by default**. Any future training dataset requires explicit opt-in, rights/provenance review, retention controls, de-identification where appropriate, evaluation records, and an adapter rollback path.
 
 ## Key Features
 
@@ -863,6 +908,26 @@ YTDLP_COOKIES_FILE=/absolute/path/to/cookies.txt
 YTDLP_COOKIES_BROWSER=chrome
 ```
 
+### Optional RunPod Detailed Insight Reports
+
+Set these variables on Railway only. Do not expose the RunPod key through Netlify or any `NEXT_PUBLIC_*` variable.
+
+```bash
+RUNPOD_API_KEY=your_runpod_api_key
+RUNPOD_ENDPOINT_ID=your_endpoint_id
+RUNPOD_BASE_URL=https://api.runpod.ai/v2/your_endpoint_id/openai/v1
+RUNPOD_MODEL=gpt-oss-20b
+RUNPOD_TIMEOUT_SECONDS=300
+RUNPOD_MAX_TOKENS=2500
+RUNPOD_MAX_RETRIES=2
+NEUROAD_ENABLE_RUNPOD_INSIGHTS=1
+NEUROAD_REQUIRE_RUNPOD_INSIGHTS=0
+NEUROAD_INSIGHT_WORKERS=1
+NEUROAD_INSIGHT_JOB_MAX_ATTEMPTS=3
+```
+
+`NEUROAD_REQUIRE_RUNPOD_INSIGHTS=0` keeps detailed reports optional: a RunPod cold start or report failure does not fail the underlying video analysis. The report is generated only after deterministic evidence exists and the user requests it. The configured `RUNPOD_MODEL` must match the model name exposed by the deployed RunPod vLLM endpoint.
+
 Notes:
 
 - `NEUROAD_STORAGE_DIR` controls where uploads, frames, audio, and reports are written.
@@ -1256,12 +1321,14 @@ npm run build:web
 
 ### V1.1
 
-- Netlify deployment config
-- Dockerfile for API
-- Health endpoint
-- Configurable storage and database paths
-- Configurable CORS origins
-- Better report route and share links
+- Multi-video uploads, consolidated reports, and individual report drill-downs
+- Same-category comparison mode and two-video A/B deltas
+- Explainable strongest ad-slot recommendations
+- Review-first brand and product URL fit checks
+- Pre-post keyword suggestions
+- Optional GPT-OSS detailed insight reports through RunPod Serverless vLLM
+- Railway insight-job persistence, validation, retries, and PDF/JSON exports
+- GPT-OSS 20B adapter fine-tuning evaluation track (in progress; not deployed)
 
 ### V2
 
@@ -1271,8 +1338,6 @@ npm run build:web
 - Separate worker service
 - GPU-backed processing option
 - Auth and workspaces
-- Multi-video creative comparison
-- Product-fit ranking across a multi-video comparison
 - Calibrated category benchmarks based on approved category-specific reference data
 - Semantic brand-safety and product-context models with evaluation datasets
 
