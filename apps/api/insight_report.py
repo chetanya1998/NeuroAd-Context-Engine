@@ -13,17 +13,17 @@ BRAND_PROSPECT_DISCLAIMER = (
 )
 
 VIDEO_PROMPT_VERSION = "video-insight-v1"
-COMPARISON_PROMPT_VERSION = "comparison-insight-v1"
+COMPARISON_PROMPT_VERSION = "comparison-insight-v2"
 
 COMMON_SCHEMA = """
 Return only a JSON object with:
 {
-  "executive_summary": "2-4 concise sentences",
+  "executive_summary": "1-2 concise sentences",
   "content_profile": {
-    "themes": ["up to 6"],
-    "audience_signals": ["up to 6"],
-    "tone": ["up to 4"],
-    "campaign_intents": ["up to 5"]
+    "themes": ["up to 4 short phrases"],
+    "audience_signals": ["up to 4 short phrases"],
+    "tone": ["up to 3 short phrases"],
+    "campaign_intents": ["up to 3 short phrases"]
   },
   "audience_personas": [
     {"persona":"", "motivation":"", "attention_triggers":[""], "content_gaps":[""],
@@ -63,7 +63,7 @@ Also include:
 "avoidance_zones": [
   {{"segment_id":"", "start":0, "end":0, "reason":""}}
 ]
-Limits: 15 keywords, 5 ad categories, 8 brand prospects, 4 audience personas, 6 attention improvements, and 8 placement opportunities.
+Be concise: each prose value must be under 180 characters. Limits: 8 keywords, 3 ad categories, 4 brand prospects, 2 audience personas, 3 attention improvements, and 4 placement opportunities. Keep the full response under 1,600 tokens.
 """.strip()
 
 COMPARISON_SYSTEM_PROMPT = f"""
@@ -83,7 +83,8 @@ Also include:
 "comparative_placements": [
   {{"video_id":"", "segment_id":"", "start":0, "end":0, "score":0, "rationale":""}}
 ]
-Limits: 15 keywords, 5 ad categories, 8 brand prospects, 4 audience personas, 6 attention improvements, 20 matrix rows, and 12 comparative placements.
+This is a compact comparison brief, not a full transcript. Omit weak or duplicate findings. Every prose value must be under 160 characters and every list item must be a short phrase.
+Limits: 8 keywords, 3 ad categories, 4 brand prospects, 2 audience personas, 3 attention improvements, 5 video rankings, 6 matrix rows, and 4 comparative placements. Keep the full response under 1,400 tokens. Finish all JSON arrays and strings before ending the response.
 """.strip()
 
 

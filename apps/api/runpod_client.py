@@ -14,6 +14,12 @@ class RunPodError(RuntimeError):
     """A safe-to-log error raised by the RunPod integration."""
 
 
+COMPACT_JSON_RETRY_INSTRUCTION = (
+    "Your previous response could not be used. Return a complete, compact JSON object only. "
+    "Use one short sentence for prose fields, no more than three entries in any array, omit weak or duplicate "
+    "findings, and close every quote, object, and array before ending. Do not use markdown or commentary."
+)
+
 def _int_from_env(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -109,7 +115,7 @@ class RunPodClient:
                 payload_for_attempt = dict(request_payload)
                 messages = list(request_payload["messages"])
                 if attempt:
-                    messages.insert(1, {"role": "system", "content": "Your last response was not valid JSON. Return one compact, syntactically valid JSON object only; do not use markdown, comments, or trailing text."})
+                    messages.insert(1, {"role": "system", "content": COMPACT_JSON_RETRY_INSTRUCTION})
                 payload_for_attempt["messages"] = messages
                 if use_json_mode:
                     payload_for_attempt["response_format"] = {"type": "json_object"}
@@ -126,9 +132,12 @@ class RunPodClient:
                         continue
                     raise RunPodError(f"RunPod request rejected (HTTP {response.status_code}).")
                 payload = response.json()
-                content = payload["choices"][0]["message"].get("content")
+                choice = payload["choices"][0]
+                content = choice["message"].get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise RunPodError("RunPod returned an empty completion.")
+                if choice.get("finish_reason") == "length":
+                    raise RunPodError("RunPod completion reached its output limit before valid JSON was complete.")
                 return parse_json_completion(content)
             except json.JSONDecodeError as exc:
                 last_error = RunPodError(f"RunPod returned malformed JSON ({exc.msg} at line {exc.lineno}, column {exc.colno}).")

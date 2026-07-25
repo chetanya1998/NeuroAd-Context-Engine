@@ -89,6 +89,40 @@ def test_runpod_client_retries_without_json_mode_when_worker_rejects_it(monkeypa
     assert "response_format" not in calls[1]
 
 
+def test_runpod_client_retries_with_compact_instruction_after_truncated_completion(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, content, finish_reason):
+            self.content = content
+            self.finish_reason = finish_reason
+
+        def json(self):
+            return {"choices": [{"message": {"content": self.content}, "finish_reason": self.finish_reason}]}
+
+    class FakeClient:
+        def __init__(self, timeout): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json):
+            calls.append(json)
+            if len(calls) == 1:
+                return FakeResponse('{"executive_summary":"cut off', "length")
+            return FakeResponse('{"executive_summary":"Compact result"}', "stop")
+
+    monkeypatch.setattr(runpod_client.httpx, "Client", FakeClient)
+    monkeypatch.setattr(runpod_client.time, "sleep", lambda _: None)
+    settings = RunPodSettings("secret", "https://example.test/openai/v1", "model", 30, 2500, 1)
+
+    result = RunPodClient(settings).chat_json(system_prompt="Return JSON.", user_payload={})
+
+    assert result == {"executive_summary": "Compact result"}
+    assert "no more than three entries" in calls[1]["messages"][1]["content"]
+
+
 def test_runpod_client_uses_openai_compatible_chat_endpoint(monkeypatch):
     captured = {}
 
