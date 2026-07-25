@@ -140,7 +140,11 @@ export type InsightReport = {
   brand_prospects: Array<{ brand: string; category: string; contextual_fit_score: number; confidence: number; why_fit: string; activation_idea: string; risks: string[]; evidence_refs: string[] }>;
   brand_safety: { summary: string; findings: string[] }; creative_recommendations: string[]; limitations: string[];
   brand_prospect_disclaimer: string; placement_opportunities?: Array<{ segment_id: string; start: number; end: number; score: number; format: string; messaging_angle: string; rationale: string }>;
-  exports: { pdf: string; json: string };
+  metadata?: { model: string; prompt_version: string; generated_at: string; analysis_fingerprint: string };
+  cross_video_insights?: { shared_themes: string[]; keyword_overlap: string[]; important_differences: string[] };
+  video_rankings?: Array<{ video_id: string; campaign_objective: string; rank: number; rationale: string }>;
+  brand_video_matrix?: Array<{ brand: string; video_id: string; contextual_fit_score: number; rationale: string }>;
+  comparative_placements?: Array<{ video_id: string; segment_id: string; start: number; end: number; score: number; rationale: string }>;
 };
 
 export type AIInsights = {

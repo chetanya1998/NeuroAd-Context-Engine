@@ -12,7 +12,7 @@ const stages = [
   ["preparing_evidence", "Preparing evidence"],
   ["generating", "Generating with GPT-OSS"],
   ["validating", "Validating grounded evidence"],
-  ["exporting", "Creating PDF and JSON"],
+  ["publishing", "Publishing dashboard"],
 ] as const;
 
 export function InsightReportLauncher({ targetType, targetId, initial }: { targetType: "video" | "comparison"; targetId: string; initial?: DetailedInsightReportStatus | null }) {
@@ -37,7 +37,7 @@ export function InsightReportLauncher({ targetType, targetId, initial }: { targe
       setState({ report_id: result.report_id, job_id: result.job_id, status: result.status, progress: result.progress, stage: result.stage, report_url: result.report_url });
     } catch (err) { setError(err instanceof Error ? err.message : "Could not start the report."); }
   }
-  if (state?.status === "completed") return <Card className="mt-8 flex flex-wrap items-center justify-between gap-4 p-5"><div><p className="font-semibold text-white">Detailed Insight Report ready</p><p className="mt-1 text-sm text-zinc-400">Validated GPT-OSS evidence, brand prospects, placements, and exports.</p></div><Link href={`/insights/${state.report_id}`}><Button><FileText className="h-4 w-4" /> View Detailed Report</Button></Link></Card>;
+  if (state?.status === "completed") return <Card className="mt-8 flex flex-wrap items-center justify-between gap-4 p-5"><div><p className="font-semibold text-white">Detailed Insight Report ready</p><p className="mt-1 text-sm text-zinc-400">Explore GPT-OSS findings, brand prospects, placements, and creative actions in the dashboard.</p></div><Link href={`/insights/${state.report_id}`}><Button><FileText className="h-4 w-4" /> View Detailed Report</Button></Link></Card>;
   const progress = Math.max(0, Math.min(100, state?.progress ?? 0));
   const currentStage = state?.stage ?? "queued";
   const currentIndex = stages.findIndex(([key]) => key === currentStage);
@@ -59,6 +59,6 @@ function stageMessage(stage: string) {
   if (stage === "preparing_evidence") return "Preparing grounded video evidence";
   if (stage === "generating") return "GPT-OSS is generating the report";
   if (stage === "validating") return "Checking citations, timestamps, and scores";
-  if (stage === "exporting") return "Creating your PDF and JSON downloads";
+  if (stage === "publishing") return "Publishing your interactive report dashboard";
   return "Preparing your insight report";
 }

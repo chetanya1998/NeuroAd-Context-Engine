@@ -67,7 +67,6 @@ def test_insight_job_is_idempotent_and_completes_with_fake_runpod(monkeypatch, t
             return {"executive_summary": "Grounded report.", "keywords": [{"term": "hydration", "evidence_refs": ["seg_1"]}], "ad_categories": [], "brand_prospects": [], "placement_opportunities": []}
 
     monkeypatch.setattr(main, "RunPodClient", FakeRunPod)
-    monkeypatch.setattr(main, "write_report_pdf", lambda report, path: path.write_bytes(b"%PDF-1.4\n"))
     monkeypatch.setattr(main.INSIGHT_EXECUTOR, "submit", lambda fn, *args: None)
     created = main.create_insight_report_job("video", "video_1")
     repeated = main.create_insight_report_job("video", "video_1")
@@ -75,5 +74,6 @@ def test_insight_job_is_idempotent_and_completes_with_fake_runpod(monkeypatch, t
     main.process_insight_job(created["job_id"])
     report = main.query_one("select * from insight_reports where id = ?", (created["report_id"],))
     assert report["status"] == "completed"
-    assert Path(report["json_path"]).exists()
-    assert json.loads(Path(report["json_path"]).read_text())["brand_prospect_disclaimer"] == BRAND_PROSPECT_DISCLAIMER
+    assert report["json_path"] is None
+    assert report["pdf_path"] is None
+    assert json.loads(report["content_json"])["brand_prospect_disclaimer"] == BRAND_PROSPECT_DISCLAIMER

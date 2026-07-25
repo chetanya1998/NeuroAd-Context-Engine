@@ -39,7 +39,6 @@ from insight_report import (
     VIDEO_PROMPT_VERSION,
     VIDEO_SYSTEM_PROMPT,
     normalize_report,
-    write_report_pdf,
 )
 from runpod_client import RunPodClient, RunPodError, RunPodSettings
 
@@ -2248,18 +2247,7 @@ def get_insight_report(report_id: str) -> dict[str, Any]:
         content = json.loads(report["content_json"])
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="Insight report data is invalid.") from exc
-    return {**content, "exports": {"pdf": f"/api/insight-reports/{report_id}/export?format=pdf", "json": f"/api/insight-reports/{report_id}/export?format=json"}}
-
-
-@app.get("/api/insight-reports/{report_id}/export")
-def export_insight_report(report_id: str, format: str = Query("pdf", pattern="^(pdf|json)$")) -> FileResponse:
-    report = query_one("select * from insight_reports where id = ?", (report_id,))
-    if not report or report["status"] != "completed":
-        raise HTTPException(status_code=404, detail="Completed insight report not found")
-    path = Path(report["pdf_path"] if format == "pdf" else report["json_path"])
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Insight export file is unavailable")
-    return FileResponse(path, media_type="application/pdf" if format == "pdf" else "application/json", filename=f"{report_id}.{format}")
+    return content
 
 
 @app.get("/api/jobs/{job_id}")
@@ -2716,13 +2704,10 @@ def process_insight_job(job_id: str) -> None:
         raw = RunPodClient(settings).chat_json(system_prompt=system_prompt, user_payload=evidence, temperature=0.2)
         update_insight_job(job_id, "processing", 75, "validating")
         report = normalize_report(raw, report_type=job["target_type"], report_id=job["report_id"], target_id=job["target_id"], fingerprint=job["input_fingerprint"], model=settings.model, valid_segments=valid_segments, valid_video_ids=valid_video_ids)
-        update_insight_job(job_id, "processing", 90, "exporting")
-        export_dir = REPORT_DIR / "insights"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        json_path, pdf_path = export_dir / f"{job['report_id']}.json", export_dir / f"{job['report_id']}.pdf"
-        json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        write_report_pdf(report, pdf_path)
-        execute("update insight_reports set status = 'completed', content_json = ?, json_path = ?, pdf_path = ?, updated_at = ? where id = ?", (json.dumps(report), str(json_path), str(pdf_path), utc_now(), job["report_id"]))
+        update_insight_job(job_id, "processing", 90, "publishing")
+        # The validated canonical report is stored in SQLite and rendered only in the NeuroAd dashboard.
+        # We deliberately do not generate PDF/JSON files for this interactive report experience.
+        execute("update insight_reports set status = 'completed', content_json = ?, json_path = null, pdf_path = null, updated_at = ? where id = ?", (json.dumps(report), utc_now(), job["report_id"]))
         update_insight_job(job_id, "completed", 100, "completed")
     except Exception as exc:
         # Keep Railway logs actionable while the API/UI receive only the safe public error.

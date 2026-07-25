@@ -204,7 +204,6 @@ export async function createComparisonInsightReport(comparisonId: string) {
 }
 export async function getInsightJob(jobId: string) { return parseResponse<InsightJob>(await apiFetch(`${API_BASE}/api/insight-jobs/${jobId}`)); }
 export async function getInsightReport(reportId: string) { return parseResponse<InsightReport>(await apiFetch(`${API_BASE}/api/insight-reports/${reportId}`)); }
-export function insightExportUrl(reportId: string, format: "pdf" | "json") { return `${API_BASE}/api/insight-reports/${reportId}/export?format=${format}`; }
 
 export async function resolveProduct(url: string) {
   return parseResponse<ProductProfile>(
