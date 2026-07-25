@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 import importlib.util
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -44,6 +45,7 @@ from runpod_client import RunPodClient, RunPodError, RunPodSettings
 
 
 APP_DIR = Path(__file__).resolve().parent
+INSIGHT_LOGGER = logging.getLogger("neuroad.insights")
 
 
 def path_from_env(name: str, default: Path) -> Path:
@@ -2695,6 +2697,7 @@ def process_insight_job(job_id: str) -> None:
         return
     settings = RunPodSettings.from_env()
     if not runpod_insights_enabled(settings) or not settings.configured:
+        INSIGHT_LOGGER.warning("Insight job %s cannot run because RunPod is not configured.", job_id)
         update_insight_job(job_id, "failed", 100, "failed", "RunPod insight generation is not configured.")
         execute("update insight_reports set status = 'failed', updated_at = ? where id = ?", (utc_now(), job["report_id"]))
         return
@@ -2722,6 +2725,14 @@ def process_insight_job(job_id: str) -> None:
         execute("update insight_reports set status = 'completed', content_json = ?, json_path = ?, pdf_path = ?, updated_at = ? where id = ?", (json.dumps(report), str(json_path), str(pdf_path), utc_now(), job["report_id"]))
         update_insight_job(job_id, "completed", 100, "completed")
     except Exception as exc:
+        # Keep Railway logs actionable while the API/UI receive only the safe public error.
+        INSIGHT_LOGGER.exception(
+            "Insight job failed: job_id=%s target_type=%s target_id=%s stage=%s",
+            job_id,
+            job["target_type"],
+            job["target_id"],
+            "processing",
+        )
         update_insight_job(job_id, "failed", 100, "failed", public_job_error(exc))
         execute("update insight_reports set status = 'failed', updated_at = ? where id = ?", (utc_now(), job["report_id"]))
 
