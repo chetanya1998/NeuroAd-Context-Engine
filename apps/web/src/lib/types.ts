@@ -130,7 +130,7 @@ export type AnalysisPayload = {
   };
 };
 
-export type DetailedInsightReportStatus = { report_id: string; job_id?: string | null; status: string; progress?: number; stage?: string; error?: string | null; report_url?: string | null };
+export type DetailedInsightReportStatus = { report_id: string; job_id?: string | null; status: string; progress?: number; stage?: string; attempts?: number; created_at?: string; updated_at?: string; error?: string | null; report_url?: string | null };
 export type InsightJob = { id: string; report_id: string; status: string; progress: number; stage: string; error?: string | null; attempts?: number; created_at?: string; updated_at?: string; report_url?: string | null };
 export type InsightReport = {
   report_id: string; report_type: "video" | "comparison"; executive_summary: string;

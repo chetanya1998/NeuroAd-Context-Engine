@@ -34,6 +34,61 @@ def test_parse_json_completion_accepts_fenced_json():
     assert result["creative_actions"] == ["Shorten the opening."]
 
 
+def test_runpod_client_requests_json_mode_and_preserves_malformed_json_reason(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": '{"summary":"one"\n"next":"two"}'}}]}
+
+    class FakeClient:
+        def __init__(self, timeout): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json):
+            assert json["response_format"] == {"type": "json_object"}
+            return FakeResponse()
+
+    monkeypatch.setattr(runpod_client.httpx, "Client", FakeClient)
+    monkeypatch.setattr(runpod_client.time, "sleep", lambda _: None)
+    settings = RunPodSettings("secret", "https://example.test/openai/v1", "model", 30, 1000, 0)
+    try:
+        RunPodClient(settings).chat_json(system_prompt="JSON", user_payload={})
+    except runpod_client.RunPodError as exc:
+        assert "malformed JSON" in str(exc)
+        assert "line 2, column 1" in str(exc)
+    else:
+        raise AssertionError("Expected malformed JSON to be reported.")
+
+
+def test_runpod_client_retries_without_json_mode_when_worker_rejects_it(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, text, payload):
+            self.status_code, self.text, self.payload = status_code, text, payload
+        def json(self): return self.payload
+
+    class FakeClient:
+        def __init__(self, timeout): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, headers, json):
+            calls.append(json)
+            if len(calls) == 1:
+                return FakeResponse(400, "response_format is unsupported", {})
+            return FakeResponse(200, "", {"choices": [{"message": {"content": '{"summary":"ready"}'}}]})
+
+    monkeypatch.setattr(runpod_client.httpx, "Client", FakeClient)
+    settings = RunPodSettings("secret", "https://example.test/openai/v1", "model", 30, 1000, 0)
+    result = RunPodClient(settings).chat_json(system_prompt="JSON", user_payload={})
+    assert result == {"summary": "ready"}
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]
+
+
 def test_runpod_client_uses_openai_compatible_chat_endpoint(monkeypatch):
     captured = {}
 

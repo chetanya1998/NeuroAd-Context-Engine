@@ -93,6 +93,9 @@ class RunPodClient:
             "temperature": temperature,
             "max_tokens": self.settings.max_tokens,
         }
+        # vLLM/OpenAI-compatible RunPod endpoints support this. If an older worker rejects it,
+        # the request below retries once without the parameter instead of failing the job.
+        use_json_mode = os.getenv("RUNPOD_JSON_RESPONSE_FORMAT", "1").lower() not in {"0", "false", "no", "off"}
         headers = {
             "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",
@@ -100,23 +103,44 @@ class RunPodClient:
         url = f"{self.settings.base_url}/chat/completions"
         last_error: Exception | None = None
 
-        for attempt in range(self.settings.max_retries + 1):
+        attempt = 0
+        while attempt <= self.settings.max_retries:
             try:
+                payload_for_attempt = dict(request_payload)
+                messages = list(request_payload["messages"])
+                if attempt:
+                    messages.insert(1, {"role": "system", "content": "Your last response was not valid JSON. Return one compact, syntactically valid JSON object only; do not use markdown, comments, or trailing text."})
+                payload_for_attempt["messages"] = messages
+                if use_json_mode:
+                    payload_for_attempt["response_format"] = {"type": "json_object"}
                 with httpx.Client(timeout=self.settings.timeout_seconds) as client:
-                    response = client.post(url, headers=headers, json=request_payload)
+                    response = client.post(url, headers=headers, json=payload_for_attempt)
                 if response.status_code == 429 or response.status_code >= 500:
                     raise RunPodError(f"RunPod temporarily unavailable (HTTP {response.status_code}).")
                 if response.status_code >= 400:
+                    response_text = getattr(response, "text", "").lower()
+                    if response.status_code == 400 and use_json_mode and "response_format" in response_text:
+                        use_json_mode = False
+                        # JSON mode is optional on older vLLM workers; this fallback does not
+                        # consume one of the limited model-generation retries.
+                        continue
                     raise RunPodError(f"RunPod request rejected (HTTP {response.status_code}).")
                 payload = response.json()
                 content = payload["choices"][0]["message"].get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise RunPodError("RunPod returned an empty completion.")
                 return parse_json_completion(content)
-            except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError, RunPodError) as exc:
+            except json.JSONDecodeError as exc:
+                last_error = RunPodError(f"RunPod returned malformed JSON ({exc.msg} at line {exc.lineno}, column {exc.colno}).")
+                if attempt >= self.settings.max_retries:
+                    break
+                attempt += 1
+                time.sleep(min(4.0, 2.0**attempt))
+            except (httpx.HTTPError, KeyError, TypeError, ValueError, RunPodError) as exc:
                 last_error = exc
                 if attempt >= self.settings.max_retries:
                     break
+                attempt += 1
                 time.sleep(min(4.0, 2.0**attempt))
 
         if isinstance(last_error, RunPodError):
