@@ -131,6 +131,41 @@ export type AnalysisPayload = {
 };
 
 export type DetailedInsightReportStatus = { report_id: string; job_id?: string | null; status: string; progress?: number; stage?: string; attempts?: number; created_at?: string; updated_at?: string; error?: string | null; report_url?: string | null };
+export type McpTarget = "mcp" | "canva" | "heygen" | "prompt_video";
+export type McpHandoffPackage = {
+  schema: string;
+  schema_version: string;
+  generated_at: string;
+  target: McpTarget;
+  target_profile: { label: string; recommended_action: string; preferred_outputs: string[] };
+  source: { video_id: string; title: string; duration_seconds: number; media_url?: string | null; analysis_status: string };
+  creative_brief: {
+    title: string;
+    objective: string;
+    core_topics: string[];
+    opening_direction: string;
+    pacing_direction: string;
+    brand_safety: string;
+    human_review_required: boolean;
+  };
+  summary_scores: Record<string, number>;
+  timeline: Array<{
+    segment_id: string;
+    start_seconds: number;
+    end_seconds: number;
+    action: "feature" | "keep" | "tighten";
+    attention_score: number;
+    drop_risk_score: number;
+    brand_safety_score: number;
+    recommendation: string;
+    transcript: string;
+    visual_context: { objects: string[]; topics: string[]; on_screen_text: string[] };
+    evidence_refs: string[];
+  }>;
+  scene_prompts: Array<{ scene: number; duration_seconds: number; prompt: string; negative_prompt: string; source_segment_id: string }>;
+  handoff_prompt: string;
+  provenance: { evidence_only: boolean; segment_count: number; limitations: string[] };
+};
 export type InsightJob = { id: string; report_id: string; status: string; progress: number; stage: string; error?: string | null; attempts?: number; created_at?: string; updated_at?: string; report_url?: string | null };
 export type InsightReport = {
   report_id: string; report_type: "video" | "comparison"; target_id: string; executive_summary: string;

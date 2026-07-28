@@ -103,3 +103,42 @@ def test_insight_job_is_idempotent_and_completes_with_fake_runpod(monkeypatch, t
     assert report["json_path"] is None
     assert report["pdf_path"] is None
     assert json.loads(report["content_json"])["brand_prospect_disclaimer"] == BRAND_PROSPECT_DISCLAIMER
+
+
+def test_mcp_handoff_package_keeps_grounded_timeline_and_target_prompt():
+    payload = {
+        "video": {"id": "video_1", "title": "Bottle demo", "duration": 10, "status": "completed", "file_url": "/media/demo.mp4"},
+        "summary": {
+            "overall_attention_score": 72,
+            "monetization_opportunity_score": 68,
+            "brand_safety_score": 95,
+            "creator_readiness_score": 70,
+            "best_hook": {"start": 0, "end": 5},
+            "best_content_window": {"start": 0, "end": 5},
+            "weakest_segment": {"start": 5, "end": 10},
+        },
+        "topics": [{"label": "hydration"}],
+        "segments": [
+            {
+                "id": "seg_1", "start": 0, "end": 5, "attention_score": 82, "ad_fit_score": 75,
+                "drop_risk_score": 18, "brand_safety_score": 98, "recommendation": "Keep the hook.",
+                "transcript": "A clear hydration benefit.", "summary": "Opening",
+                "objects": [{"label": "bottle"}], "topics": [{"label": "hydration"}], "detected_text": [],
+            },
+            {
+                "id": "seg_2", "start": 5, "end": 10, "attention_score": 30, "ad_fit_score": 20,
+                "drop_risk_score": 70, "brand_safety_score": 95, "recommendation": "Tighten the pause.",
+                "transcript": "", "summary": "Pause", "objects": [], "topics": [], "detected_text": [],
+            },
+        ],
+    }
+
+    package = main.build_mcp_handoff_package(payload, "heygen")
+
+    assert package["schema"] == "com.neuroad.mcp.video-handoff"
+    assert package["target_profile"]["label"] == "HeyGen"
+    assert package["timeline"][0]["action"] == "feature"
+    assert package["timeline"][1]["action"] == "tighten"
+    assert package["scene_prompts"][0]["source_segment_id"] == "seg_1"
+    assert "seg_1" in package["timeline"][0]["evidence_refs"]
+    assert "unsupported claims" in package["scene_prompts"][0]["negative_prompt"]

@@ -1,4 +1,4 @@
-import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, ProductFitPayload, ProductProfile } from "./types";
+import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, McpHandoffPackage, McpTarget, ProductFitPayload, ProductProfile } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -194,6 +194,16 @@ export async function getJob(jobId: string) {
 
 export async function getAnalysis(videoId: string) {
   return parseResponse<AnalysisPayload>(await apiFetch(`${API_BASE}/api/videos/${videoId}/analysis`));
+}
+
+export async function getMcpHandoffPackage(videoId: string, target: McpTarget) {
+  return parseResponse<McpHandoffPackage>(
+    await apiFetch(`${API_BASE}/api/videos/${videoId}/mcp-package?target=${target}`)
+  );
+}
+
+export function mcpHandoffExportUrl(videoId: string, target: McpTarget, format: "json" | "prompt" = "json") {
+  return `${API_BASE}/api/videos/${videoId}/mcp-package/export?target=${target}&format=${format}`;
 }
 
 export async function createVideoInsightReport(videoId: string) {

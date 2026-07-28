@@ -2332,6 +2332,34 @@ def get_analysis(video_id: str) -> dict[str, Any]:
     return build_analysis_payload(video)
 
 
+@app.get("/api/videos/{video_id}/mcp-package")
+def get_mcp_package(
+    video_id: str,
+    target: str = Query("mcp", pattern="^(mcp|canva|heygen|prompt_video)$"),
+) -> dict[str, Any]:
+    video = get_video_or_404(video_id)
+    if video["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Analysis must be complete before creating an MCP handoff.")
+    return build_mcp_handoff_package(build_analysis_payload(video), target)
+
+
+@app.get("/api/videos/{video_id}/mcp-package/export")
+def export_mcp_package(
+    video_id: str,
+    target: str = Query("mcp", pattern="^(mcp|canva|heygen|prompt_video)$"),
+    format: str = Query("json", pattern="^(json|prompt)$"),
+) -> Response:
+    video = get_video_or_404(video_id)
+    if video["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Analysis must be complete before creating an MCP handoff.")
+    package = build_mcp_handoff_package(build_analysis_payload(video), target)
+    suffix = "json" if format == "json" else "txt"
+    body = json.dumps(package, indent=2) if format == "json" else package["handoff_prompt"]
+    media_type = "application/json" if format == "json" else "text/plain"
+    headers = {"Content-Disposition": f'attachment; filename="{video_id}-{target}-handoff.{suffix}"'}
+    return Response(content=body, media_type=media_type, headers=headers)
+
+
 @app.get("/api/comparisons/{comparison_id}/status")
 def get_comparison_status(comparison_id: str) -> dict[str, Any]:
     comparison = get_comparison_or_404(comparison_id)
@@ -5173,6 +5201,165 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
         "recommendations": build_recommendations(summary, segments),
         "detailed_insight_report": detailed_insight_status("video", video["id"]),
         "exports": exports,
+    }
+
+
+def build_mcp_handoff_package(payload: dict[str, Any], target: str = "mcp") -> dict[str, Any]:
+    """Translate grounded analysis evidence into a portable creative-tool context package."""
+    if target not in {"mcp", "canva", "heygen", "prompt_video"}:
+        raise ValueError(f"Unsupported MCP handoff target: {target}")
+
+    video = payload["video"]
+    summary = payload["summary"]
+    segments = payload.get("segments", [])
+    ranked = sorted(
+        segments,
+        key=lambda item: (
+            float(item.get("attention_score", 0))
+            + float(item.get("ad_fit_score", 0))
+            + max(0, 100 - float(item.get("drop_risk_score", 100)))
+        ),
+        reverse=True,
+    )
+    highlight_count = min(3, max(1, math.ceil(len(ranked) * 0.25))) if ranked else 0
+    weak_count = min(2, max(1, math.ceil(len(segments) * 0.20))) if segments else 0
+    best_ids = {item["id"] for item in ranked[:highlight_count]}
+    weakest_ids = {
+        item["id"]
+        for item in sorted(segments, key=lambda item: float(item.get("attention_score", 0)))[:weak_count]
+    }
+
+    timeline = []
+    scene_prompts = []
+    for index, segment in enumerate(segments):
+        objects = [str(item.get("label", "")).strip() for item in segment.get("objects", []) if item.get("label")]
+        topics = [str(item.get("label", "")).strip() for item in segment.get("topics", []) if item.get("label")]
+        on_screen_text = [
+            str(item.get("text", "")).strip() for item in segment.get("detected_text", []) if item.get("text")
+        ]
+        transcript = " ".join(str(segment.get("transcript", "")).split())
+        if segment["id"] in weakest_ids and segment["id"] not in best_ids:
+            action = "tighten"
+        elif segment["id"] in best_ids:
+            action = "feature"
+        else:
+            action = "keep"
+        timeline.append(
+            {
+                "segment_id": segment["id"],
+                "start_seconds": segment["start"],
+                "end_seconds": segment["end"],
+                "action": action,
+                "attention_score": segment.get("attention_score", 0),
+                "drop_risk_score": segment.get("drop_risk_score", 0),
+                "brand_safety_score": segment.get("brand_safety_score", 100),
+                "recommendation": segment.get("recommendation", ""),
+                "transcript": transcript,
+                "visual_context": {"objects": objects[:6], "topics": topics[:4], "on_screen_text": on_screen_text[:4]},
+                "evidence_refs": [segment["id"]],
+            }
+        )
+        if index < 8:
+            visual_subject = ", ".join((topics + objects)[:4]) or "the source video's central subject"
+            scene_prompts.append(
+                {
+                    "scene": index + 1,
+                    "duration_seconds": round(float(segment["end"]) - float(segment["start"]), 1),
+                    "prompt": (
+                        f"Create a polished video scene about {visual_subject}. "
+                        f"Preserve the meaning of: {transcript[:180] or segment.get('summary', 'the source moment')}. "
+                        "Use clear subject focus, purposeful motion, readable composition, and natural continuity."
+                    ),
+                    "negative_prompt": "No invented logos, unsupported claims, unsafe imagery, illegible text, or unrelated products.",
+                    "source_segment_id": segment["id"],
+                }
+            )
+
+    top_topics = list(dict.fromkeys(str(item.get("label", "")).strip() for item in payload.get("topics", []) if item.get("label")))[:8]
+    target_profiles = {
+        "mcp": {
+            "label": "Universal MCP",
+            "recommended_action": "Pass this JSON object as grounded context to an MCP-connected creative tool.",
+            "preferred_outputs": ["edit decision list", "storyboard", "revised script", "generation prompts"],
+        },
+        "canva": {
+            "label": "Canva",
+            "recommended_action": "Use the creative brief and timeline to assemble a video design; upload source media separately.",
+            "preferred_outputs": ["video project", "social cutdown", "captioned storyboard"],
+        },
+        "heygen": {
+            "label": "HeyGen",
+            "recommended_action": "Use the script beats as avatar scenes, then review pronunciation, claims, and timing.",
+            "preferred_outputs": ["avatar video", "localized presenter video", "voiceover-led explainer"],
+        },
+        "prompt_video": {
+            "label": "Prompt-to-video",
+            "recommended_action": "Generate scenes independently from scene_prompts, then edit them in timeline order.",
+            "preferred_outputs": ["generated scene sequence", "B-roll variants", "concept video"],
+        },
+    }
+    profile = target_profiles[target]
+    best_window = summary.get("best_hook") or summary.get("best_content_window")
+    avoid_window = summary.get("weakest_segment")
+    creative_brief = {
+        "title": video.get("title", "Untitled video"),
+        "objective": "Create a stronger, evidence-led edit while preserving the source video's meaning.",
+        "core_topics": top_topics,
+        "opening_direction": (
+            f"Open with the energy and clarity found at {format_range(best_window['start'], best_window['end'])}."
+            if best_window
+            else "Open with the clearest benefit or visual proof."
+        ),
+        "pacing_direction": (
+            f"Tighten or replace the weakest window at {format_range(avoid_window['start'], avoid_window['end'])}."
+            if avoid_window
+            else "Remove repetition, silence, and low-information frames."
+        ),
+        "brand_safety": "Do not add claims, products, people, or events that are not supported by the supplied evidence.",
+        "human_review_required": True,
+    }
+    handoff_prompt = (
+        f"You are editing or generating “{creative_brief['title']}” using a NeuroAd evidence package.\n\n"
+        f"Goal: {creative_brief['objective']}\n"
+        f"Opening: {creative_brief['opening_direction']}\n"
+        f"Pacing: {creative_brief['pacing_direction']}\n"
+        f"Topics: {', '.join(top_topics) or 'Use only the supplied timeline evidence.'}\n\n"
+        "Follow the timeline actions and scene prompts in the attached package. Preserve factual meaning and "
+        "do not invent logos, endorsements, performance results, or safety claims. Return a scene-by-scene plan "
+        f"optimized for {profile['label']}, and flag every place where a human must choose or verify an asset."
+    )
+    return {
+        "schema": "com.neuroad.mcp.video-handoff",
+        "schema_version": "1.0.0",
+        "generated_at": utc_now(),
+        "target": target,
+        "target_profile": profile,
+        "source": {
+            "video_id": video["id"],
+            "title": video.get("title"),
+            "duration_seconds": video.get("duration", 0),
+            "media_url": video.get("file_url") or video.get("source_url"),
+            "analysis_status": video.get("status"),
+        },
+        "creative_brief": creative_brief,
+        "summary_scores": {
+            "attention": summary.get("overall_attention_score", 0),
+            "monetization_opportunity": summary.get("monetization_opportunity_score", 0),
+            "brand_safety": summary.get("brand_safety_score", 0),
+            "creator_readiness": summary.get("creator_readiness_score", 0),
+        },
+        "timeline": timeline,
+        "scene_prompts": scene_prompts,
+        "handoff_prompt": handoff_prompt,
+        "provenance": {
+            "evidence_only": True,
+            "segment_count": len(segments),
+            "limitations": [
+                "Scores are decision-support signals, not guaranteed viewer behavior or campaign performance.",
+                "Third-party tools may interpret prompts differently; review the generated media before publishing.",
+                "Source media, fonts, brand kits, avatars, and licensed assets must be supplied separately when required.",
+            ],
+        },
     }
 
 
