@@ -2,6 +2,7 @@
 
 import { Link2, LoaderCircle, Sparkles } from "lucide-react";
 import { useState } from "react";
+import { capturePostHogEvent } from "@/components/posthog-provider";
 import { createProduct, formatRange, resolveProduct, runVideoProductFit } from "@/lib/api";
 import type { ProductFitPayload, ProductProfile } from "@/lib/types";
 import { Badge, Button, Card } from "./ui";
@@ -26,6 +27,7 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
   const [fit, setFit] = useState<ProductFitPayload | null>(null);
 
   async function resolve() {
+    capturePostHogEvent("product_link_resolved");
     setLoading("resolve");
     setError(null);
     setFit(null);
@@ -44,6 +46,9 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
 
   async function analyzeFit() {
     if (!profile) return;
+    capturePostHogEvent("product_fit_requested", {
+      profile_source: profile.id ? "saved" : "new"
+    });
     setLoading("fit");
     setError(null);
     try {
