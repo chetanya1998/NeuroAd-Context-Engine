@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, BadgeDollarSign, Circle } from "lucide-react";
+import { capturePostHogEvent } from "@/components/posthog-provider";
 import { formatRange } from "@/lib/api";
 import { useExplorerStore } from "@/lib/store";
 import type { Segment } from "@/lib/types";
@@ -25,7 +26,10 @@ export function AttentionTimeline({ segments }: { segments: Segment[] }) {
           <button
             key={segment.id}
             type="button"
-            onClick={() => setSelectedSegment(segment)}
+            onClick={() => {
+              capturePostHogEvent("timeline_segment_opened");
+              setSelectedSegment(segment);
+            }}
             className="group flex min-w-24 flex-1 flex-col items-stretch gap-2 text-left"
             title={`Attention Proxy Score ${segment.attention_score}`}
           >

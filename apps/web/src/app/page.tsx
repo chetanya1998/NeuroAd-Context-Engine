@@ -27,6 +27,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Reveal } from "@/components/Reveal";
+import { capturePostHogEvent } from "@/components/posthog-provider";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
 import HeroContextAnimation from "@/components/animations/HeroContextAnimation";
@@ -368,10 +369,19 @@ export default function HomePage() {
 
   function startUploadSet() {
     if (uploadQueue.length === 1) {
+      capturePostHogEvent("video_upload_submitted", {
+        upload_source: "landing_page"
+      });
       uploadMutation.mutate(uploadQueue[0]);
       return;
     }
-    if (uploadQueue.length >= 2) comparisonMutation.mutate(uploadQueue);
+    if (uploadQueue.length >= 2) {
+      capturePostHogEvent("comparison_upload_submitted", {
+        upload_source: "landing_page",
+        video_count: uploadQueue.length
+      });
+      comparisonMutation.mutate(uploadQueue);
+    }
   }
 
   return (

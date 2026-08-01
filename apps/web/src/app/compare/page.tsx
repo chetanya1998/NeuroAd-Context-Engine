@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { ArrowRight, BarChart3, FileVideo, Trash2, UploadCloud } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { capturePostHogEvent } from "@/components/posthog-provider";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
 import { createComparison, startComparison, uploadComparisonVideos } from "@/lib/api";
@@ -82,7 +83,13 @@ export default function CompareUploadPage() {
 
           <div className="mt-7 flex flex-col gap-3 border-t border-white/10 pt-6 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-zinc-500">Same-category videos receive direct benchmarks. Cross-category results are labeled directional.</p>
-            <Button disabled={files.length < 2 || createMutation.isPending} onClick={() => createMutation.mutate()}>
+            <Button disabled={files.length < 2 || createMutation.isPending} onClick={() => {
+              capturePostHogEvent("comparison_upload_submitted", {
+                upload_source: "comparison_page",
+                video_count: files.length
+              });
+              createMutation.mutate();
+            }}>
               <BarChart3 className="h-4 w-4" />
               {createMutation.isPending ? "Starting analysis…" : "Analyze comparison"}
               <ArrowRight className="h-4 w-4" />
