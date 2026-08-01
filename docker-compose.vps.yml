@@ -54,6 +54,10 @@ services:
       NEUROAD_INSIGHT_JOB_MAX_ATTEMPTS: "${NEUROAD_INSIGHT_JOB_MAX_ATTEMPTS:-3}"
       NEUROAD_ENABLE_OCR: "${NEUROAD_ENABLE_OCR:-1}"
       NEUROAD_YOLO_CONFIDENCE: "${NEUROAD_YOLO_CONFIDENCE:-0.25}"
+      POSTHOG_ENABLED: "${POSTHOG_ENABLED:-false}"
+      POSTHOG_PROJECT_TOKEN: "${POSTHOG_PROJECT_TOKEN:-}"
+      POSTHOG_HOST: "${POSTHOG_HOST:-https://us.i.posthog.com}"
+      NEUROAD_ENVIRONMENT: "${NEUROAD_ENVIRONMENT:-production}"
     volumes:
       - neuroad-api-data:/data
     healthcheck:

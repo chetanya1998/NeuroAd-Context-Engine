@@ -14,6 +14,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { capture } from "@/lib/analytics";
 import {
   absoluteMediaUrl,
   createProduct,
@@ -249,6 +250,12 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
       setProfile(saved);
       const result = await runVideoProductFit(videoId, saved.id!);
       setFit(result);
+      capture("product_fit_result_viewed", {
+        video_id: videoId,
+        product_id: saved.id!,
+        fit_score: result.overall_fit_score,
+        suitability_tier: result.suitability_tier
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not run product fit.");
     } finally {
@@ -259,7 +266,7 @@ export function BrandFitPanel({ videoId }: { videoId: string }) {
   const processingLabel = loading === "resolve" ? "Reading public product metadata…" : loading === "fit" ? "Comparing the reviewed profile with video moments…" : null;
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="ph-no-capture overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 p-6">
         <div>
           <div className="flex flex-wrap items-center gap-2 text-slate-400"><Link2 className="h-4 w-4" /> Brand and product fit <Badge tone="cyan">Beta</Badge></div>

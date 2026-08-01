@@ -76,7 +76,7 @@ RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         && find /root/.cache -name yolo11n.pt -exec cp {} /opt/neuroad/models/yolo11n.pt \;; \
     fi
 
-COPY main.py runpod_client.py insight_report.py .
+COPY main.py runpod_client.py insight_report.py analytics.py .
 
 EXPOSE 8000
 

@@ -26,12 +26,13 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request as FastAPIRequest, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from analytics import AnalyticsContext, capture_event, shutdown_analytics
 from insight_report import (
     BRAND_PROSPECT_DISCLAIMER,
     COMPARISON_PROMPT_VERSION,
@@ -520,7 +521,10 @@ def runpod_insights_enabled(settings: RunPodSettings | None = None) -> bool:
 async def lifespan(_: FastAPI):
     init_db()
     recover_insight_jobs()
-    yield
+    try:
+        yield
+    finally:
+        shutdown_analytics()
 
 
 ensure_storage_dirs()
@@ -637,6 +641,57 @@ def query_one(sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
 def query_all(sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(sql, params).fetchall()
+
+
+def analytics_context_from_request(request: FastAPIRequest) -> AnalyticsContext:
+    return AnalyticsContext.from_headers(request.headers)
+
+
+def analytics_context_from_row(row: sqlite3.Row | dict[str, Any] | None) -> AnalyticsContext:
+    if not row:
+        return AnalyticsContext()
+    keys = set(row.keys())
+    return AnalyticsContext(
+        distinct_id=row["analytics_distinct_id"] if "analytics_distinct_id" in keys else None,
+        session_id=row["analytics_session_id"] if "analytics_session_id" in keys else None,
+    )
+
+
+def duration_bucket(duration_seconds: int | float) -> str:
+    duration = max(0, float(duration_seconds or 0))
+    if duration < 60:
+        return "under_1m"
+    if duration < 300:
+        return "1_5m"
+    if duration < 600:
+        return "5_10m"
+    return "over_10m"
+
+
+def elapsed_ms(created_at: str | None) -> int | None:
+    if not created_at:
+        return None
+    try:
+        return max(0, int((datetime.now() - datetime.fromisoformat(created_at)).total_seconds() * 1000))
+    except (TypeError, ValueError):
+        return None
+
+
+def analytics_error_code(error: Exception | str) -> str:
+    message = str(error).lower()
+    if "too large" in message or "exceeds" in message:
+        return "upload_too_large"
+    if "timeout" in message or "taking too long" in message:
+        return "processing_timeout"
+    if "youtube" in message or "sign in to confirm" in message:
+        return "youtube_access_blocked"
+    if "ffmpeg" in message or "media processing" in message:
+        return "media_processing_failed"
+    if "transcri" in message or "whisper" in message:
+        return "transcription_failed"
+    if "runpod" in message or "insight" in message:
+        return "insight_generation_failed"
+    return "processing_failed"
 
 
 def init_db() -> None:
@@ -932,6 +987,24 @@ def init_db() -> None:
             {
                 "comparison_id": "text",
                 "comparison_video_id": "text",
+                "analytics_distinct_id": "text",
+                "analytics_session_id": "text",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "comparisons",
+            {
+                "analytics_distinct_id": "text",
+                "analytics_session_id": "text",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "insight_jobs",
+            {
+                "analytics_distinct_id": "text",
+                "analytics_session_id": "text",
             },
         )
         ensure_table_columns(
@@ -1918,21 +1991,36 @@ def add_video_to_comparison(comparison_id: str, video_id: str) -> None:
 
 
 @app.post("/api/comparisons")
-def create_comparison(payload: Optional[ComparisonCreateRequest] = None) -> dict[str, Any]:
+def create_comparison(request: FastAPIRequest, payload: Optional[ComparisonCreateRequest] = None) -> dict[str, Any]:
     comparison_id = new_id("comparison")
     title = (payload.title if payload and payload.title else "Video comparison").strip()
+    analytics_context = analytics_context_from_request(request)
     execute(
         """
-        insert into comparisons (id, title, status, comparison_mode, total_videos, completed_videos, failed_videos, created_at, updated_at)
-        values (?, ?, 'created', 'pending', 0, 0, 0, ?, ?)
+        insert into comparisons
+        (id, title, status, comparison_mode, total_videos, completed_videos, failed_videos, analytics_distinct_id, analytics_session_id, created_at, updated_at)
+        values (?, ?, 'created', 'pending', 0, 0, 0, ?, ?, ?, ?)
         """,
-        (comparison_id, title[:160] or "Video comparison", utc_now(), utc_now()),
+        (
+            comparison_id,
+            title[:160] or "Video comparison",
+            analytics_context.distinct_id,
+            analytics_context.session_id,
+            utc_now(),
+            utc_now(),
+        ),
+    )
+    capture_event(
+        "comparison_created",
+        analytics_context,
+        {"comparison_id": comparison_id, "workflow": "comparison"},
+        insert_id=f"comparison:{comparison_id}:created",
     )
     return {"comparison_id": comparison_id, "status": "created"}
 
 
 @app.post("/api/comparisons/{comparison_id}/videos/upload")
-async def upload_comparison_videos(comparison_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def upload_comparison_videos(request: FastAPIRequest, comparison_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
     get_comparison_or_404(comparison_id)
     if not files:
         raise HTTPException(status_code=400, detail="Upload at least one video.")
@@ -1944,12 +2032,36 @@ async def upload_comparison_videos(comparison_id: str, files: list[UploadFile] =
         result = await store_uploaded_video(file)
         add_video_to_comparison(comparison_id, result["video_id"])
         uploaded.append(result)
+        capture_event(
+            "video_upload_completed",
+            analytics_context_from_request(request),
+            {
+                "video_id": result["video_id"],
+                "comparison_id": comparison_id,
+                "workflow": "comparison",
+                "source_type": "upload",
+                "duration_bucket": duration_bucket(result["duration_seconds"]),
+            },
+            insert_id=f"video:{result['video_id']}:upload_completed",
+        )
     return {"comparison_id": comparison_id, "status": "uploaded", "videos": uploaded}
 
 
 @app.post("/api/videos/upload")
-async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
-    return await store_uploaded_video(file)
+async def upload_video(request: FastAPIRequest, file: UploadFile = File(...)) -> dict[str, Any]:
+    result = await store_uploaded_video(file)
+    capture_event(
+        "video_upload_completed",
+        analytics_context_from_request(request),
+        {
+            "video_id": result["video_id"],
+            "workflow": "single",
+            "source_type": "upload",
+            "duration_bucket": duration_bucket(result["duration_seconds"]),
+        },
+        insert_id=f"video:{result['video_id']}:upload_completed",
+    )
+    return result
 
 
 @app.post("/api/videos/youtube")
@@ -2038,30 +2150,76 @@ def create_video_from_url(payload: VideoUrlRequest) -> dict[str, Any]:
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": 0}
 
 
-def create_video_analysis_job(video_id: str, comparison_id: str | None = None, comparison_video_id: str | None = None, submit: bool = True) -> dict[str, Any]:
+def create_video_analysis_job(
+    video_id: str,
+    comparison_id: str | None = None,
+    comparison_video_id: str | None = None,
+    submit: bool = True,
+    analytics_context: AnalyticsContext | None = None,
+) -> dict[str, Any]:
     video = get_video_or_404(video_id)
     existing = query_one("select * from jobs where video_id = ? order by created_at desc limit 1", (video_id,))
     if existing and existing["status"] in {"queued", "processing"}:
         return {"job_id": existing["id"], "status": existing["status"]}
 
+    if analytics_context is None and comparison_id:
+        analytics_context = analytics_context_from_row(get_comparison_or_404(comparison_id))
+    analytics_context = analytics_context or AnalyticsContext()
     job_id = new_id("job")
     execute(
         """
-        insert into jobs (id, video_id, comparison_id, comparison_video_id, status, progress, current_step, error, created_at, updated_at)
-        values (?, ?, ?, ?, 'queued', 0, 'metadata', null, ?, ?)
+        insert into jobs
+        (id, video_id, comparison_id, comparison_video_id, status, progress, current_step, error, analytics_distinct_id, analytics_session_id, created_at, updated_at)
+        values (?, ?, ?, ?, 'queued', 0, 'metadata', null, ?, ?, ?, ?)
         """,
-        (job_id, video_id, comparison_id, comparison_video_id, utc_now(), utc_now()),
+        (
+            job_id,
+            video_id,
+            comparison_id,
+            comparison_video_id,
+            analytics_context.distinct_id,
+            analytics_context.session_id,
+            utc_now(),
+            utc_now(),
+        ),
+    )
+    capture_event(
+        "analysis_requested",
+        analytics_context,
+        {
+            "analysis_id": job_id,
+            "video_id": video_id,
+            "comparison_id": comparison_id,
+            "workflow": "comparison" if comparison_id else "single",
+            "source_type": video["source_type"],
+            "duration_bucket": duration_bucket(video["duration_seconds"]),
+        },
+        insert_id=f"analysis:{job_id}:requested",
     )
 
     if not video["file_path"] and video["source_type"] not in {"url", "youtube_ingest"}:
+        error = "No analyzable media file is attached. Upload a video or provide a direct MP4/MOV/WebM URL."
         update_job(
             job_id,
             "failed",
             100,
             "metadata",
-            "No analyzable media file is attached. Upload a video or provide a direct MP4/MOV/WebM URL.",
+            error,
         )
         execute("update videos set status = 'failed' where id = ?", (video_id,))
+        capture_event(
+            "analysis_failed",
+            analytics_context,
+            {
+                "analysis_id": job_id,
+                "video_id": video_id,
+                "comparison_id": comparison_id,
+                "workflow": "comparison" if comparison_id else "single",
+                "source_type": video["source_type"],
+                "error_code": analytics_error_code(error),
+            },
+            insert_id=f"analysis:{job_id}:failed",
+        )
         return {"job_id": job_id, "status": "failed"}
 
     if submit:
@@ -2070,12 +2228,12 @@ def create_video_analysis_job(video_id: str, comparison_id: str | None = None, c
 
 
 @app.post("/api/videos/{video_id}/analyze")
-def analyze_video(video_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    return create_video_analysis_job(video_id)
+def analyze_video(video_id: str, request: FastAPIRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    return create_video_analysis_job(video_id, analytics_context=analytics_context_from_request(request))
 
 
 @app.post("/api/comparisons/{comparison_id}/analyze")
-def analyze_comparison(comparison_id: str, payload: Optional[ComparisonAnalyzeRequest] = None) -> dict[str, Any]:
+def analyze_comparison(request: FastAPIRequest, comparison_id: str, payload: Optional[ComparisonAnalyzeRequest] = None) -> dict[str, Any]:
     comparison = get_comparison_or_404(comparison_id)
     members = query_all("select * from comparison_videos where comparison_id = ? order by display_order", (comparison_id,))
     if payload and payload.video_ids:
@@ -2085,7 +2243,22 @@ def analyze_comparison(comparison_id: str, payload: Optional[ComparisonAnalyzeRe
         raise HTTPException(status_code=400, detail=f"Add at least {COMPARISON_MIN_VIDEOS} videos before starting a comparison.")
     if comparison["status"] == "processing":
         return {"comparison_id": comparison_id, "status": "processing"}
-    execute("update comparisons set status = 'queued', updated_at = ? where id = ?", (utc_now(), comparison_id))
+    analytics_context = analytics_context_from_request(request)
+    execute(
+        """
+        update comparisons
+        set status = 'queued', analytics_distinct_id = coalesce(?, analytics_distinct_id),
+            analytics_session_id = coalesce(?, analytics_session_id), updated_at = ?
+        where id = ?
+        """,
+        (analytics_context.distinct_id, analytics_context.session_id, utc_now(), comparison_id),
+    )
+    capture_event(
+        "comparison_analysis_requested",
+        analytics_context,
+        {"comparison_id": comparison_id, "workflow": "comparison", "video_count": len(members)},
+        insert_id=f"comparison:{comparison_id}:analysis_requested",
+    )
     EXECUTOR.submit(process_comparison_job, comparison_id, [dict(member) for member in members])
     return {"comparison_id": comparison_id, "status": "queued", "total_videos": len(members)}
 
@@ -2136,8 +2309,22 @@ def patch_product(product_id: str, payload: ProductUpdateRequest) -> dict[str, A
 
 
 @app.post("/api/videos/{video_id}/product-fit")
-def analyze_video_product_fit(video_id: str, payload: ProductFitRequest) -> dict[str, Any]:
-    return run_product_fit(get_product_or_404(payload.product_id), get_video_or_404(video_id))
+def analyze_video_product_fit(request: FastAPIRequest, video_id: str, payload: ProductFitRequest) -> dict[str, Any]:
+    result = run_product_fit(get_product_or_404(payload.product_id), get_video_or_404(video_id))
+    capture_event(
+        "product_fit_completed",
+        analytics_context_from_request(request),
+        {
+            "fit_run_id": result["fit_run_id"],
+            "video_id": video_id,
+            "product_id": payload.product_id,
+            "workflow": "single",
+            "fit_score": result["overall_fit_score"],
+            "suitability_tier": result["suitability_tier"],
+        },
+        insert_id=f"product_fit:{result['fit_run_id']}:completed",
+    )
+    return result
 
 
 @app.get("/api/videos/{video_id}/product-fit/{fit_run_id}")
@@ -2149,7 +2336,7 @@ def get_video_product_fit(video_id: str, fit_run_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/comparisons/{comparison_id}/product-fit")
-def analyze_comparison_product_fit(comparison_id: str, payload: ProductFitRequest) -> dict[str, Any]:
+def analyze_comparison_product_fit(request: FastAPIRequest, comparison_id: str, payload: ProductFitRequest) -> dict[str, Any]:
     get_comparison_or_404(comparison_id)
     product = get_product_or_404(payload.product_id)
     members = query_all("select video_id from comparison_videos where comparison_id = ? order by display_order", (comparison_id,))
@@ -2161,6 +2348,19 @@ def analyze_comparison_product_fit(comparison_id: str, payload: ProductFitReques
     if not results:
         raise HTTPException(status_code=400, detail="Complete at least one video analysis before running product fit.")
     ranked = sorted(results, key=lambda item: item["overall_fit_score"], reverse=True)
+    capture_event(
+        "product_fit_completed",
+        analytics_context_from_request(request),
+        {
+            "comparison_id": comparison_id,
+            "product_id": payload.product_id,
+            "workflow": "comparison",
+            "video_count": len(ranked),
+            "fit_score": ranked[0]["overall_fit_score"],
+            "suitability_tier": ranked[0]["suitability_tier"],
+        },
+        insert_id=f"product_fit:comparison:{comparison_id}:{payload.product_id}:completed",
+    )
     return {
         "comparison_id": comparison_id,
         "product": product_payload(product),
@@ -2169,7 +2369,12 @@ def analyze_comparison_product_fit(comparison_id: str, payload: ProductFitReques
     }
 
 
-def create_insight_report_job(target_type: str, target_id: str) -> dict[str, Any]:
+def create_insight_report_job(
+    target_type: str,
+    target_id: str,
+    analytics_context: AnalyticsContext | None = None,
+) -> dict[str, Any]:
+    analytics_context = analytics_context or AnalyticsContext()
     if target_type == "video":
         video = get_video_or_404(target_id)
         if video["status"] != "completed":
@@ -2208,23 +2413,49 @@ def create_insight_report_job(target_type: str, target_id: str) -> dict[str, Any
     now = utc_now()
     execute(
         """insert into insight_jobs
-           (id, report_id, target_type, target_id, input_fingerprint, prompt_version, status, progress, stage, model, attempts, created_at, updated_at)
-           values (?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', ?, ?, ?, ?)""",
-        (job_id, report["id"], target_type, target_id, fingerprint, prompt_version, RunPodSettings.from_env().model, attempts, now, now),
+           (id, report_id, target_type, target_id, input_fingerprint, prompt_version, status, progress, stage, model, attempts,
+            analytics_distinct_id, analytics_session_id, created_at, updated_at)
+           values (?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', ?, ?, ?, ?, ?, ?)""",
+        (
+            job_id,
+            report["id"],
+            target_type,
+            target_id,
+            fingerprint,
+            prompt_version,
+            RunPodSettings.from_env().model,
+            attempts,
+            analytics_context.distinct_id,
+            analytics_context.session_id,
+            now,
+            now,
+        ),
     )
     execute("update insight_reports set status = 'queued', updated_at = ? where id = ?", (now, report["id"]))
+    capture_event(
+        "insight_report_requested",
+        analytics_context,
+        {
+            "insight_job_id": job_id,
+            "report_id": report["id"],
+            "target_type": target_type,
+            "video_id": target_id if target_type == "video" else None,
+            "comparison_id": target_id if target_type == "comparison" else None,
+        },
+        insert_id=f"insight_report:{job_id}:requested",
+    )
     INSIGHT_EXECUTOR.submit(process_insight_job, job_id)
     return {"job_id": job_id, "report_id": report["id"], "status": "queued", "progress": 0, "stage": "queued"}
 
 
 @app.post("/api/videos/{video_id}/insight-reports")
-def create_video_insight_report(video_id: str) -> dict[str, Any]:
-    return create_insight_report_job("video", video_id)
+def create_video_insight_report(video_id: str, request: FastAPIRequest) -> dict[str, Any]:
+    return create_insight_report_job("video", video_id, analytics_context_from_request(request))
 
 
 @app.post("/api/comparisons/{comparison_id}/insight-reports")
-def create_comparison_insight_report(comparison_id: str) -> dict[str, Any]:
-    return create_insight_report_job("comparison", comparison_id)
+def create_comparison_insight_report(comparison_id: str, request: FastAPIRequest) -> dict[str, Any]:
+    return create_insight_report_job("comparison", comparison_id, analytics_context_from_request(request))
 
 
 @app.get("/api/insight-jobs/{job_id}")
@@ -2709,11 +2940,25 @@ def process_insight_job(job_id: str) -> None:
     job = query_one("select * from insight_jobs where id = ?", (job_id,))
     if not job or job["status"] == "completed":
         return
+    analytics_context = analytics_context_from_row(job)
     settings = RunPodSettings.from_env()
     if not runpod_insights_enabled(settings) or not settings.configured:
         INSIGHT_LOGGER.warning("Insight job %s cannot run because RunPod is not configured.", job_id)
-        update_insight_job(job_id, "failed", 100, "failed", "RunPod insight generation is not configured.")
+        error = "RunPod insight generation is not configured."
+        update_insight_job(job_id, "failed", 100, "failed", error)
         execute("update insight_reports set status = 'failed', updated_at = ? where id = ?", (utc_now(), job["report_id"]))
+        capture_event(
+            "insight_report_failed",
+            analytics_context,
+            {
+                "insight_job_id": job_id,
+                "report_id": job["report_id"],
+                "target_type": job["target_type"],
+                "processing_duration_ms": elapsed_ms(job["created_at"]),
+                "error_code": "insight_not_configured",
+            },
+            insert_id=f"insight_report:{job_id}:failed",
+        )
         return
     execute("update insight_jobs set attempts = attempts + 1 where id = ?", (job_id,))
     try:
@@ -2735,6 +2980,20 @@ def process_insight_job(job_id: str) -> None:
         # We deliberately do not generate PDF/JSON files for this interactive report experience.
         execute("update insight_reports set status = 'completed', content_json = ?, json_path = null, pdf_path = null, updated_at = ? where id = ?", (json.dumps(report), utc_now(), job["report_id"]))
         update_insight_job(job_id, "completed", 100, "completed")
+        capture_event(
+            "insight_report_completed",
+            analytics_context,
+            {
+                "insight_job_id": job_id,
+                "report_id": job["report_id"],
+                "target_type": job["target_type"],
+                "video_id": job["target_id"] if job["target_type"] == "video" else None,
+                "comparison_id": job["target_id"] if job["target_type"] == "comparison" else None,
+                "processing_duration_ms": elapsed_ms(job["created_at"]),
+                "result_status": "completed",
+            },
+            insert_id=f"insight_report:{job_id}:completed",
+        )
     except Exception as exc:
         # Keep Railway logs actionable while the API/UI receive only the safe public error.
         INSIGHT_LOGGER.exception(
@@ -2746,6 +3005,21 @@ def process_insight_job(job_id: str) -> None:
         )
         update_insight_job(job_id, "failed", 100, "failed", public_job_error(exc))
         execute("update insight_reports set status = 'failed', updated_at = ? where id = ?", (utc_now(), job["report_id"]))
+        capture_event(
+            "insight_report_failed",
+            analytics_context,
+            {
+                "insight_job_id": job_id,
+                "report_id": job["report_id"],
+                "target_type": job["target_type"],
+                "video_id": job["target_id"] if job["target_type"] == "video" else None,
+                "comparison_id": job["target_id"] if job["target_type"] == "comparison" else None,
+                "processing_duration_ms": elapsed_ms(job["created_at"]),
+                "error_code": analytics_error_code(exc),
+                "result_status": "failed",
+            },
+            insert_id=f"insight_report:{job_id}:failed",
+        )
 
 
 def recover_insight_jobs() -> None:
@@ -2760,9 +3034,18 @@ def recover_insight_jobs() -> None:
 
 
 def process_upload_job(job_id: str, video_id: str) -> None:
+    job = query_one("select * from jobs where id = ?", (job_id,))
+    analytics_context = analytics_context_from_row(job)
     video = query_one("select * from videos where id = ?", (video_id,))
     if not video:
-        update_job(job_id, "failed", 0, "metadata", "Video not found")
+        error = "Video not found"
+        update_job(job_id, "failed", 0, "metadata", error)
+        capture_event(
+            "analysis_failed",
+            analytics_context,
+            {"analysis_id": job_id, "video_id": video_id, "error_code": "video_not_found"},
+            insert_id=f"analysis:{job_id}:failed",
+        )
         return
     try:
         execute("update videos set status = 'processing' where id = ?", (video_id,))
@@ -2845,9 +3128,39 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             (int(duration), enriched_segments[0].get("thumbnail_url") if enriched_segments else None, video_id),
         )
         update_job(job_id, "completed", 100, "report")
+        capture_event(
+            "analysis_completed",
+            analytics_context,
+            {
+                "analysis_id": job_id,
+                "video_id": video_id,
+                "comparison_id": job["comparison_id"] if job and "comparison_id" in job.keys() else None,
+                "workflow": "comparison" if job and job["comparison_id"] else "single",
+                "source_type": video["source_type"],
+                "duration_bucket": duration_bucket(duration),
+                "processing_duration_ms": elapsed_ms(job["created_at"] if job else None),
+                "result_status": "completed",
+            },
+            insert_id=f"analysis:{job_id}:completed",
+        )
     except Exception as exc:
         execute("update videos set status = 'failed' where id = ?", (video_id,))
         update_job(job_id, "failed", 100, "failed", public_job_error(exc))
+        capture_event(
+            "analysis_failed",
+            analytics_context,
+            {
+                "analysis_id": job_id,
+                "video_id": video_id,
+                "comparison_id": job["comparison_id"] if job and "comparison_id" in job.keys() else None,
+                "workflow": "comparison" if job and job["comparison_id"] else "single",
+                "source_type": video["source_type"],
+                "processing_duration_ms": elapsed_ms(job["created_at"] if job else None),
+                "error_code": analytics_error_code(exc),
+                "result_status": "failed",
+            },
+            insert_id=f"analysis:{job_id}:failed",
+        )
 
 
 def refresh_comparison_progress(comparison_id: str) -> dict[str, int]:
@@ -2858,6 +3171,8 @@ def refresh_comparison_progress(comparison_id: str) -> dict[str, int]:
 
 
 def process_comparison_job(comparison_id: str, members: list[dict[str, Any]]) -> None:
+    comparison = get_comparison_or_404(comparison_id)
+    analytics_context = analytics_context_from_row(comparison)
     execute("update comparisons set status = 'processing', updated_at = ? where id = ?", (utc_now(), comparison_id))
     for member in members:
         member_id = member["id"]
@@ -2908,6 +3223,20 @@ def process_comparison_job(comparison_id: str, members: list[dict[str, Any]]) ->
     )
     if progress["completed"] >= COMPARISON_MIN_VIDEOS:
         persist_comparison_report(comparison_id)
+    capture_event(
+        "comparison_failed" if final_status == "failed" else "comparison_completed",
+        analytics_context,
+        {
+            "comparison_id": comparison_id,
+            "workflow": "comparison",
+            "video_count": progress["total"],
+            "completed_video_count": progress["completed"],
+            "failed_video_count": progress["failed"],
+            "processing_duration_ms": elapsed_ms(comparison["created_at"]),
+            "result_status": final_status,
+        },
+        insert_id=f"comparison:{comparison_id}:{'failed' if final_status == 'failed' else 'completed'}",
+    )
 
 
 def public_job_error(exc: Exception) -> str:

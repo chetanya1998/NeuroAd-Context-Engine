@@ -1,4 +1,5 @@
 import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, ProductFitPayload, ProductProfile } from "./types";
+import { analyticsHeaders } from "./analytics";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -31,7 +32,9 @@ function apiConnectionErrorMessage() {
 
 async function apiFetch(input: string, init?: RequestInit) {
   try {
-    return await fetch(input, init);
+    const headers = new Headers(init?.headers);
+    Object.entries(analyticsHeaders()).forEach(([key, value]) => headers.set(key, value));
+    return await fetch(input, { ...init, headers });
   } catch (error) {
     if (error instanceof TypeError) {
       throw new Error(apiConnectionErrorMessage());
@@ -69,6 +72,7 @@ export async function uploadVideo(file: File, options?: UploadOptions) {
   return new Promise<{ video_id: string; status: string }>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE}/api/videos/upload`);
+    Object.entries(analyticsHeaders()).forEach(([key, value]) => request.setRequestHeader(key, value));
     request.timeout = 10 * 60 * 1000;
 
     request.upload.onprogress = (event) => {
@@ -119,6 +123,7 @@ export async function uploadComparisonVideos(comparisonId: string, files: File[]
   return new Promise<{ comparison_id: string; status: string; videos: Array<{ video_id: string; status: string; duration_seconds: number }> }>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE}/api/comparisons/${comparisonId}/videos/upload`);
+    Object.entries(analyticsHeaders()).forEach(([key, value]) => request.setRequestHeader(key, value));
     request.timeout = 10 * 60 * 1000;
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) {

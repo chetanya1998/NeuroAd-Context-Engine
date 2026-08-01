@@ -13,7 +13,7 @@ export function SegmentDrawer() {
   return (
     <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setSelectedSegment(undefined)}>
       <aside
-        className="absolute right-0 top-0 h-full w-full max-w-xl overflow-y-auto border-l border-border bg-black p-6 shadow-glow"
+        className="ph-no-capture absolute right-0 top-0 h-full w-full max-w-xl overflow-y-auto border-l border-border bg-black p-6 shadow-glow"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">

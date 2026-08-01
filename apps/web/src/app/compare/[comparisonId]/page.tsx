@@ -4,9 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowUpRight, BarChart3, CircleCheckBig, Download, FileJson, GitCompareArrows, Lightbulb, PlayCircle, Scale, Trophy } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useEffect } from "react";
 import { AppShell } from "@/components/shell";
 import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { Badge, Button, Card } from "@/components/ui";
+import { capture } from "@/lib/analytics";
 import { comparisonExportUrl, formatRange, getComparison } from "@/lib/api";
 import type { ComparisonVideo } from "@/lib/types";
 
@@ -40,6 +42,17 @@ export default function ComparisonDashboardPage() {
     refetchInterval: (query) => ["queued", "processing"].includes(query.state.data?.comparison.status ?? "") ? 2500 : false
   });
   const data = comparisonQuery.data;
+  const comparisonStatus = data?.comparison.status;
+  const completedVideoCount = data?.comparison.completed_videos;
+  useEffect(() => {
+    if (!comparisonStatus || completedVideoCount === undefined) return;
+    if (!["completed", "partial", "failed"].includes(comparisonStatus)) return;
+    capture("comparison_report_viewed", {
+      comparison_id: params.comparisonId,
+      video_count: completedVideoCount,
+      result_status: comparisonStatus
+    });
+  }, [comparisonStatus, completedVideoCount, params.comparisonId]);
 
   if (comparisonQuery.isLoading) return <AppShell><main className="p-8 text-zinc-400">Loading comparison…</main></AppShell>;
   if (!data) return <AppShell><main className="p-8 text-danger">{comparisonQuery.error instanceof Error ? comparisonQuery.error.message : "Comparison not found."}</main></AppShell>;
@@ -57,7 +70,7 @@ export default function ComparisonDashboardPage() {
             <h1 className="mt-4 text-4xl font-semibold text-white md:text-6xl">{titleCase(data.comparison.title)}</h1>
             <p className="mt-4 max-w-3xl text-base leading-7 text-zinc-400">{data.comparison.completed_videos} videos ready · Category: {data.comparison.inferred_category}</p>
           </div>
-          {data.rankings.length >= 2 ? <div className="flex gap-3"><a href={comparisonExportUrl(params.comparisonId, "csv")}><Button variant="secondary"><Download className="h-4 w-4" /> CSV</Button></a><a href={comparisonExportUrl(params.comparisonId, "json")}><Button variant="secondary"><FileJson className="h-4 w-4" /> JSON</Button></a></div> : null}
+          {data.rankings.length >= 2 ? <div className="flex gap-3"><a href={comparisonExportUrl(params.comparisonId, "csv")} onClick={() => capture("report_exported", { target_type: "comparison", comparison_id: params.comparisonId, export_format: "csv" })}><Button variant="secondary"><Download className="h-4 w-4" /> CSV</Button></a><a href={comparisonExportUrl(params.comparisonId, "json")} onClick={() => capture("report_exported", { target_type: "comparison", comparison_id: params.comparisonId, export_format: "json" })}><Button variant="secondary"><FileJson className="h-4 w-4" /> JSON</Button></a></div> : null}
         </header>
 
         {data.caveats.length ? <div className="mt-7 flex gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4 text-sm leading-6 text-warning"><AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />These videos are from different categories. Use this result to choose the stronger video in this upload set, not to decide which category is best overall.</div> : null}

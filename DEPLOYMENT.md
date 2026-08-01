@@ -168,6 +168,10 @@ Environment variables:
 
 ```bash
 NEXT_PUBLIC_API_BASE=https://your-api-host
+NEXT_PUBLIC_POSTHOG_ENABLED=true
+NEXT_PUBLIC_POSTHOG_TOKEN=phc_your_project_token
+NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+NEXT_PUBLIC_APP_ENV=production
 NETLIFY_NEXT_SKEW_PROTECTION=true
 NODE_VERSION=22
 ```

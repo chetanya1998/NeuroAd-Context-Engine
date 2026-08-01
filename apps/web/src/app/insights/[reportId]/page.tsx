@@ -17,14 +17,21 @@ import {
   WandSparkles
 } from "lucide-react";
 import { useParams } from "next/navigation";
+import { useEffect } from "react";
 import { AppShell } from "@/components/shell";
 import { Badge, Card } from "@/components/ui";
+import { capture } from "@/lib/analytics";
 import { getInsightReport, insightExportUrl } from "@/lib/api";
 import type { InsightReport } from "@/lib/types";
 
 export default function InsightReportPage() {
   const params = useParams<{ reportId: string }>();
   const query = useQuery({ queryKey: ["insight-report", params.reportId], queryFn: () => getInsightReport(params.reportId) });
+  const reportType = query.data?.report_type;
+  useEffect(() => {
+    if (!reportType) return;
+    capture("insight_report_viewed", { report_id: params.reportId, target_type: reportType });
+  }, [params.reportId, reportType]);
 
   if (query.isLoading) return <AppShell><main className="p-8 text-zinc-400">Building your GPT-OSS report dashboard…</main></AppShell>;
   if (!query.data) return <AppShell><main className="p-8 text-danger">{query.error instanceof Error ? query.error.message : "Report not found."}</main></AppShell>;
@@ -39,7 +46,7 @@ function InsightDashboard({ report }: { report: InsightReport }) {
 
   return (
     <AppShell>
-      <main className="mx-auto max-w-7xl px-5 py-7 sm:py-9 lg:px-10">
+      <main className="ph-no-capture mx-auto max-w-7xl px-5 py-7 sm:py-9 lg:px-10">
         <header className="relative overflow-hidden rounded-2xl border border-cyan/20 bg-gradient-to-br from-cyan/10 via-zinc-950 to-violet-500/10 p-5 sm:p-7">
           <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan/15 blur-3xl" />
           <div className="relative">
@@ -56,10 +63,10 @@ function InsightDashboard({ report }: { report: InsightReport }) {
                 <Link href={returnHref} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/15 bg-black/20 px-3.5 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white">
                   <ArrowLeft className="h-4 w-4" /> Back to analysis
                 </Link>
-                <a href={insightExportUrl(report.report_id, "pdf")} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/15 bg-black/20 px-3.5 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white">
+                <a href={insightExportUrl(report.report_id, "pdf")} onClick={() => capture("report_exported", { target_type: "insight", report_id: report.report_id, export_format: "pdf" })} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/15 bg-black/20 px-3.5 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white">
                   <Download className="h-4 w-4" /> PDF
                 </a>
-                <a href={insightExportUrl(report.report_id, "json")} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/15 bg-black/20 px-3.5 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white">
+                <a href={insightExportUrl(report.report_id, "json")} onClick={() => capture("report_exported", { target_type: "insight", report_id: report.report_id, export_format: "json" })} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/15 bg-black/20 px-3.5 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white">
                   <FileJson className="h-4 w-4" /> JSON
                 </a>
               </div>
