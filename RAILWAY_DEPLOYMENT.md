@@ -117,6 +117,11 @@ NEUROAD_INSIGHT_WORKERS=1
 NEUROAD_INSIGHT_JOB_MAX_ATTEMPTS=3
 NEUROAD_ENABLE_OCR=1
 NEUROAD_YOLO_CONFIDENCE=0.25
+POSTHOG_ENABLED=true
+POSTHOG_PROJECT_TOKEN=phc_your_project_token
+POSTHOG_HOST=https://us.i.posthog.com
+POSTHOG_DEBUG=false
+NEUROAD_ENVIRONMENT=production
 ```
 
 Railway MVP should keep `NEUROAD_ENABLE_AUDIO_CLEANUP=0` unless you move to a larger worker. The production image includes YOLO11n and Tesseract; it falls back to MobileNet/OpenCV visual context when YOLO is unavailable.
@@ -160,6 +165,10 @@ Set Netlify variables:
 
 ```bash
 NEXT_PUBLIC_API_BASE=https://your-railway-domain.up.railway.app
+NEXT_PUBLIC_POSTHOG_ENABLED=true
+NEXT_PUBLIC_POSTHOG_TOKEN=phc_your_project_token
+NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+NEXT_PUBLIC_APP_ENV=production
 NODE_VERSION=22
 NETLIFY_NEXT_SKEW_PROTECTION=true
 ```

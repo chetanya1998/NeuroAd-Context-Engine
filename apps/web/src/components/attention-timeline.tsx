@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, BadgeDollarSign, Circle } from "lucide-react";
+import { capture } from "@/lib/analytics";
 import { formatRange } from "@/lib/api";
 import { useExplorerStore } from "@/lib/store";
 import type { Segment } from "@/lib/types";
@@ -21,11 +22,14 @@ export function AttentionTimeline({ segments }: { segments: Segment[] }) {
   return (
     <div className="timeline-grid overflow-x-auto rounded-lg border border-border bg-black p-4 sm:p-5">
       <div className="flex min-w-[980px] items-end gap-3">
-        {segments.map((segment) => (
+        {segments.map((segment, index) => (
           <button
             key={segment.id}
             type="button"
-            onClick={() => setSelectedSegment(segment)}
+            onClick={() => {
+              setSelectedSegment(segment);
+              capture("segment_opened", { segment_id: segment.id, segment_index: index });
+            }}
             className="group flex min-w-28 flex-1 flex-col items-stretch gap-2 text-left"
             title={`Attention Proxy Score ${segment.attention_score}`}
           >

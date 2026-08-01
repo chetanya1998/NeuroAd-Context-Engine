@@ -30,6 +30,7 @@ import { Reveal } from "@/components/Reveal";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
 import HeroContextAnimation from "@/components/animations/HeroContextAnimation";
+import { capture } from "@/lib/analytics";
 import { useInView } from "@/lib/useInView";
 import {
   createComparison,
@@ -225,6 +226,16 @@ export default function HomePage() {
   });
 
   function showActionError(err: Error) {
+    const workflow = uploadQueue.length >= 2 ? "comparison" : "single";
+    const message = err.message.toLowerCase();
+    const errorCode = message.includes("too large")
+      ? "upload_too_large"
+      : message.includes("offline") || message.includes("connection") || message.includes("cannot reach")
+        ? "network_unavailable"
+        : message.includes("taking too long")
+          ? "upload_timeout"
+          : "upload_failed";
+    capture("video_upload_failed", { workflow, video_count: uploadQueue.length, error_code: errorCode });
     setUploadProgress(null);
     setUploadNotice(null);
     if (err.message.toLowerCase().includes("sign in to confirm")) {
@@ -367,6 +378,9 @@ export default function HomePage() {
   }
 
   function startUploadSet() {
+    const workflow = uploadQueue.length >= 2 ? "comparison" : "single";
+    capture("workflow_selected", { workflow, video_count: uploadQueue.length });
+    capture("video_upload_started", { workflow, video_count: uploadQueue.length });
     if (uploadQueue.length === 1) {
       uploadMutation.mutate(uploadQueue[0]);
       return;

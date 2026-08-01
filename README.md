@@ -860,6 +860,18 @@ neuroad-api-data
 NEXT_PUBLIC_API_BASE=http://localhost:8000
 ```
 
+Optional PostHog product analytics:
+
+```bash
+NEXT_PUBLIC_POSTHOG_ENABLED=true
+NEXT_PUBLIC_POSTHOG_TOKEN=phc_your_project_token
+NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+NEXT_PUBLIC_APP_ENV=production
+```
+
+Session replay is disabled in code for the first rollout. Autocapture is disabled;
+the application records explicit product events and automatic page views only.
+
 If omitted, the frontend defaults to:
 
 ```text
@@ -906,7 +918,18 @@ MOBILENET_SSD_CONFIG=./models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 YTDLP_COOKIES_FILE=/absolute/path/to/cookies.txt
 YTDLP_COOKIES_BROWSER=chrome
+POSTHOG_ENABLED=true
+POSTHOG_PROJECT_TOKEN=phc_your_project_token
+POSTHOG_HOST=https://us.i.posthog.com
+POSTHOG_DEBUG=false
+NEUROAD_ENVIRONMENT=production
 ```
+
+Use the same PostHog project token and host on Netlify and Railway. The browser
+sends its PostHog distinct ID and session ID to FastAPI, and background job
+records retain those identifiers so completion and failure events remain part
+of the initiating user journey. Analytics remains optional and never changes an
+API response or job outcome.
 
 ### Optional RunPod Detailed Insight Reports
 

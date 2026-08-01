@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CircleHelp, Download, Eye, FileJson, FileText, Search, ShieldCheck, TrendingDown, TrendingUp, Zap } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -26,6 +26,7 @@ import { SegmentDrawer } from "@/components/segment-drawer";
 import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
+import { capture } from "@/lib/analytics";
 import { absoluteMediaUrl, exportUrl, formatRange, getAnalysis } from "@/lib/api";
 import type { AnalysisPayload, RecommendationTier, Segment } from "@/lib/types";
 
@@ -78,6 +79,13 @@ export default function DashboardPage() {
   });
 
   const analysis = analysisQuery.data;
+  const analyzedVideoId = analysis?.video.id;
+  const analyzedSourceType = analysis?.video.source_type;
+  useEffect(() => {
+    if (!analyzedVideoId || !analyzedSourceType) return;
+    capture("dashboard_viewed", { video_id: analyzedVideoId, source_type: analyzedSourceType });
+  }, [analyzedSourceType, analyzedVideoId]);
+
   const filteredSegments = useMemo(() => {
     if (!analysis) return [];
     const needle = query.toLowerCase();
@@ -125,12 +133,18 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <a href={exportUrl(videoId, "csv")}>
+            <a
+              href={exportUrl(videoId, "csv")}
+              onClick={() => capture("report_exported", { target_type: "video", video_id: videoId, export_format: "csv" })}
+            >
               <Button variant="secondary">
                 <Download className="h-4 w-4" /> CSV
               </Button>
             </a>
-            <a href={exportUrl(videoId, "json")}>
+            <a
+              href={exportUrl(videoId, "json")}
+              onClick={() => capture("report_exported", { target_type: "video", video_id: videoId, export_format: "json" })}
+            >
               <Button variant="secondary">
                 <FileJson className="h-4 w-4" /> JSON
               </Button>
@@ -222,7 +236,12 @@ export default function DashboardPage() {
               <button
                 key={tab}
                 type="button"
-                onClick={() => setActiveTab(tab)}
+                onClick={() => {
+                  setActiveTab(tab);
+                  if (tab === "Evidence" || tab === "Recommendations") {
+                    capture("recommendation_evidence_opened", { video_id: videoId, tab: tab.toLowerCase() });
+                  }
+                }}
                 className={`border-b-2 px-4 py-4 text-base font-semibold ${
                   activeTab === tab ? "border-zinc-100 text-zinc-100" : "border-transparent text-slate-500"
                 }`}
@@ -412,7 +431,7 @@ function VideoPreview({ analysis }: { analysis: AnalysisPayload }) {
       <div className="border-b border-white/10 p-6">
         <GuidedLabel label="Video Preview" guide="Preview the uploaded or ingested media while reviewing the scoring evidence." />
       </div>
-      <div className="aspect-video bg-zinc-950">
+      <div className="ph-no-capture aspect-video bg-zinc-950">
         {videoUrl ? (
           <video id="video-preview-player" className="h-full w-full bg-black object-contain" src={videoUrl} poster={thumbnailUrl ?? undefined} controls preload="metadata" />
         ) : analysis.video.embed_url ? (

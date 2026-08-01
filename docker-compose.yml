@@ -53,6 +53,10 @@ services:
       RUNPOD_MAX_RETRIES: ${RUNPOD_MAX_RETRIES:-2}
       NEUROAD_ENABLE_RUNPOD_INSIGHTS: ${NEUROAD_ENABLE_RUNPOD_INSIGHTS:-0}
       NEUROAD_REQUIRE_RUNPOD_INSIGHTS: ${NEUROAD_REQUIRE_RUNPOD_INSIGHTS:-0}
+      POSTHOG_ENABLED: ${POSTHOG_ENABLED:-false}
+      POSTHOG_PROJECT_TOKEN: ${POSTHOG_PROJECT_TOKEN:-}
+      POSTHOG_HOST: ${POSTHOG_HOST:-https://us.i.posthog.com}
+      NEUROAD_ENVIRONMENT: ${NEUROAD_ENVIRONMENT:-development}
     volumes:
       - neuroad-api-data:/data
     healthcheck:
@@ -68,6 +72,10 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_BASE: http://localhost:8000
+        NEXT_PUBLIC_POSTHOG_ENABLED: ${NEXT_PUBLIC_POSTHOG_ENABLED:-false}
+        NEXT_PUBLIC_POSTHOG_TOKEN: ${NEXT_PUBLIC_POSTHOG_TOKEN:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://us.i.posthog.com}
+        NEXT_PUBLIC_APP_ENV: ${NEXT_PUBLIC_APP_ENV:-development}
     image: neuroad-web:local
     ports:
       - "3000:3000"
