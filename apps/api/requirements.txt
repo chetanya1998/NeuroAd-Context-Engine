@@ -14,3 +14,4 @@ posthog>=7,<8
 pytubefix
 pytesseract==0.3.13
 reportlab==4.2.5
+argon2-cffi==23.1.0

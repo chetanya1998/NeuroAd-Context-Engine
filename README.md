@@ -101,6 +101,52 @@ This repository contains a working local MVP:
 
 Sample/mock analysis is disabled in the current build. Completed dashboards should come from real uploaded media, permitted YouTube ingestion, or direct video file URLs.
 
+## Internal ML Dashboard
+
+The repository also includes a separate, internal-only control plane for
+operating and improving NeuroAd. It is intentionally **not linked from the
+landing page or any customer-facing workflow**.
+
+The dashboard lives in `apps/admin` and should be deployed to a private
+subdomain such as `https://admin.neuroad.example`. It provides one continuous
+workspace for:
+
+- Video evaluation success/failure, queue, dependency, and API-health metrics
+- Product usage and A/B-comparison analytics using privacy-filtered visitor or
+  session identifiers until customer accounts exist
+- Consent-aware dataset inventory, labeling tasks, reviewer controls, and
+  versioned taxonomies
+- Immutable scoring configurations, weight/threshold controls, evaluations,
+  and independent approval gates
+- GitHub release records, live build SHA, deployment metadata, audit history,
+  and rollback requests
+
+### Internal access and local development
+
+Create the first administrator through deployment secrets; no public sign-up
+is available:
+
+```bash
+NEUROAD_ADMIN_BOOTSTRAP_EMAIL=admin@company.example \
+NEUROAD_ADMIN_BOOTSTRAP_PASSWORD=replace-with-a-long-unique-password \
+ADMIN_CORS_ORIGINS=http://localhost:3001 \
+npm run dev:api
+```
+
+In a second terminal:
+
+```bash
+NEXT_PUBLIC_ADMIN_API_BASE=http://localhost:8000 npm run dev:admin
+```
+
+Open `http://localhost:3001` directly. The dashboard uses Argon2id password
+hashing, secure session cookies, role checks, audit events, and admin-created
+invitations. See [the internal dashboard deployment guide](docs/internal-ml-dashboard.md)
+for required production variables and GitHub release integration.
+
+Customer media remains excluded from training and labeling unless an upload is
+explicitly recorded as opted in through the internal-training consent field.
+
 ### V1.0 Release Scope
 
 The multi-video comparison, A/B analysis, explainable strongest ad-slot score, faster-whisper evidence improvements, review-first product-fit engine, pre-post keyword suggestions, and optional GPT-OSS Detailed Insight Reports are included in the current release line. Treat beta metrics and model-generated guidance as evidence to review, not a guarantee of campaign performance, viewer conversion, or legal suitability.
@@ -112,6 +158,7 @@ The multi-video comparison, A/B analysis, explainable strongest ad-slot score, f
 ├── apps
 │   ├── api
 │   │   ├── main.py
+│   │   ├── admin_platform.py
 │   │   ├── requirements.txt
 │   │   ├── tests
 │   │   │   └── test_scoring.py
@@ -128,6 +175,11 @@ The multi-video comparison, A/B analysis, explainable strongest ad-slot score, f
 │       │   └── lib
 │       ├── package.json
 │       └── tailwind.config.ts
+│   └── admin
+│       ├── src/app/page.tsx
+│       └── package.json
+├── config/scoring
+│   └── active.json
 ├── DEPLOYMENT.md
 ├── package.json
 ├── package-lock.json

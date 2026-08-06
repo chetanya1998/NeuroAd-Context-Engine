@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import socket
 import subprocess
+import time
 import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +27,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request as FastAPIRequest, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request as FastAPIRequest, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -43,6 +44,7 @@ from insight_report import (
     write_report_pdf,
 )
 from runpod_client import RunPodClient, RunPodError, RunPodSettings
+from admin_platform import AdminServices, create_admin_router, init_admin_platform, record_admin_metric_event
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -89,6 +91,24 @@ def cors_origins_from_env() -> list[str]:
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+
+
+def admin_cors_origins_from_env() -> set[str]:
+    value = os.getenv("ADMIN_CORS_ORIGINS")
+    if value:
+        return {origin.strip() for origin in value.split(",") if origin.strip()}
+    return {"http://localhost:3001"}
+
+
+def build_metadata() -> dict[str, str]:
+    """Build metadata is injected by CI and displayed only in the internal app."""
+    return {
+        "git_sha": os.getenv("NEUROAD_GIT_SHA", "development"),
+        "git_branch": os.getenv("NEUROAD_GIT_BRANCH", "local"),
+        "build_time": os.getenv("NEUROAD_BUILD_TIME", "local"),
+        "release_id": os.getenv("NEUROAD_RELEASE_ID", "local"),
+        "scoring_manifest_version": os.getenv("NEUROAD_SCORING_MANIFEST_VERSION", "attention-proxy-v1"),
+    }
 
 
 STORAGE_DIR = path_from_env("NEUROAD_STORAGE_DIR", APP_DIR / "storage")
@@ -520,6 +540,7 @@ def runpod_insights_enabled(settings: RunPodSettings | None = None) -> bool:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    init_admin_platform(ADMIN_SERVICES)
     recover_insight_jobs()
     try:
         yield
@@ -531,12 +552,52 @@ ensure_storage_dirs()
 app = FastAPI(title="NeuroAd Context Engine API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins_from_env(),
+    allow_origins=sorted(set(cors_origins_from_env()).union(admin_cors_origins_from_env())),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.mount("/media", StaticFiles(directory=str(STORAGE_DIR)), name="media")
+
+
+@app.middleware("http")
+async def internal_admin_boundary_and_metrics(request: FastAPIRequest, call_next: Any) -> Response:
+    """Keep the private control plane origin-bound and capture privacy-safe metrics."""
+    path = request.url.path
+    origin = request.headers.get("origin")
+    if path.startswith("/internal/admin/") and origin and origin not in admin_cors_origins_from_env():
+        return Response(status_code=403, content="Internal dashboard origin is not allowed.")
+    started = time.perf_counter()
+    response = await call_next(request)
+    if not path.startswith("/media/") and not path.startswith("/internal/admin/"):
+        elapsed = int((time.perf_counter() - started) * 1000)
+        route = re.sub(r"/(video|job|comparison|report|product|fit|batch)_[A-Za-z0-9]+", r"/{\1_id}", path)
+        distinct_id = request.headers.get("x-posthog-distinct-id")
+        event_name = {
+            "/api/videos/upload": "video_upload",
+            "/api/videos/url": "video_url_created",
+            "/api/videos/youtube/ingest": "youtube_ingest",
+        }.get(path, "api_request")
+        record_admin_metric_event(
+            ADMIN_SERVICES,
+            scope="api",
+            event_name=event_name,
+            route=route[:180],
+            status_code=response.status_code,
+            duration_ms=elapsed,
+            actor_id=distinct_id,
+        )
+        if event_name != "api_request":
+            record_admin_metric_event(
+                ADMIN_SERVICES,
+                scope="product",
+                event_name=event_name,
+                route=route[:180],
+                status_code=response.status_code,
+                duration_ms=elapsed,
+                actor_id=distinct_id,
+            )
+    return response
 
 
 class YouTubeRequest(BaseModel):
@@ -1925,7 +1986,7 @@ def health() -> dict[str, Any]:
     }
 
 
-async def store_uploaded_video(file: UploadFile) -> dict[str, Any]:
+async def store_uploaded_video(file: UploadFile, allow_internal_training: bool = False) -> dict[str, Any]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported video format. Use MP4, MOV, WebM, or M4V.")
@@ -1956,7 +2017,18 @@ async def store_uploaded_video(file: UploadFile) -> dict[str, Any]:
         """,
         (video_id, title, duration, str(target), utc_now()),
     )
-    return {"video_id": video_id, "status": "uploaded", "duration_seconds": duration}
+    execute(
+        """insert or replace into data_asset_consents
+           (video_id, consent_status, policy_version, recorded_at, withdrawn_at)
+           values (?, ?, ?, ?, null)""",
+        (
+            video_id,
+            "opted_in" if allow_internal_training else "not_opted_in",
+            os.getenv("NEUROAD_TRAINING_CONSENT_POLICY_VERSION", "2026-08-01"),
+            utc_now(),
+        ),
+    )
+    return {"video_id": video_id, "status": "uploaded", "duration_seconds": duration, "internal_training_opt_in": allow_internal_training}
 
 
 def get_comparison_or_404(comparison_id: str) -> sqlite3.Row:
@@ -2020,7 +2092,12 @@ def create_comparison(request: FastAPIRequest, payload: Optional[ComparisonCreat
 
 
 @app.post("/api/comparisons/{comparison_id}/videos/upload")
-async def upload_comparison_videos(request: FastAPIRequest, comparison_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def upload_comparison_videos(
+    request: FastAPIRequest,
+    comparison_id: str,
+    files: list[UploadFile] = File(...),
+    allow_internal_training: bool = Form(default=False),
+) -> dict[str, Any]:
     get_comparison_or_404(comparison_id)
     if not files:
         raise HTTPException(status_code=400, detail="Upload at least one video.")
@@ -2029,7 +2106,7 @@ async def upload_comparison_videos(request: FastAPIRequest, comparison_id: str, 
         raise HTTPException(status_code=400, detail=f"A comparison supports up to {COMPARISON_MAX_VIDEOS} videos.")
     uploaded = []
     for file in files:
-        result = await store_uploaded_video(file)
+        result = await store_uploaded_video(file, allow_internal_training=allow_internal_training)
         add_video_to_comparison(comparison_id, result["video_id"])
         uploaded.append(result)
         capture_event(
@@ -2048,8 +2125,12 @@ async def upload_comparison_videos(request: FastAPIRequest, comparison_id: str, 
 
 
 @app.post("/api/videos/upload")
-async def upload_video(request: FastAPIRequest, file: UploadFile = File(...)) -> dict[str, Any]:
-    result = await store_uploaded_video(file)
+async def upload_video(
+    request: FastAPIRequest,
+    file: UploadFile = File(...),
+    allow_internal_training: bool = Form(default=False),
+) -> dict[str, Any]:
+    result = await store_uploaded_video(file, allow_internal_training=allow_internal_training)
     capture_event(
         "video_upload_completed",
         analytics_context_from_request(request),
@@ -4731,6 +4812,23 @@ def evaluate_recommendation(
     }
 
 
+def active_scoring_settings() -> dict[str, Any]:
+    """Read the immutable configuration currently marked active by release governance.
+
+    The fallback preserves the existing production formula during local imports,
+    tests, and before the control-plane migrations have run.
+    """
+    try:
+        row = query_one("select config_json from ml_scoring_config_versions where status = 'active' order by version desc limit 1")
+        if row and row["config_json"]:
+            payload = json.loads(row["config_json"])
+            if isinstance(payload, dict):
+                return payload
+    except (sqlite3.OperationalError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return {}
+
+
 def score_attention(
     visual_novelty: float,
     object_clarity: float,
@@ -4745,18 +4843,25 @@ def score_attention(
     repetition_penalty: float = 0.0,
     blur_penalty: float = 0.0,
 ) -> int:
+    settings = active_scoring_settings()
+    weights = settings.get("weights", {})
+    penalties = settings.get("penalties", {})
     value = (
-        visual_novelty * 0.16
-        + motion * 0.12
-        + object_clarity * 0.12
-        + visual_quality * 0.10
-        + scene_change * 0.10
-        + speech_density * 0.12
-        + hook_cta_signal * 0.10
-        + audio_energy * 0.08
-        + topic_clarity * 0.10
+        visual_novelty * float(weights.get("visual_novelty", 0.16))
+        + motion * float(weights.get("motion", 0.12))
+        + object_clarity * float(weights.get("object_clarity", 0.12))
+        + visual_quality * float(weights.get("visual_quality", 0.10))
+        + scene_change * float(weights.get("scene_change", 0.10))
+        + speech_density * float(weights.get("speech_density", 0.12))
+        + hook_cta_signal * float(weights.get("hook_cta_signal", 0.10))
+        + audio_energy * float(weights.get("audio_energy", 0.08))
+        + topic_clarity * float(weights.get("topic_clarity", 0.10))
     )
-    penalty = silence_penalty * 0.12 + repetition_penalty * 0.08 + blur_penalty * 0.08
+    penalty = (
+        silence_penalty * float(penalties.get("silence", 0.12))
+        + repetition_penalty * float(penalties.get("repetition", 0.08))
+        + blur_penalty * float(penalties.get("blur", 0.08))
+    )
     return int(round(clamp(value - penalty) * 100))
 
 
@@ -4837,13 +4942,14 @@ def score_ad_matches(
 
 
 def attention_label(score: int) -> str:
-    if score >= 80:
+    thresholds = active_scoring_settings().get("thresholds", {})
+    if score >= int(thresholds.get("high_attention", 80)):
         return "High attention"
-    if score >= 60:
+    if score >= int(thresholds.get("good_attention", 60)):
         return "Good attention"
-    if score >= 40:
+    if score >= int(thresholds.get("neutral", 40)):
         return "Neutral"
-    if score >= 20:
+    if score >= int(thresholds.get("drop_risk", 20)):
         return "Drop risk"
     return "Weak moment"
 
@@ -5996,3 +6102,13 @@ def format_time(seconds: float) -> str:
 
 def format_range(start: float, end: float) -> str:
     return f"{format_time(start)}-{format_time(end)}"
+ADMIN_SERVICES = AdminServices(
+    execute=execute,
+    query_one=query_one,
+    query_all=query_all,
+    new_id=new_id,
+    utc_now=utc_now,
+    runtime_dependencies=runtime_dependency_status,
+    build_metadata=build_metadata,
+)
+app.include_router(create_admin_router(ADMIN_SERVICES))

@@ -29,6 +29,7 @@ services:
       MOBILENET_SSD_GRAPH: /opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
       MOBILENET_SSD_CONFIG: /opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      ADMIN_CORS_ORIGINS: http://localhost:3001
       WHISPER_MODEL: small.en
       WHISPER_DEVICE: cpu
       WHISPER_COMPUTE_TYPE: int8

@@ -1,5 +1,11 @@
 FROM python:3.11-slim
 
+ARG NEUROAD_GIT_SHA=development
+ARG NEUROAD_GIT_BRANCH=main
+ARG NEUROAD_BUILD_TIME=unknown
+ARG NEUROAD_RELEASE_ID=unreleased
+ARG NEUROAD_SCORING_MANIFEST_VERSION=attention-proxy-v1
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -25,7 +31,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WHISPER_WORD_TIMESTAMPS=1 \
     WHISPER_VAD_FILTER=1 \
     YOLO_MODEL=/opt/neuroad/models/yolo11n.pt \
-    NEUROAD_ENABLE_OCR=1
+    NEUROAD_ENABLE_OCR=1 \
+    NEUROAD_GIT_SHA=$NEUROAD_GIT_SHA \
+    NEUROAD_GIT_BRANCH=$NEUROAD_GIT_BRANCH \
+    NEUROAD_BUILD_TIME=$NEUROAD_BUILD_TIME \
+    NEUROAD_RELEASE_ID=$NEUROAD_RELEASE_ID \
+    NEUROAD_SCORING_MANIFEST_VERSION=$NEUROAD_SCORING_MANIFEST_VERSION
 
 WORKDIR /app
 
@@ -76,7 +87,7 @@ RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         && find /root/.cache -name yolo11n.pt -exec cp {} /opt/neuroad/models/yolo11n.pt \;; \
     fi
 
-COPY main.py runpod_client.py insight_report.py analytics.py .
+COPY main.py runpod_client.py insight_report.py analytics.py admin_platform.py .
 
 EXPOSE 8000
 

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "config": {
+    "schema_version": 1,
+    "weights": {
+      "visual_novelty": 0.16,
+      "motion": 0.12,
+      "object_clarity": 0.12,
+      "visual_quality": 0.1,
+      "scene_change": 0.1,
+      "speech_density": 0.12,
+      "hook_cta_signal": 0.1,
+      "audio_energy": 0.08,
+      "topic_clarity": 0.1
+    },
+    "penalties": {
+      "silence": 0.12,
+      "repetition": 0.08,
+      "blur": 0.08
+    },
+    "thresholds": {
+      "high_attention": 80,
+      "good_attention": 60,
+      "neutral": 40,
+      "drop_risk": 20
+    },
+    "safe_rules": []
+  }
+}
