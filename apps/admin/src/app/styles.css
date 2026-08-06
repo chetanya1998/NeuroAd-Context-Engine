@@ -40,6 +40,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 .login-card label { display: grid; gap: 8px; margin-top: 19px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .login-card input, .weight input[type=number] { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #0a0e15; color: var(--text); padding: 12px; transition: border-color .18s, background .18s; }
 .login-card input:hover, .login-card input:focus { border-color: var(--line-strong); background: #0d121b; }
+.password-input { position: relative; }
+.password-input input { padding-right: 46px; }
+.login-card .password-toggle { position: absolute; top: 50%; right: 5px; display: grid; width: 36px; height: 36px; place-items: center; margin: 0; padding: 0; transform: translateY(-50%); border: 0; border-radius: 8px; background: transparent; box-shadow: none; color: var(--muted); }
+.login-card .password-toggle:hover { transform: translateY(-50%); background: #ffffff0b; color: var(--text); filter: none; }
 .login-card button, .studio > button { margin-top: 26px; border: 0; border-radius: 10px; padding: 12px 16px; width: 100%; background: linear-gradient(135deg, #8ec2ff, #78a8f3); color: #071321; box-shadow: 0 10px 22px #4b8df02e; font-size: 13px; font-weight: 800; transition: transform .18s, filter .18s; }
 .login-card button:hover:not(:disabled), .studio > button:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
 

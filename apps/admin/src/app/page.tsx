@@ -2,10 +2,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LogOut } from "lucide-react";
+import { Eye, EyeOff, LogOut } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_ADMIN_API_BASE ?? "http://localhost:8000";
 type Json = Record<string, any>;
+
+class AdminRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}/internal/admin/v1${path}`, {
@@ -15,7 +21,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.detail ?? "Internal dashboard request failed.");
+    throw new AdminRequestError(payload.detail ?? "Internal dashboard request failed.", response.status);
   }
   return response.json();
 }
@@ -39,6 +45,7 @@ export default function AdminPage() {
   const [user, setUser] = useState<Json | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Record<string, Json>>({});
@@ -57,14 +64,24 @@ export default function AdminPage() {
   async function signIn(event: React.FormEvent) {
     event.preventDefault(); setLoading(true); setError("");
     try { const result = await request<Json>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); setUser(result.user); await load(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to sign in."); }
+    catch (reason) {
+      if (reason instanceof AdminRequestError && reason.status === 401) {
+        setError("Incorrect email or password. Please try again.");
+      } else if (reason instanceof AdminRequestError && reason.status === 403) {
+        setError("This dashboard URL is not allowed by the API. Check ADMIN_CORS_ORIGINS in Railway.");
+      } else if (reason instanceof AdminRequestError && reason.status === 404) {
+        setError("Admin API not found. Deploy the Railway API service from the main branch and set NEXT_PUBLIC_ADMIN_API_BASE to its URL.");
+      } else {
+        setError("Unable to reach the internal dashboard API. Check its Railway URL and deployment health.");
+      }
+    }
     finally { setLoading(false); }
   }
 
   async function signOut() { await request("/auth/logout", { method: "POST" }); setUser(null); setData({}); }
   async function refresh() { setLoading(true); try { await load(); setNotice("Dashboard refreshed."); } catch (reason) { setError(reason instanceof Error ? reason.message : "Refresh failed."); } finally { setLoading(false); } }
 
-  if (!user) return <main className="login-shell"><div className="login-mark">N</div><form className="login-card" onSubmit={signIn}><p className="eyebrow">PRIVATE CONTROL PLANE</p><h1>NeuroAd Internal ML</h1><p>Authorized staff only. This workspace is not linked from the customer product.</p><label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required /></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required /></label>{error ? <p className="error">{error}</p> : null}<button disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button></form></main>;
+  if (!user) return <main className="login-shell"><div className="login-mark">N</div><form className="login-card" onSubmit={signIn}><p className="eyebrow">PRIVATE CONTROL PLANE</p><h1>NeuroAd Internal ML</h1><p>Authorized staff only. This workspace is not linked from the customer product.</p><label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required /></label><label>Password<div className="password-input"><input value={password} onChange={(event) => setPassword(event.target.value)} type={passwordVisible ? "text" : "password"} autoComplete="current-password" required /><button className="password-toggle" type="button" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? "Hide password" : "Show password"} aria-pressed={passwordVisible}>{passwordVisible ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}</button></div></label>{error ? <p className="error" role="alert" aria-live="assertive">{error}</p> : null}<button disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button></form></main>;
 
   return <main className="app-shell"><section className="content"><header className="topbar"><div className="topbar-brand"><span className="brand-mark">N</span><div><p className="eyebrow">PRIVATE CONTROL PLANE</p><h1>NeuroAd Internal ML</h1></div></div><div className="topbar-actions"><span className="identity-chip"><i />{user.email}</span><button className="quiet" onClick={refresh} disabled={loading}>Refresh</button><button className="sign-out" onClick={signOut}><LogOut size={14} /> Sign out</button></div></header>{error ? <p className="error floating">{error}</p> : null}{notice ? <p className="notice">{notice}</p> : null}<DashboardContent data={data} user={user} reload={load} setNotice={setNotice} setError={setError} /></section></main>;
 }
