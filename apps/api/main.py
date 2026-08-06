@@ -19,7 +19,7 @@ import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -43,6 +43,7 @@ from insight_report import (
     write_report_pdf,
 )
 from runpod_client import RunPodClient, RunPodError, RunPodSettings
+from developer_platform import DeveloperServices, create_developer_router, init_developer_platform
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -520,11 +521,20 @@ def runpod_insights_enabled(settings: RunPodSettings | None = None) -> bool:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    init_developer_platform(DEVELOPER_SERVICES)
+    purge_expired_project_media()
     recover_insight_jobs()
-    try:
-        yield
-    finally:
-        shutdown_analytics()
+    if MCP_RUNTIME:
+        async with MCP_RUNTIME.mcp.session_manager.run():
+            try:
+                yield
+            finally:
+                shutdown_analytics()
+    else:
+        try:
+            yield
+        finally:
+            shutdown_analytics()
 
 
 ensure_storage_dirs()
@@ -609,6 +619,59 @@ def utc_now() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def start_video_retention(video_id: str) -> None:
+    """Start project media retention only after analysis reaches a terminal state."""
+    video = query_one("select retention_seconds, retention_expires_at from videos where id = ?", (video_id,))
+    if not video or video["retention_expires_at"] or not video["retention_seconds"]:
+        return
+    expires_at = (datetime.utcnow() + timedelta(seconds=int(video["retention_seconds"]))).isoformat(timespec="seconds")
+    execute("update videos set retention_expires_at = ? where id = ?", (expires_at, video_id))
+
+
+def purge_expired_project_media() -> int:
+    """Delete expired project media while retaining analysis records and audit metadata."""
+    try:
+        expired = query_all(
+            """select id, file_path from videos where project_id is not null and media_deleted_at is null
+               and retention_expires_at is not null and retention_expires_at <= ?""",
+            (utc_now(),),
+        )
+    except sqlite3.OperationalError:
+        # Health may be imported directly by tests or tooling before startup migrations run.
+        return 0
+    deleted = 0
+    storage_root = STORAGE_DIR.resolve()
+    for video in expired:
+        candidates = [
+            Path(video["file_path"]) if video["file_path"] else None,
+            FRAME_DIR / video["id"],
+            AUDIO_DIR / f"{video['id']}.wav",
+            AUDIO_DIR / f"{video['id']}_uvr",
+            AUDIO_DIR / f"{video['id']}_uvr.wav",
+            AUDIO_DIR / f"{video['id']}_vad.wav",
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(storage_root)
+                if resolved == storage_root:
+                    continue
+                if resolved.is_dir():
+                    shutil.rmtree(resolved)
+                elif resolved.exists():
+                    resolved.unlink()
+            except (OSError, ValueError):
+                INSIGHT_LOGGER.warning("Could not purge expired media path for %s", video["id"], exc_info=True)
+        execute(
+            "update videos set file_path = null, thumbnail_url = null, media_deleted_at = ? where id = ?",
+            (utc_now(), video["id"]),
+        )
+        deleted += 1
+    return deleted
 
 
 def media_url(path: Path | None) -> str | None:
@@ -1047,6 +1110,20 @@ def init_db() -> None:
                 "suggested_duration": "text",
             },
         )
+        ensure_table_columns(
+            conn,
+            "videos",
+            {
+                "project_id": "text",
+                "retention_seconds": "integer",
+                "retention_expires_at": "text",
+                "media_deleted_at": "text",
+                "parent_video_id": "text",
+                "root_video_id": "text",
+                "revision_number": "integer default 0",
+            },
+        )
+        ensure_table_columns(conn, "comparisons", {"project_id": "text"})
         conn.commit()
 
 
@@ -1903,6 +1980,7 @@ def update_product_profile(product: sqlite3.Row, updates: ProductUpdateRequest) 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    purged_media = purge_expired_project_media()
     dependencies = runtime_dependency_status()
     storage_ready = STORAGE_DIR.exists() and os.access(STORAGE_DIR, os.W_OK)
     db_ready = DB_PATH.parent.exists() and os.access(DB_PATH.parent, os.W_OK)
@@ -1915,6 +1993,9 @@ def health() -> dict[str, Any]:
         "database_ready": db_ready,
         "storage_dir": str(STORAGE_DIR),
         "database_path": str(DB_PATH),
+        "developer_api": {"version": "v1", "batch_limit": 10},
+        "mcp": {"enabled": MCP_RUNTIME is not None, "transport": "streamable-http", "path": "/mcp"},
+        "purged_expired_media": purged_media,
         "limits": {
             "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
             "max_source_seconds": MAX_SOURCE_SECONDS,
@@ -1966,7 +2047,7 @@ def get_comparison_or_404(comparison_id: str) -> sqlite3.Row:
     return comparison
 
 
-def add_video_to_comparison(comparison_id: str, video_id: str) -> None:
+def add_video_to_comparison(comparison_id: str, video_id: str, max_videos: int | None = None) -> None:
     comparison = get_comparison_or_404(comparison_id)
     existing = query_one(
         "select id from comparison_videos where comparison_id = ? and video_id = ?",
@@ -1975,8 +2056,9 @@ def add_video_to_comparison(comparison_id: str, video_id: str) -> None:
     if existing:
         return
     count = int(query_one("select count(*) as count from comparison_videos where comparison_id = ?", (comparison_id,))["count"])
-    if count >= COMPARISON_MAX_VIDEOS:
-        raise HTTPException(status_code=400, detail=f"A comparison supports up to {COMPARISON_MAX_VIDEOS} videos.")
+    limit = max_videos or COMPARISON_MAX_VIDEOS
+    if count >= limit:
+        raise HTTPException(status_code=400, detail=f"A comparison supports up to {limit} videos.")
     execute(
         """
         insert into comparison_videos (id, comparison_id, video_id, display_order, processing_status, created_at)
@@ -3127,6 +3209,7 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             "update videos set status = 'completed', duration_seconds = ?, thumbnail_url = ? where id = ?",
             (int(duration), enriched_segments[0].get("thumbnail_url") if enriched_segments else None, video_id),
         )
+        start_video_retention(video_id)
         update_job(job_id, "completed", 100, "report")
         capture_event(
             "analysis_completed",
@@ -3145,6 +3228,7 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         )
     except Exception as exc:
         execute("update videos set status = 'failed' where id = ?", (video_id,))
+        start_video_retention(video_id)
         update_job(job_id, "failed", 100, "failed", public_job_error(exc))
         capture_event(
             "analysis_failed",
@@ -5996,3 +6080,36 @@ def format_time(seconds: float) -> str:
 
 def format_range(start: float, end: float) -> str:
     return f"{format_time(start)}-{format_time(end)}"
+
+
+DEVELOPER_SERVICES = DeveloperServices(
+    execute=execute,
+    query_one=query_one,
+    query_all=query_all,
+    new_id=new_id,
+    utc_now=utc_now,
+    store_uploaded_video=store_uploaded_video,
+    create_video_analysis_job=create_video_analysis_job,
+    add_video_to_comparison=lambda comparison_id, video_id: add_video_to_comparison(
+        comparison_id, video_id, max_videos=10
+    ),
+    process_comparison_job=process_comparison_job,
+    submit_comparison=lambda callback, comparison_id, members: EXECUTOR.submit(callback, comparison_id, members),
+    build_analysis_payload=build_analysis_payload,
+    build_comparison_payload=build_comparison_payload,
+    storage_dir=STORAGE_DIR,
+)
+app.include_router(create_developer_router(DEVELOPER_SERVICES))
+
+MCP_RUNTIME = None
+try:
+    from mcp_runtime import create_mcp_runtime
+
+    MCP_RUNTIME = create_mcp_runtime(DEVELOPER_SERVICES, os.getenv("NEUROAD_PUBLIC_API_BASE", "http://localhost:8000"))
+    app.mount("/", MCP_RUNTIME.app)
+except ImportError as exc:
+    # Local Python 3.9 development can run the REST API; production Python 3.11 installs the MCP runtime.
+    INSIGHT_LOGGER.warning("MCP runtime is unavailable: %s", exc)
+    if env_enabled("NEUROAD_REQUIRE_MCP"):
+        raise
+    MCP_RUNTIME = None

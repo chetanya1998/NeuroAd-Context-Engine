@@ -16,6 +16,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper \
     NEUROAD_ENABLE_OBJECT_DETECTION=1 \
     NEUROAD_OBJECT_DETECTION_ENGINE=yolo \
+    NEUROAD_REQUIRE_MCP=1 \
     VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15 \
     MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb \
     MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt \
@@ -76,7 +77,7 @@ RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         && find /root/.cache -name yolo11n.pt -exec cp {} /opt/neuroad/models/yolo11n.pt \;; \
     fi
 
-COPY main.py runpod_client.py insight_report.py analytics.py .
+COPY main.py runpod_client.py insight_report.py analytics.py developer_platform.py mcp_runtime.py .
 
 EXPOSE 8000
 

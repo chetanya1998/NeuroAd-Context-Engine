@@ -56,6 +56,12 @@ It analyzes video at the segment level using:
 
 The capabilities in this section are implemented in V1.0. They are documented here so stakeholders can understand what the product can analyse today and which decision-support features remain in beta validation.
 
+### Developer API and MCP integration (development branch)
+
+The `codex/mcp-server-developer-api` branch introduces a project-scoped Developer API for bulk upload analysis, comparisons, editor-ready improvement plans, and re-analysis of edited revisions. It also exposes NeuroAd as a remote MCP server so Claude can retrieve evidence-linked verdicts and coordinate a human-approved improvement loop with separately connected video tools.
+
+The first slice uses a provider-neutral handoff rather than claiming every editor supports the same direct operations. See [the MCP and Developer API design](docs/mcp-developer-api.md) for endpoints, configuration, security boundaries, current implementation status, and the vendor-adapter roadmap.
+
 ### Analyze one video
 
 Creators, media teams, and brand teams can upload a supported video, provide a direct media URL, or ingest a YouTube video they are permitted to analyze. The product creates a timestamped report that surfaces the strongest hook, weak moments, attention and drop-risk patterns, contextual ad categories, evidence quality, and the strongest generic ad-slot candidate.
@@ -112,6 +118,8 @@ The multi-video comparison, A/B analysis, explainable strongest ad-slot score, f
 ├── apps
 │   ├── api
 │   │   ├── main.py
+│   │   ├── developer_platform.py
+│   │   ├── mcp_runtime.py
 │   │   ├── requirements.txt
 │   │   ├── tests
 │   │   │   └── test_scoring.py
