@@ -404,7 +404,17 @@ def create_admin_router(services: AdminServices) -> APIRouter:
         events = services.query_all("select substr(occurred_at, 1, 10) as day, event_name, count(*) as count, count(distinct actor_hash) as actors from admin_metric_events where scope = 'product' and occurred_at >= ? and occurred_at <= ? group by day, event_name order by day", (since, until))
         comparisons = services.query_all("select status, count(*) as count from comparisons group by status")
         funnel = {"uploaded": int(services.query_one("select count(*) as count from videos")["count"]), "analysis_requested": int(services.query_one("select count(*) as count from jobs")["count"]), "completed": int(services.query_one("select count(*) as count from videos where status = 'completed'")["count"]), "reports": int(services.query_one("select count(*) as count from reports")["count"])}
-        return {"metric_range": metric_range, "events": [dict(row) for row in events], "comparison_status": [dict(row) for row in comparisons], "funnel": funnel, "metric_label": "Unique visitors/sessions until customer accounts are introduced."}
+        def unique_action_users(event_name: str) -> int:
+            row = services.query_one("select count(distinct actor_hash) as count from admin_metric_events where scope = 'product' and event_name = ? and actor_hash is not null and occurred_at >= ? and occurred_at <= ?", (event_name, since, until))
+            return int(row["count"] if row else 0)
+        returning = services.query_one("""select count(distinct recent.actor_hash) as count from admin_metric_events recent where recent.scope = 'product' and recent.actor_hash is not null and recent.occurred_at >= ? and recent.occurred_at <= ? and exists (select 1 from admin_metric_events prior where prior.scope = 'product' and prior.actor_hash = recent.actor_hash and prior.occurred_at < ?)""", (since, until, since))
+        user_activity = {
+            "returning_visitors": int(returning["count"] if returning else 0),
+            "multi_video_users": unique_action_users("comparison_created"),
+            "report_generation_users": unique_action_users("insight_report_requested"),
+            "brand_fit_users": unique_action_users("brand_fit_requested"),
+        }
+        return {"metric_range": metric_range, "events": [dict(row) for row in events], "comparison_status": [dict(row) for row in comparisons], "funnel": funnel, "user_activity": user_activity, "metric_label": "Privacy-filtered visitor/session counts until customer accounts are introduced."}
 
     @router.get("/datasets/assets")
     def list_assets(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:

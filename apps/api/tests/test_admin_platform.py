@@ -121,6 +121,18 @@ def test_monitoring_endpoints_support_presets_and_custom_datetime_ranges(tmp_pat
     assert client.get("/internal/admin/v1/overview?range_minutes=2").status_code == 422
 
 
+def test_product_analytics_reports_privacy_filtered_key_action_users(tmp_path, monkeypatch):
+    client, execute = make_client(tmp_path, monkeypatch)
+    execute("insert into admin_metric_events (id, scope, event_name, actor_hash, metadata_json, occurred_at) values ('old_a', 'product', 'page_view', 'visitor_a', '{}', '2026-08-05T12:00:00')")
+    execute("insert into admin_metric_events (id, scope, event_name, actor_hash, metadata_json, occurred_at) values ('recent_a', 'product', 'comparison_created', 'visitor_a', '{}', '2026-08-06T12:00:00')")
+    execute("insert into admin_metric_events (id, scope, event_name, actor_hash, metadata_json, occurred_at) values ('recent_b', 'product', 'insight_report_requested', 'visitor_b', '{}', '2026-08-06T12:10:00')")
+    execute("insert into admin_metric_events (id, scope, event_name, actor_hash, metadata_json, occurred_at) values ('recent_c', 'product', 'brand_fit_requested', 'visitor_c', '{}', '2026-08-06T12:20:00')")
+    login(client)
+    response = client.get("/internal/admin/v1/product-analytics?start=2026-08-06T00:00:00Z&end=2026-08-07T00:00:00Z")
+    assert response.status_code == 200
+    assert response.json()["user_activity"] == {"returning_visitors": 1, "multi_video_users": 1, "report_generation_users": 1, "brand_fit_users": 1}
+
+
 def test_dataset_creation_rejects_media_without_training_consent(tmp_path, monkeypatch):
     client, execute = make_client(tmp_path, monkeypatch)
     execute("insert into videos (id, title, status, created_at) values ('video_1', 'Example', 'completed', '2026-08-06T00:00:00')")

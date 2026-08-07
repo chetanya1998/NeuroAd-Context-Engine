@@ -578,7 +578,14 @@ async def internal_admin_boundary_and_metrics(request: FastAPIRequest, call_next
             "/api/videos/url": "video_url_created",
             "/api/videos/youtube/ingest": "youtube_ingest",
             "/api/telemetry/pageview": "page_view",
+            "/api/comparisons": "comparison_created",
         }.get(path, "api_request")
+        if path.endswith("/product-fit"):
+            event_name = "brand_fit_requested"
+        elif path.endswith("/insight-reports"):
+            event_name = "insight_report_requested"
+        if event_name in {"comparison_created", "brand_fit_requested", "insight_report_requested"} and request.method != "POST":
+            event_name = "api_request"
         record_admin_metric_event(
             ADMIN_SERVICES,
             scope="api",
