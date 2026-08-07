@@ -65,6 +65,8 @@ def make_client(tmp_path, monkeypatch):
 def login(client):
     response = client.post("/internal/admin/v1/auth/login", json={"email": "admin@neuroad.test", "password": "internal-password-123"})
     assert response.status_code == 200
+    assert response.json()["session_token"]
+    return response.json()["session_token"]
 
 
 def test_admin_routes_require_an_internal_session(tmp_path, monkeypatch):
@@ -74,6 +76,14 @@ def test_admin_routes_require_an_internal_session(tmp_path, monkeypatch):
     response = client.get("/internal/admin/v1/overview")
     assert response.status_code == 200
     assert response.json()["build"]["git_sha"] == "abc123"
+
+
+def test_admin_bearer_session_supports_separate_admin_origins(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    token = login(client)
+    client.cookies.clear()
+    response = client.get("/internal/admin/v1/overview", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
 
 
 def test_scoring_candidates_are_validated_and_versioned(tmp_path, monkeypatch):

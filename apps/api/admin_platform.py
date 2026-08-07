@@ -291,7 +291,13 @@ def create_admin_router(services: AdminServices) -> APIRouter:
         services.execute("update admin_users set last_login_at = ?, updated_at = ? where id = ?", (now, now, user["id"]))
         response.set_cookie(SESSION_COOKIE, token, httponly=True, secure=os.getenv("NEUROAD_ENVIRONMENT", "development") == "production", samesite="strict", max_age=SESSION_TTL_HOURS * 3600, path="/")
         audit({"id": user["id"]}, "auth.login", "admin_user", user["id"])
-        return {"user": {"id": user["id"], "email": user["email"], "role": user["role"]}}
+        # The cookie supports same-site custom domains. The short-lived session token
+        # lets the separate Netlify admin origin authenticate its XHR requests without
+        # relying on third-party cookie behavior.
+        return {
+            "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
+            "session_token": token,
+        }
 
     @router.post("/auth/logout")
     def logout(response: Response, user: dict[str, Any] = Depends(current_user)) -> dict[str, bool]:

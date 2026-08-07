@@ -50,7 +50,19 @@ def test_report_validation_drops_hallucinated_evidence_and_adds_disclaimer():
     assert report["placement_opportunities"] == []
     assert report["audience_personas"][0]["persona"] == "Office worker"
     assert report["attention_improvements"][0]["priority"] == 100
+    assert report["attention_improvements"][0]["priority_rank"] == 1
     assert report["brand_prospect_disclaimer"] == BRAND_PROSPECT_DISCLAIMER
+
+
+def test_comparison_placements_use_deterministic_evidence_scores_not_llm_scores():
+    report = normalize_report(
+        {"comparative_placements": [{"video_id": "video_1", "segment_id": "seg_1", "score": 0, "rationale": "Best natural break."}]},
+        report_type="comparison", report_id="report_1", target_id="comparison_1", fingerprint="fingerprint", model="model",
+        valid_segments={"seg_1": {"video_id": "video_1", "start": 1.0, "end": 4.0, "scores": {"ad_slot_score": 67}}}, valid_video_ids={"video_1"},
+    )
+    placement = report["comparative_placements"][0]
+    assert placement["score"] == 67
+    assert placement["score_source"] == "deterministic_ad_slot_score"
 
 
 def test_pdf_export_uses_reportlab_paragraphs_without_global_name_error(tmp_path):

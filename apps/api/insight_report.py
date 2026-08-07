@@ -12,8 +12,8 @@ BRAND_PROSPECT_DISCLAIMER = (
     "by the NeuroAd Insight Generator and should be independently verified."
 )
 
-VIDEO_PROMPT_VERSION = "video-insight-v1"
-COMPARISON_PROMPT_VERSION = "comparison-insight-v2"
+VIDEO_PROMPT_VERSION = "video-insight-v2"
+COMPARISON_PROMPT_VERSION = "comparison-insight-v3"
 
 COMMON_SCHEMA = """
 Return only a JSON object with:
@@ -42,7 +42,7 @@ Return only a JSON object with:
   "brand_safety": {"summary":"", "findings":[""]},
   "creative_recommendations": [""],
   "attention_improvements": [
-    {"segment_id":"", "start":0, "end":0, "priority":0, "issue":"", "recommended_change":"",
+    {"segment_id":"", "start":0, "end":0, "priority_rank":1, "issue":"", "recommended_change":"",
      "execution_tip":"", "expected_attention_impact":"", "evidence_refs":["segment id"]}
   ],
   "limitations": [""]
@@ -57,7 +57,7 @@ Never reveal hidden reasoning. Return JSON only.
 {COMMON_SCHEMA}
 Also include:
 "placement_opportunities": [
-  {{"segment_id":"", "start":0, "end":0, "score":0, "format":"", "suggested_duration":"",
+  {{"segment_id":"", "start":0, "end":0, "format":"", "suggested_duration":"",
     "messaging_angle":"", "rationale":"", "evidence_refs":["segment id"]}}
 ],
 "avoidance_zones": [
@@ -81,9 +81,9 @@ Also include:
   {{"brand":"", "video_id":"", "contextual_fit_score":0, "rationale":"", "evidence_refs":["segment id"]}}
 ],
 "comparative_placements": [
-  {{"video_id":"", "segment_id":"", "start":0, "end":0, "score":0, "rationale":""}}
+  {{"video_id":"", "segment_id":"", "start":0, "end":0, "rationale":""}}
 ]
-This is a compact comparison brief, not a full transcript. Omit weak or duplicate findings. Every prose value must be under 160 characters and every list item must be a short phrase.
+This is a compact comparison brief, not a full transcript. Omit weak or duplicate findings. Never invent a numeric score: deterministic evidence supplies placement scores. Every prose value must be under 160 characters and every list item must be a short phrase.
 Limits: 8 keywords, 3 ad categories, 4 brand prospects, 2 audience personas, 3 attention improvements, 5 video rankings, 6 matrix rows, and 4 comparative placements. Keep the full response under 1,400 tokens. Finish all JSON arrays and strings before ending the response.
 """.strip()
 
@@ -253,7 +253,8 @@ def normalize_report(
                     "segment_id": segment_id,
                     "start": segment["start"],
                     "end": segment["end"],
-                    "score": _score(item.get("score")),
+                    "score": _deterministic_placement_score(segment),
+                    "score_source": "deterministic_ad_slot_score",
                     "format": _text(item.get("format"), 120),
                     "suggested_duration": _text(item.get("suggested_duration"), 80),
                     "messaging_angle": _text(item.get("messaging_angle"), 500),
@@ -325,7 +326,7 @@ def _normalize_personas(value: Any, valid_segment_ids: set[str]) -> list[dict[st
 
 def _normalize_attention_improvements(value: Any, valid_segments: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
-    for item in value if isinstance(value, list) else []:
+    for index, item in enumerate(value if isinstance(value, list) else []):
         if not isinstance(item, dict):
             continue
         segment_id = _text(item.get("segment_id"), 120)
@@ -338,6 +339,7 @@ def _normalize_attention_improvements(value: Any, valid_segments: dict[str, dict
                 "start": segment["start"],
                 "end": segment["end"],
                 "priority": _score(item.get("priority")),
+                "priority_rank": _priority_rank(item.get("priority_rank", item.get("priority")), index + 1),
                 "issue": _text(item.get("issue"), 500),
                 "recommended_change": _text(item.get("recommended_change"), 600),
                 "execution_tip": _text(item.get("execution_tip"), 500),
@@ -348,6 +350,20 @@ def _normalize_attention_improvements(value: Any, valid_segments: dict[str, dict
         if len(result) >= 6:
             break
     return result
+
+
+def _priority_rank(value: Any, fallback: int) -> int:
+    """Treat the LLM field as an ordered queue, not a misleading 0–100 score."""
+    try:
+        rank = int(float(value))
+    except (TypeError, ValueError):
+        rank = fallback
+    return max(1, min(6, rank if rank <= 6 else fallback))
+
+
+def _deterministic_placement_score(segment: dict[str, Any]) -> int:
+    scores = segment.get("scores") if isinstance(segment.get("scores"), dict) else {}
+    return _score(scores.get("ad_slot_score"))
 
 
 def _normalize_rankings(value: Any, valid_video_ids: set[str]) -> list[dict[str, Any]]:
@@ -408,7 +424,8 @@ def _normalize_comparison_placements(
                 "segment_id": segment_id,
                 "start": segment["start"],
                 "end": segment["end"],
-                "score": _score(item.get("score")),
+                "score": _deterministic_placement_score(segment),
+                "score_source": "deterministic_ad_slot_score",
                 "rationale": _text(item.get("rationale"), 600),
             }
         )

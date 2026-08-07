@@ -140,13 +140,14 @@ export type InsightReport = {
   ad_categories: Array<{ category: string; contextual_fit_score: number; confidence: number; rationale: string; evidence_refs: string[] }>;
   brand_prospects: Array<{ brand: string; category: string; contextual_fit_score: number; confidence: number; why_fit: string; activation_idea: string; risks: string[]; evidence_refs: string[] }>;
   brand_safety: { summary: string; findings: string[] }; creative_recommendations: string[]; limitations: string[];
-  attention_improvements?: Array<{ segment_id: string; start: number; end: number; priority: number; issue: string; recommended_change: string; execution_tip: string; expected_attention_impact: string; evidence_refs: string[] }>;
+  attention_improvements?: Array<{ segment_id: string; start: number; end: number; priority: number; priority_rank?: number; issue: string; recommended_change: string; execution_tip: string; expected_attention_impact: string; evidence_refs: string[] }>;
   brand_prospect_disclaimer: string; placement_opportunities?: Array<{ segment_id: string; start: number; end: number; score: number; format: string; messaging_angle: string; rationale: string }>;
   metadata?: { model: string; prompt_version: string; generated_at: string; analysis_fingerprint: string };
   cross_video_insights?: { shared_themes: string[]; keyword_overlap: string[]; important_differences: string[] };
   video_rankings?: Array<{ video_id: string; campaign_objective: string; rank: number; rationale: string }>;
   brand_video_matrix?: Array<{ brand: string; video_id: string; contextual_fit_score: number; rationale: string }>;
-  comparative_placements?: Array<{ video_id: string; segment_id: string; start: number; end: number; score: number; rationale: string }>;
+  comparative_placements?: Array<{ video_id: string; segment_id: string; start: number; end: number; score: number; score_source?: string; rationale: string }>;
+  evidence_index?: Record<string, { scores?: { ad_slot_score?: number } }>;
 };
 
 export type AIInsights = {
