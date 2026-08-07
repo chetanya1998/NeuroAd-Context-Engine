@@ -14,6 +14,17 @@ The app answers a practical creator/adtech question:
 
 Release notes describe the product milestone documented in this repository. Times are shown in IST; they are release milestones, not a claim that every feature was first built at that exact time.
 
+### V1.2 Internal ML Control Plane — 7 August 2026 (IST)
+
+| Feature introduced | Status | Who it helps | What it does | How to use it |
+| --- | --- | --- | --- | --- |
+| Privacy-safe active visitor tracking | Live | Product and operations teams | Counts unique browser sessions that visit the public product within the last 24 hours, without requiring customer accounts or storing a direct identity in the metric record. Respects Do Not Track. | Deploy the public web app and API; the **Active visitors (24h)** card starts populating from new page views. |
+| Operational health visualizations | Live | Non-technical operators and engineers | Shows API status trends, endpoint latency, p50/p95 latency in milliseconds, queue state, dependency readiness, and video-failure reasons with readable bar charts. | Open **System health** in the internal dashboard and hover the guidance icon for metric definitions. |
+| Algorithm Studio simulations | Live | ML operators and reviewers | Saves immutable candidate scoring configurations and runs a controlled baseline-versus-candidate simulation before release review. Raw runtime code cannot be entered. | Adjust weights so they total 1.00, save a candidate, then select **Run candidate simulation**. |
+| Deployment-aware live build card | Live | Release managers | Reads Git SHA, branch, release ID, build time, and scoring manifest from injected CI/Railway metadata, with clear unavailable states instead of misleading local defaults. | Configure the documented Railway build metadata variables or rely on Railway's Git/deployment variables. |
+| Scoped release audit history | Live | ML governance and reviewers | Shows only Algorithm Studio and release-to-main activity in the dashboard traceability view; routine access events remain in the protected security log. | Open **Release governance history**. |
+| GPT-OSS report improvement lab | Live | ML reviewers and report-quality owners | Collects approved feedback on incorrect scores, unsupported claims, missing evidence, misleading copy, and better examples, then prepares a reviewed evaluation/training set. It never silently changes the production model. | Add a grounded feedback example in **Report improvement lab**, then prepare the quality set for the separately approved fine-tuning/evaluation workflow. |
+
 ### V1.1 Beta — 26 July 2026 (IST)
 
 | Feature introduced | Status | Who it helps | What it does | How to use it |
@@ -111,15 +122,25 @@ The dashboard lives in `apps/admin` and should be deployed to a private
 subdomain such as `https://admin.neuroad.example`. It provides one continuous
 workspace for:
 
-- Video evaluation success/failure, queue, dependency, and API-health metrics
+- Video evaluation success/failure, queue, dependency, API-health, p50/p95
+  latency, and video-failure visualizations. Latency values use milliseconds
+  (`ms`) throughout.
 - Product usage and A/B-comparison analytics using privacy-filtered visitor or
-  session identifiers until customer accounts exist
+  session identifiers until customer accounts exist. A public page view creates
+  a rotating anonymous browser/session identifier only when Do Not Track is not
+  enabled; the admin API stores a one-way hash for aggregate counting.
 - Consent-aware dataset inventory, labeling tasks, reviewer controls, and
   versioned taxonomies
-- Immutable scoring configurations, weight/threshold controls, evaluations,
-  and independent approval gates
+- Immutable scoring configurations, weight/threshold controls, candidate
+  simulations against a locked baseline, evaluations, and independent approval
+  gates. The studio blocks raw runtime code execution.
 - GitHub release records, live build SHA, deployment metadata, audit history,
   and rollback requests
+- Guided notes and tooltips on each dashboard section for non-technical users
+- A GPT-OSS Report Improvement Lab that captures reviewer-approved report
+  corrections and prepares versioned evaluation/training sets. Preparing a set
+  does not fine-tune or redeploy a production model; that remains a separately
+  approved release step.
 
 ### Internal access and local development
 
@@ -143,6 +164,13 @@ Open `http://localhost:3001` directly. The dashboard uses Argon2id password
 hashing, secure session cookies, role checks, audit events, and admin-created
 invitations. See [the internal dashboard deployment guide](docs/internal-ml-dashboard.md)
 for required production variables and GitHub release integration.
+
+For live dashboard data, deploy both the API and public web application. The
+API records the privacy-filtered public page-view event at
+`POST /api/telemetry/pageview`; the admin interface reads it as an aggregate,
+not as a customer identity. Set `ADMIN_CORS_ORIGINS` to the exact admin
+subdomain and set `NEXT_PUBLIC_ADMIN_API_BASE` in the admin deployment to the
+Railway API URL.
 
 Customer media remains excluded from training and labeling unless an upload is
 explicitly recorded as opted in through the internal-training consent field.
