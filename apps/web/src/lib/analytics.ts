@@ -4,6 +4,20 @@ import posthog from "posthog-js";
 import type { AnalyticsEvent, AnalyticsEventMap } from "./analytics-events";
 
 let initialized = false;
+const FALLBACK_VISITOR_KEY = "neuroad_telemetry_visitor";
+const FALLBACK_SESSION_KEY = "neuroad_telemetry_session";
+
+function privacyTelemetryAllowed() {
+  return typeof window === "undefined" || window.navigator.doNotTrack !== "1";
+}
+
+function anonymousId(key: string, storage: Storage) {
+  const existing = storage.getItem(key);
+  if (existing) return existing;
+  const value = crypto.randomUUID();
+  storage.setItem(key, value);
+  return value;
+}
 
 function analyticsEnabled() {
   const value = process.env.NEXT_PUBLIC_POSTHOG_ENABLED?.toLowerCase();
@@ -65,13 +79,19 @@ export function capture<E extends AnalyticsEvent>(event: E, properties: Analytic
 
 export function analyticsHeaders(): Record<string, string> {
   initAnalytics();
-  if (!initialized) return {};
-  const distinctId = posthog.get_distinct_id();
-  const sessionId = posthog.get_session_id();
+  if (!privacyTelemetryAllowed() || typeof window === "undefined") return {};
+  const distinctId = initialized ? posthog.get_distinct_id() : anonymousId(FALLBACK_VISITOR_KEY, window.localStorage);
+  const sessionId = initialized ? posthog.get_session_id() : anonymousId(FALLBACK_SESSION_KEY, window.sessionStorage);
   return {
     ...(distinctId ? { "X-POSTHOG-DISTINCT-ID": distinctId } : {}),
     ...(sessionId ? { "X-POSTHOG-SESSION-ID": sessionId } : {})
   };
+}
+
+export function recordPageView() {
+  if (typeof window === "undefined" || !privacyTelemetryAllowed()) return;
+  const base = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+  void fetch(`${base}/api/telemetry/pageview`, { method: "POST", headers: analyticsHeaders(), keepalive: true }).catch(() => undefined);
 }
 
 export function optOutAnalytics() {

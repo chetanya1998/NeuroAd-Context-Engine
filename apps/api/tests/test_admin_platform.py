@@ -96,6 +96,19 @@ def test_scoring_candidates_are_validated_and_versioned(tmp_path, monkeypatch):
     assert response.json()["version"] == 2
 
 
+def test_scoring_candidate_can_run_a_safe_simulation(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    candidate = client.post(
+        "/internal/admin/v1/scoring-configs",
+        json={"config": DEFAULT_SCORING_CONFIG, "rationale": "Validate the candidate against the locked baseline before release."},
+    )
+    assert candidate.status_code == 200
+    simulation = client.post(f"/internal/admin/v1/scoring-configs/{candidate.json()['id']}/evaluate", json={})
+    assert simulation.status_code == 200
+    assert simulation.json()["result"]["passed"] is True
+
+
 def test_dataset_creation_rejects_media_without_training_consent(tmp_path, monkeypatch):
     client, execute = make_client(tmp_path, monkeypatch)
     execute("insert into videos (id, title, status, created_at) values ('video_1', 'Example', 'completed', '2026-08-06T00:00:00')")
@@ -103,3 +116,22 @@ def test_dataset_creation_rejects_media_without_training_consent(tmp_path, monke
     payload = {"name": "No consent", "video_ids": ["video_1"], "taxonomy_id": "taxonomy_quality_evidence_v1"}
     response = client.post("/internal/admin/v1/datasets", json=payload)
     assert response.status_code == 422
+
+
+def test_quality_feedback_is_prepared_without_expanding_release_audit(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    feedback = client.post(
+        "/internal/admin/v1/quality-lab/feedback",
+        json={"issue_type": "incorrect_score", "note": "The report should cite the sampled scene evidence before assigning a score."},
+    )
+    assert feedback.status_code == 200
+    quality = client.get("/internal/admin/v1/quality-lab")
+    assert quality.status_code == 200
+    assert quality.json()["training_ready"] == 1
+    prepared = client.post("/internal/admin/v1/quality-lab/prepare-training-set")
+    assert prepared.status_code == 200
+    assert prepared.json()["approved_examples"] == 1
+    audit = client.get("/internal/admin/v1/audit-events")
+    assert audit.status_code == 200
+    assert all(event["action"].startswith(("scoring_config.", "release.")) for event in audit.json()["events"])

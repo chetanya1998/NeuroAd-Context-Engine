@@ -168,6 +168,7 @@ def init_admin_platform(services: AdminServices) -> None:
         """create table if not exists ml_scoring_config_versions (id text primary key, version integer not null unique, status text not null, parent_id text, config_json text not null, rationale text not null, created_by text not null, created_at text not null, submitted_at text, approved_by text, approved_at text)""",
         """create table if not exists ml_evaluation_runs (id text primary key, candidate_config_id text not null, baseline_config_id text not null, dataset_id text, status text not null, result_json text, created_by text not null, created_at text not null, completed_at text)""",
         """create table if not exists ml_release_records (id text primary key, config_id text not null, status text not null, branch text, pull_request_url text, commit_sha text, deployment_json text not null default '{}', created_by text not null, approved_by text, created_at text not null, updated_at text not null, rolled_back_by text)""",
+        """create table if not exists ml_report_quality_feedback (id text primary key, report_id text, issue_type text not null, note text not null, status text not null default 'approved_for_training', created_by text not null, created_at text not null)""",
     ]
     for statement in statements:
         services.execute(statement)
@@ -239,6 +240,12 @@ class ScoringConfigRequest(BaseModel):
 
 class EvaluationRequest(BaseModel):
     dataset_id: Optional[str] = None
+
+
+class ReportQualityFeedbackRequest(BaseModel):
+    report_id: Optional[str] = Field(default=None, max_length=160)
+    issue_type: Literal["incorrect_score", "unsupported_claim", "missing_evidence", "misleading_copy", "better_example"]
+    note: str = Field(min_length=8, max_length=2000)
 
 
 class ReleaseVerificationRequest(BaseModel):
@@ -347,9 +354,14 @@ def create_admin_router(services: AdminServices) -> APIRouter:
         since = (datetime.utcnow() - timedelta(days=7)).isoformat(timespec="seconds")
         by_day = services.query_all("select substr(occurred_at, 1, 10) as day, status_code, count(*) as count from admin_metric_events where scope = 'api' and occurred_at >= ? group by day, status_code order by day", (since,))
         latency = services.query_all("select route, count(*) as count, avg(duration_ms) as avg_ms, max(duration_ms) as max_ms from admin_metric_events where scope = 'api' and occurred_at >= ? group by route order by count desc limit 12", (since,))
+        durations = [int(row["duration_ms"] or 0) for row in services.query_all("select duration_ms from admin_metric_events where scope = 'api' and occurred_at >= ? and duration_ms is not null order by duration_ms", (since,))]
+        def percentile(percent: float) -> int:
+            if not durations:
+                return 0
+            return durations[min(len(durations) - 1, int((len(durations) - 1) * percent))]
         failures = services.query_all("select coalesce(error, 'unknown') as reason, count(*) as count from jobs where status = 'failed' group by reason order by count desc limit 8")
         dependencies = services.runtime_dependencies()
-        return {"request_statuses": [dict(row) for row in by_day], "latency": [dict(row) for row in latency], "failure_reasons": [dict(row) for row in failures], "queue": {"queued": int(services.query_one("select count(*) as count from jobs where status = 'queued'")["count"]), "processing": int(services.query_one("select count(*) as count from jobs where status = 'processing'")["count"])}, "dependencies": dependencies}
+        return {"request_statuses": [dict(row) for row in by_day], "latency": [dict(row) for row in latency], "latency_summary": {"p50_ms": percentile(.50), "p95_ms": percentile(.95), "p99_ms": percentile(.99)}, "failure_reasons": [dict(row) for row in failures], "queue": {"queued": int(services.query_one("select count(*) as count from jobs where status = 'queued'")["count"]), "processing": int(services.query_one("select count(*) as count from jobs where status = 'processing'")["count"])}, "dependencies": dependencies}
 
     @router.get("/product-analytics")
     def product_analytics(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
@@ -464,6 +476,25 @@ def create_admin_router(services: AdminServices) -> APIRouter:
         audit(user, "scoring_config.evaluated", "evaluation", run_id, {"config_id": config_id})
         return {"id": run_id, "candidate_config_id": config_id, "baseline_config_id": baseline["id"], "result": result}
 
+    @router.get("/quality-lab")
+    def quality_lab(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        rows = services.query_all("select f.*, u.email as created_by_email from ml_report_quality_feedback f left join admin_users u on u.id = f.created_by order by f.created_at desc limit 100")
+        return {"feedback": [dict(row) for row in rows], "training_ready": sum(1 for row in rows if row["status"] == "approved_for_training"), "mode": "evaluation_and_dataset_preparation"}
+
+    @router.post("/quality-lab/feedback")
+    def add_quality_feedback(payload: ReportQualityFeedbackRequest, user: dict[str, Any] = Depends(allow("platform_admin", "ml_operator", "reviewer"))) -> dict[str, str]:
+        feedback_id = services.new_id("report_feedback")
+        services.execute("insert into ml_report_quality_feedback (id, report_id, issue_type, note, created_by, created_at) values (?, ?, ?, ?, ?, ?)", (feedback_id, payload.report_id, payload.issue_type, payload.note.strip(), user["id"], services.utc_now()))
+        audit(user, "gpt_oss.feedback_approved", "report_quality_feedback", feedback_id, {"issue_type": payload.issue_type, "report_id": payload.report_id})
+        return {"id": feedback_id, "status": "approved_for_training"}
+
+    @router.post("/quality-lab/prepare-training-set")
+    def prepare_training_set(user: dict[str, Any] = Depends(allow("platform_admin", "ml_operator", "reviewer"))) -> dict[str, Any]:
+        ready = services.query_one("select count(*) as count from ml_report_quality_feedback where status = 'approved_for_training'")
+        count = int(ready["count"] if ready else 0)
+        audit(user, "gpt_oss.training_set_prepared", "report_quality_feedback", None, {"approved_examples": count})
+        return {"status": "prepared", "approved_examples": count, "message": "A reviewed training/evaluation set is ready. Model fine-tuning remains a separately approved deployment step; no runtime model code has changed."}
+
     @router.post("/scoring-configs/{config_id}/approve")
     def approve_config(config_id: str, user: dict[str, Any] = Depends(allow("platform_admin", "reviewer"))) -> dict[str, str]:
         candidate = services.query_one("select * from ml_scoring_config_versions where id = ?", (config_id,))
@@ -530,7 +561,7 @@ def create_admin_router(services: AdminServices) -> APIRouter:
 
     @router.get("/audit-events")
     def audit_events(user: dict[str, Any] = Depends(allow("platform_admin", "reviewer", "observer"))) -> dict[str, Any]:
-        rows = services.query_all("select a.*, u.email as actor_email from admin_audit_events a left join admin_users u on u.id = a.actor_id order by a.created_at desc limit 250")
+        rows = services.query_all("select a.*, u.email as actor_email from admin_audit_events a left join admin_users u on u.id = a.actor_id where a.action like 'scoring_config.%' or a.action like 'release.%' order by a.created_at desc limit 250")
         return {"events": [{**dict(row), "details": _loads(row["details_json"], {})} for row in rows]}
 
     return router

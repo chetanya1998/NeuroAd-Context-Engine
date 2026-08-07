@@ -103,10 +103,10 @@ def admin_cors_origins_from_env() -> set[str]:
 def build_metadata() -> dict[str, str]:
     """Build metadata is injected by CI and displayed only in the internal app."""
     return {
-        "git_sha": os.getenv("NEUROAD_GIT_SHA", "development"),
-        "git_branch": os.getenv("NEUROAD_GIT_BRANCH", "local"),
-        "build_time": os.getenv("NEUROAD_BUILD_TIME", "local"),
-        "release_id": os.getenv("NEUROAD_RELEASE_ID", "local"),
+        "git_sha": os.getenv("NEUROAD_GIT_SHA") or os.getenv("RAILWAY_GIT_COMMIT_SHA", "development"),
+        "git_branch": os.getenv("NEUROAD_GIT_BRANCH") or os.getenv("RAILWAY_GIT_BRANCH", "local"),
+        "build_time": os.getenv("NEUROAD_BUILD_TIME") or os.getenv("RAILWAY_DEPLOYMENT_CREATED_AT", "deployment time unavailable"),
+        "release_id": os.getenv("NEUROAD_RELEASE_ID") or os.getenv("RAILWAY_DEPLOYMENT_ID", "local"),
         "scoring_manifest_version": os.getenv("NEUROAD_SCORING_MANIFEST_VERSION", "attention-proxy-v1"),
     }
 
@@ -577,6 +577,7 @@ async def internal_admin_boundary_and_metrics(request: FastAPIRequest, call_next
             "/api/videos/upload": "video_upload",
             "/api/videos/url": "video_url_created",
             "/api/videos/youtube/ingest": "youtube_ingest",
+            "/api/telemetry/pageview": "page_view",
         }.get(path, "api_request")
         record_admin_metric_event(
             ADMIN_SERVICES,
@@ -598,6 +599,12 @@ async def internal_admin_boundary_and_metrics(request: FastAPIRequest, call_next
                 actor_id=distinct_id,
             )
     return response
+
+
+@app.post("/api/telemetry/pageview")
+def record_privacy_safe_pageview() -> dict[str, bool]:
+    """Creates a privacy-filtered activity record through the request middleware."""
+    return {"ok": True}
 
 
 class YouTubeRequest(BaseModel):
