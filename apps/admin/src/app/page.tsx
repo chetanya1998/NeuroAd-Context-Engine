@@ -6,6 +6,12 @@ import { Eye, EyeOff, HelpCircle, LogOut } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_ADMIN_API_BASE ?? "http://localhost:8000";
 const SESSION_STORAGE_KEY = "neuroad.admin.session-token";
+const MONITORING_PRESETS = [
+  { value: "15", label: "Last 15 minutes" }, { value: "30", label: "Last 30 minutes" },
+  { value: "60", label: "Last 1 hour" }, { value: "360", label: "Last 6 hours" },
+  { value: "1440", label: "Last 1 day" }, { value: "4320", label: "Last 3 days" },
+  { value: "21600", label: "Last 15 days" }, { value: "43200", label: "Last 30 days" },
+];
 let sessionToken: string | null = null;
 type Json = Record<string, any>;
 
@@ -60,6 +66,13 @@ function BarList({ title, data, valueKey = "count", unit = "" }: { title: string
 
 function Empty({ text }: { text: string }) { return <p className="empty">{text}</p>; }
 
+function toUtcIso(value: string) { return value ? new Date(value).toISOString() : ""; }
+
+function MonitoringRange({ value, start, end, onValueChange, onStartChange, onEndChange, onApply, loading }: { value: string; start: string; end: string; onValueChange: (value: string) => void; onStartChange: (value: string) => void; onEndChange: (value: string) => void; onApply: () => void; loading: boolean }) {
+  const custom = value === "custom";
+  return <section className="monitoring-toolbar" aria-label="Monitoring time range"><div><p className="eyebrow">MONITORING WINDOW</p><span>Filter usage and health metrics by a preset or exact UTC date/time range.</span></div><label>Range<select value={value} onChange={(event) => onValueChange(event.target.value)}>{MONITORING_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}<option value="custom">Custom date and time</option></select></label>{custom ? <><label>From<input type="datetime-local" value={start} onChange={(event) => onStartChange(event.target.value)} /></label><label>To<input type="datetime-local" value={end} onChange={(event) => onEndChange(event.target.value)} /></label></> : null}<button className="quiet" onClick={onApply} disabled={loading || (custom && (!start || !end))}>Apply range</button></section>;
+}
+
 export default function AdminPage() {
   const [user, setUser] = useState<Json | null>(null);
   const [email, setEmail] = useState("");
@@ -69,16 +82,25 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Record<string, Json>>({});
   const [notice, setNotice] = useState("");
+  const [rangeMinutes, setRangeMinutes] = useState("1440");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [appliedFilter, setAppliedFilter] = useState({ rangeMinutes: "1440", start: "", end: "" });
 
   const load = useCallback(async () => {
-    const paths = ["/overview", "/system-health", "/product-analytics", "/datasets/assets", "/taxonomies", "/label-tasks", "/scoring-configs", "/releases", "/audit-events", "/quality-lab"];
-    const values = await Promise.all(paths.map((path) => request<Json>(path)));
-    setData(Object.fromEntries(paths.map((path, index) => [path, values[index]])));
-  }, []);
+    const params = new URLSearchParams(appliedFilter.rangeMinutes === "custom" ? { start: toUtcIso(appliedFilter.start), end: toUtcIso(appliedFilter.end) } : { range_minutes: appliedFilter.rangeMinutes });
+    const rangeQuery = `?${params.toString()}`;
+    const resources = ["/overview", "/system-health", "/product-analytics"].map((path) => [path, `${path}${rangeQuery}`] as const).concat(["/datasets/assets", "/taxonomies", "/label-tasks", "/scoring-configs", "/releases", "/audit-events", "/quality-lab"].map((path) => [path, path] as const));
+    const values = await Promise.all(resources.map(([, path]) => request<Json>(path)));
+    setData(Object.fromEntries(resources.map(([key], index) => [key, values[index]])));
+  }, [appliedFilter]);
 
   useEffect(() => {
     restoreSessionToken();
-    request<Json>("/auth/me").then(async (result) => { await load(); setUser(result.user); setError(""); }).catch(() => setUser(null));
+    request<Json>("/auth/me").then(async (result) => { setUser(result.user); await load(); setError(""); }).catch((reason) => {
+      if (reason instanceof AdminRequestError && reason.status === 401) setUser(null);
+      else setError(reason instanceof Error ? reason.message : "Could not load dashboard data.");
+    });
   }, [load]);
 
   async function signIn(event: React.FormEvent) {
@@ -111,11 +133,11 @@ export default function AdminPage() {
   }
 
   async function signOut() { try { await request("/auth/logout", { method: "POST" }); } finally { clearSessionToken(); setUser(null); setData({}); } }
-  async function refresh() { setLoading(true); try { await load(); setError(""); setNotice("Dashboard refreshed."); } catch (reason) { if (reason instanceof AdminRequestError && reason.status === 401) { clearSessionToken(); setUser(null); setError("Your dashboard session expired. Please sign in again."); } else setError(reason instanceof Error ? reason.message : "Refresh failed."); } finally { setLoading(false); } }
+  async function refresh(message = "Dashboard refreshed.") { setLoading(true); try { await load(); setError(""); setNotice(message); } catch (reason) { if (reason instanceof AdminRequestError && reason.status === 401) { clearSessionToken(); setUser(null); setError("Your dashboard session expired. Please sign in again."); } else setError(reason instanceof Error ? reason.message : "Refresh failed."); } finally { setLoading(false); } }
 
   if (!user) return <main className="login-shell"><div className="login-mark">N</div><form className="login-card" onSubmit={signIn}><p className="eyebrow">PRIVATE CONTROL PLANE</p><h1>NeuroAd Internal ML</h1><p>Authorized staff only. This workspace is not linked from the customer product.</p><label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required /></label><label>Password<div className="password-input"><input value={password} onChange={(event) => setPassword(event.target.value)} type={passwordVisible ? "text" : "password"} autoComplete="current-password" required /><button className="password-toggle" type="button" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? "Hide password" : "Show password"} aria-pressed={passwordVisible}>{passwordVisible ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}</button></div></label>{error ? <p className="error" role="alert" aria-live="assertive">{error}</p> : null}<button disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button></form></main>;
 
-  return <main className="app-shell"><section className="content"><header className="topbar"><div className="topbar-brand"><span className="brand-mark">N</span><div><p className="eyebrow">PRIVATE CONTROL PLANE</p><h1>NeuroAd Internal ML</h1></div></div><div className="topbar-actions"><span className="identity-chip"><i />{user.email}</span><button className="quiet" onClick={refresh} disabled={loading}>Refresh</button><button className="sign-out" onClick={signOut}><LogOut size={14} /> Sign out</button></div></header>{error ? <p className="error floating">{error}</p> : null}{notice ? <p className="notice">{notice}</p> : null}<DashboardContent data={data} user={user} reload={load} setNotice={setNotice} setError={setError} /></section></main>;
+  return <main className="app-shell"><section className="content"><header className="topbar"><div className="topbar-brand"><span className="brand-mark">N</span><div><p className="eyebrow">PRIVATE CONTROL PLANE</p><h1>NeuroAd Internal ML</h1></div></div><div className="topbar-actions"><span className="identity-chip"><i />{user.email}</span><button className="quiet" onClick={() => refresh()} disabled={loading}>Refresh</button><button className="sign-out" onClick={signOut}><LogOut size={14} /> Sign out</button></div></header><MonitoringRange value={rangeMinutes} start={customStart} end={customEnd} onValueChange={setRangeMinutes} onStartChange={setCustomStart} onEndChange={setCustomEnd} onApply={() => { setAppliedFilter({ rangeMinutes, start: customStart, end: customEnd }); setNotice("Monitoring range applied."); }} loading={loading} />{error ? <p className="error floating">{error}</p> : null}{notice ? <p className="notice">{notice}</p> : null}<DashboardContent data={data} user={user} reload={load} setNotice={setNotice} setError={setError} /></section></main>;
 }
 
 function Section({ eyebrow, title, children, guide = "Read the metrics from left to right; hover this icon for the purpose of this section." }: { eyebrow: string; title: string; children: React.ReactNode; guide?: string }) {
@@ -124,14 +146,15 @@ function Section({ eyebrow, title, children, guide = "Read the metrics from left
 
 function DashboardContent({ data, user, reload, setNotice, setError }: { data: Record<string, Json>; user: Json; reload: () => Promise<void>; setNotice: (value: string) => void; setError: (value: string) => void }) {
   const overview = data["/overview"] ?? {}; const health = data["/system-health"] ?? {}; const analytics = data["/product-analytics"] ?? {};
+  const rangeLabel = overview.metric_range?.label ?? "Selected period";
   return <>
-    <Section eyebrow="01 / LIVE OVERVIEW" title="Command center" guide="A privacy-filtered visitor is counted once per browser session that calls the product API. Build metadata is sourced from the live Railway deployment."><div className="grid four"><MetricCard label="Completed videos" value={overview.videos?.completed ?? 0} /><MetricCard label="Failed videos" value={overview.videos?.failed ?? 0} /><MetricCard label="Active visitors (24h)" value={overview.unique_visitors_24h ?? 0} hint="Privacy-filtered browser sessions" /><MetricCard label="Active scoring config" value={overview.active_config ? `v${overview.active_config.version}` : "—"} /></div><div className="grid two"><BarList title="Video evaluation state" data={Object.entries(overview.videos ?? {}).map(([status, count]) => ({ status, count }))} /><section className="panel release-card"><h3>Live build</h3><strong>{overview.build?.git_sha ?? "deployment metadata unavailable"}</strong><dl><dt>Branch</dt><dd>{overview.build?.git_branch ?? "—"}</dd><dt>Release</dt><dd>{overview.build?.release_id ?? "—"}</dd><dt>Scoring manifest</dt><dd>{overview.build?.scoring_manifest_version ?? "attention-proxy-v1"}</dd></dl></section></div></Section>
-    <Section eyebrow="02 / OPERATIONS" title="System health" guide="Latency values are milliseconds (ms); lower is better. The bars show volume and help identify the slowest routes."><div className="grid four"><MetricCard label="Queued jobs" value={health.queue?.queued ?? 0} /><MetricCard label="Processing jobs" value={health.queue?.processing ?? 0} /><MetricCard label="API latency p50" value={`${health.latency_summary?.p50_ms ?? 0} ms`} /><MetricCard label="API latency p95" value={`${health.latency_summary?.p95_ms ?? 0} ms`} /></div><div className="grid two"><BarList title="API status codes over seven days" data={health.request_statuses ?? []} /><BarList title="Endpoint average latency" data={(health.latency ?? []).map((item: Json) => ({ ...item, count: Math.round(item.avg_ms ?? 0) }))} unit=" ms" /></div><div className="grid two"><BarList title="Video failure reasons" data={health.failure_reasons ?? []} /><DependencyMatrix dependencies={health.dependencies ?? {}} /></div></Section>
-    <Section eyebrow="03 / PRODUCT" title="Product analytics"><div className="grid four"><MetricCard label="Videos uploaded" value={analytics.funnel?.uploaded ?? 0} /><MetricCard label="Analysis requested" value={analytics.funnel?.analysis_requested ?? 0} /><MetricCard label="Completed" value={analytics.funnel?.completed ?? 0} /><MetricCard label="Reports generated" value={analytics.funnel?.reports ?? 0} /></div><div className="grid two"><BarList title="Feature adoption and activity" data={analytics.events ?? []} /><BarList title="A/B comparison state" data={analytics.comparison_status ?? []} /></div><section className="panel"><h3>Measurement boundary</h3><p>{analytics.metric_label ?? "Events are privacy-filtered before aggregation."}</p></section></Section>
-    <Section eyebrow="04 / TRAINING DATA" title="Datasets and taxonomy"><DatasetView assets={data["/datasets/assets"]?.assets ?? []} taxonomies={data["/taxonomies"]?.taxonomies ?? []} /></Section>
-    <Section eyebrow="05 / HUMAN REVIEW" title="Labeling operations"><LabelView tasks={data["/label-tasks"]?.tasks ?? []} /></Section>
-    <Section eyebrow="06 / CONFIGURATION" title="Algorithm studio"><StudioView configs={data["/scoring-configs"]?.configs ?? []} user={user} reload={reload} setNotice={setNotice} setError={setError} /></Section>
-    <Section eyebrow="07 / DELIVERY" title="Release governance"><ReleaseView releases={data["/releases"] ?? {}} user={user} reload={reload} setNotice={setNotice} setError={setError} /></Section>
+    <Section eyebrow="01 / LIVE OVERVIEW" title="Command center" guide="A privacy-filtered visitor is counted once per browser session in the selected monitoring range. Build metadata is sourced from the live Railway deployment."><div className="grid four"><MetricCard label="Completed videos" value={overview.videos?.completed ?? 0} /><MetricCard label="Failed videos" value={overview.videos?.failed ?? 0} /><MetricCard label={`Active visitors · ${rangeLabel}`} value={overview.unique_visitors ?? 0} hint="Privacy-filtered browser sessions" /><MetricCard label="Active scoring config" value={overview.active_config ? `v${overview.active_config.version}` : "—"} /></div><div className="grid two"><BarList title="Video evaluation state" data={Object.entries(overview.videos ?? {}).map(([status, count]) => ({ status, count }))} /><section className="panel release-card"><h3>Live build</h3><strong>{overview.build?.git_sha ?? "deployment metadata unavailable"}</strong><dl><dt>Branch</dt><dd>{overview.build?.git_branch ?? "—"}</dd><dt>Release</dt><dd>{overview.build?.release_id ?? "—"}</dd><dt>Scoring manifest</dt><dd>{overview.build?.scoring_manifest_version ?? "attention-proxy-v1"}</dd></dl></section></div></Section>
+    <Section eyebrow="02 / OPERATIONS" title="System health" guide="The monitoring window applies to API status, latency, and product events. Latency values are milliseconds (ms); lower is better. The bars show volume and help identify the slowest routes."><div className="grid four"><MetricCard label="Queued jobs" value={health.queue?.queued ?? 0} /><MetricCard label="Processing jobs" value={health.queue?.processing ?? 0} /><MetricCard label="API latency p50" value={`${health.latency_summary?.p50_ms ?? 0} ms`} /><MetricCard label="API latency p95" value={`${health.latency_summary?.p95_ms ?? 0} ms`} /></div><div className="grid two"><BarList title={`API status codes · ${health.metric_range?.label ?? rangeLabel}`} data={health.request_statuses ?? []} /><BarList title="Endpoint average latency" data={(health.latency ?? []).map((item: Json) => ({ ...item, count: Math.round(item.avg_ms ?? 0) }))} unit=" ms" /></div><div className="grid two"><BarList title="Video failure reasons" data={health.failure_reasons ?? []} /><DependencyMatrix dependencies={health.dependencies ?? {}} /></div></Section>
+    <Section eyebrow="03 / PRODUCT" title="Product analytics" guide="Use the selected time range to compare feature use and A/B activity. Funnel totals are retained as all-time operational counts until lifecycle events are backfilled."><div className="grid four"><MetricCard label="Videos uploaded" value={analytics.funnel?.uploaded ?? 0} /><MetricCard label="Analysis requested" value={analytics.funnel?.analysis_requested ?? 0} /><MetricCard label="Completed" value={analytics.funnel?.completed ?? 0} /><MetricCard label="Reports generated" value={analytics.funnel?.reports ?? 0} /></div><div className="grid two"><BarList title={`Feature adoption · ${analytics.metric_range?.label ?? rangeLabel}`} data={analytics.events ?? []} /><BarList title="A/B comparison state" data={analytics.comparison_status ?? []} /></div><section className="panel"><h3>Measurement boundary</h3><p>{analytics.metric_label ?? "Events are privacy-filtered before aggregation."}</p></section></Section>
+    <Section eyebrow="04 / TRAINING DATA" title="Datasets and taxonomy" guide="Only media with explicit training consent is eligible for this inventory. Coverage bars show what can safely enter labeling or evaluation."><DatasetView assets={data["/datasets/assets"]?.assets ?? []} taxonomies={data["/taxonomies"]?.taxonomies ?? []} /></Section>
+    <Section eyebrow="05 / HUMAN REVIEW" title="Labeling operations" guide="The queue highlights work awaiting annotation or review. Reviewers cannot approve their own labels, preserving independent quality checks."><LabelView tasks={data["/label-tasks"]?.tasks ?? []} /></Section>
+    <Section eyebrow="06 / CONFIGURATION" title="Algorithm studio" guide="Save a versioned candidate, run a safe baseline comparison, then route it through independent review. The studio cannot execute raw code."><StudioView configs={data["/scoring-configs"]?.configs ?? []} user={user} reload={reload} setNotice={setNotice} setError={setError} /></Section>
+    <Section eyebrow="07 / DELIVERY" title="Release governance" guide="This section connects approved scoring candidates to a tracked release path and supports audited rollback to a known-good configuration."><ReleaseView releases={data["/releases"] ?? {}} user={user} reload={reload} setNotice={setNotice} setError={setError} /></Section>
     <Section eyebrow="08 / TRACEABILITY" title="Release governance history" guide="This view intentionally shows only Algorithm Studio and main-release actions; login and routine activity stay in the protected security log."><AuditView events={data["/audit-events"]?.events ?? []} /></Section>
     <Section eyebrow="09 / GPT-OSS QUALITY" title="Report improvement lab" guide="Use approved reviewer feedback to prepare a grounded evaluation/training set. This does not run unreviewed model code or silently fine-tune production."><QualityLab data={data["/quality-lab"] ?? {}} user={user} reload={reload} setNotice={setNotice} setError={setError} /></Section>
   </>;

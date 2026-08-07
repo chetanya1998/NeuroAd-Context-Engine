@@ -18,7 +18,8 @@ Release notes describe the product milestone documented in this repository. Time
 
 | Feature introduced | Status | Who it helps | What it does | How to use it |
 | --- | --- | --- | --- | --- |
-| Privacy-safe active visitor tracking | Live | Product and operations teams | Counts unique browser sessions that visit the public product within the last 24 hours, without requiring customer accounts or storing a direct identity in the metric record. Respects Do Not Track. | Deploy the public web app and API; the **Active visitors (24h)** card starts populating from new page views. |
+| Privacy-safe active visitor tracking | Live | Product and operations teams | Counts unique browser sessions that visit the public product in the selected monitoring range, without requiring customer accounts or storing a direct identity in the metric record. Respects Do Not Track. | Deploy the public web app and API; the **Active visitors** card starts populating from new page views. |
+| Monitoring time and date ranges | Live | Product, operations, and ML teams | Filters visitor, API-health, latency, and product-usage metrics by 15 minutes, 30 minutes, 1 hour, 6 hours, 1 day, 3 days, 15 days, 30 days, or a custom UTC date-time interval up to 90 days. | Select a preset in the **Monitoring window** bar, or choose **Custom date and time**, set both dates, and select **Apply range**. |
 | Operational health visualizations | Live | Non-technical operators and engineers | Shows API status trends, endpoint latency, p50/p95 latency in milliseconds, queue state, dependency readiness, and video-failure reasons with readable bar charts. | Open **System health** in the internal dashboard and hover the guidance icon for metric definitions. |
 | Algorithm Studio simulations | Live | ML operators and reviewers | Saves immutable candidate scoring configurations and runs a controlled baseline-versus-candidate simulation before release review. Raw runtime code cannot be entered. | Adjust weights so they total 1.00, save a candidate, then select **Run candidate simulation**. |
 | Deployment-aware live build card | Live | Release managers | Reads Git SHA, branch, release ID, build time, and scoring manifest from injected CI/Railway metadata, with clear unavailable states instead of misleading local defaults. | Configure the documented Railway build metadata variables or rely on Railway's Git/deployment variables. |
@@ -129,6 +130,10 @@ workspace for:
   session identifiers until customer accounts exist. A public page view creates
   a rotating anonymous browser/session identifier only when Do Not Track is not
   enabled; the admin API stores a one-way hash for aggregate counting.
+- A global **Monitoring window** control with 15-minute through 30-day presets
+  and custom start/end date-time pickers. The selected range updates visitor,
+  API-health, latency, and product-usage visualizations; custom ranges are
+  capped at 90 days to protect operational performance.
 - Consent-aware dataset inventory, labeling tasks, reviewer controls, and
   versioned taxonomies
 - Immutable scoring configurations, weight/threshold controls, candidate

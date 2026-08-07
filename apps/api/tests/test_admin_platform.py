@@ -109,6 +109,18 @@ def test_scoring_candidate_can_run_a_safe_simulation(tmp_path, monkeypatch):
     assert simulation.json()["result"]["passed"] is True
 
 
+def test_monitoring_endpoints_support_presets_and_custom_datetime_ranges(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    preset = client.get("/internal/admin/v1/system-health?range_minutes=15")
+    assert preset.status_code == 200
+    assert preset.json()["metric_range"] == {"kind": "preset", "minutes": 15, "label": "Last 15 minutes"}
+    custom = client.get("/internal/admin/v1/product-analytics?start=2026-08-05T00:00:00Z&end=2026-08-06T00:00:00Z")
+    assert custom.status_code == 200
+    assert custom.json()["metric_range"]["kind"] == "custom"
+    assert client.get("/internal/admin/v1/overview?range_minutes=2").status_code == 422
+
+
 def test_dataset_creation_rejects_media_without_training_consent(tmp_path, monkeypatch):
     client, execute = make_client(tmp_path, monkeypatch)
     execute("insert into videos (id, title, status, created_at) values ('video_1', 'Example', 'completed', '2026-08-06T00:00:00')")

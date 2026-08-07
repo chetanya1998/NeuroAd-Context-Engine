@@ -30,6 +30,7 @@ INVITE_TTL_HOURS = 72
 ROLES = {"platform_admin", "ml_operator", "labeler", "reviewer", "observer"}
 ROLE_RANK = {"observer": 0, "labeler": 1, "ml_operator": 2, "reviewer": 3, "platform_admin": 4}
 PASSWORD_HASHER = PasswordHasher(type=Type.ID)
+METRIC_RANGE_MINUTES = {15, 30, 60, 360, 1440, 4320, 21600, 43200}
 
 DEFAULT_SCORING_CONFIG = {
     "schema_version": 1,
@@ -85,6 +86,40 @@ def _now() -> str:
 
 def _iso_after(hours: int) -> str:
     return (datetime.utcnow() + timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def _metric_window(range_minutes: int, start: Optional[str], end: Optional[str]) -> tuple[str, str, dict[str, str | int]]:
+    """Resolve approved dashboard presets or an explicit UTC date-time range."""
+    if start or end:
+        if not start or not end:
+            raise HTTPException(422, "Custom monitoring requires both a start and end date/time.")
+        try:
+            start_at = datetime.fromisoformat(start.replace("Z", "+00:00")).replace(tzinfo=None)
+            end_at = datetime.fromisoformat(end.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError as exc:
+            raise HTTPException(422, "Monitoring dates must use ISO 8601 date-time values.") from exc
+        if start_at >= end_at:
+            raise HTTPException(422, "The monitoring end date/time must be after the start.")
+        if end_at - start_at > timedelta(days=90):
+            raise HTTPException(422, "Custom monitoring ranges may not exceed 90 days.")
+        return (
+            start_at.isoformat(timespec="seconds"),
+            end_at.isoformat(timespec="seconds"),
+            {"kind": "custom", "label": f"{start_at.strftime('%d %b %H:%M')} – {end_at.strftime('%d %b %H:%M')} UTC"},
+        )
+    if range_minutes not in METRIC_RANGE_MINUTES:
+        raise HTTPException(422, "Choose an approved monitoring interval or provide a custom start and end.")
+    end_at = datetime.utcnow()
+    start_at = end_at - timedelta(minutes=range_minutes)
+    label = {
+        15: "Last 15 minutes", 30: "Last 30 minutes", 60: "Last 1 hour", 360: "Last 6 hours",
+        1440: "Last 1 day", 4320: "Last 3 days", 21600: "Last 15 days", 43200: "Last 30 days",
+    }[range_minutes]
+    return (
+        start_at.isoformat(timespec="seconds"),
+        end_at.isoformat(timespec="seconds"),
+        {"kind": "preset", "minutes": range_minutes, "label": label},
+    )
 
 
 def _valid_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -341,35 +376,35 @@ def create_admin_router(services: AdminServices) -> APIRouter:
         return {"status": "accepted"}
 
     @router.get("/overview")
-    def overview(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-        today = (datetime.utcnow() - timedelta(days=1)).isoformat(timespec="seconds")
+    def overview(range_minutes: int = 1440, start: Optional[str] = None, end: Optional[str] = None, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        since, until, metric_range = _metric_window(range_minutes, start, end)
         video_rows = services.query_all("select status, count(*) as count from videos group by status")
         job_rows = services.query_all("select status, count(*) as count from jobs group by status")
-        recent_events = services.query_one("select count(distinct actor_hash) as count from admin_metric_events where scope = 'product' and actor_hash is not null and occurred_at >= ?", (today,))
+        recent_events = services.query_one("select count(distinct actor_hash) as count from admin_metric_events where scope = 'product' and actor_hash is not null and occurred_at >= ? and occurred_at <= ?", (since, until))
         active = services.query_one("select id, version, created_at from ml_scoring_config_versions where status = 'active' limit 1")
-        return {"videos": {row["status"]: row["count"] for row in video_rows}, "jobs": {row["status"]: row["count"] for row in job_rows}, "unique_visitors_24h": int(recent_events["count"] if recent_events else 0), "active_config": dict(active) if active else None, "build": services.build_metadata()}
+        return {"videos": {row["status"]: row["count"] for row in video_rows}, "jobs": {row["status"]: row["count"] for row in job_rows}, "unique_visitors": int(recent_events["count"] if recent_events else 0), "metric_range": metric_range, "active_config": dict(active) if active else None, "build": services.build_metadata()}
 
     @router.get("/system-health")
-    def system_health(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-        since = (datetime.utcnow() - timedelta(days=7)).isoformat(timespec="seconds")
-        by_day = services.query_all("select substr(occurred_at, 1, 10) as day, status_code, count(*) as count from admin_metric_events where scope = 'api' and occurred_at >= ? group by day, status_code order by day", (since,))
-        latency = services.query_all("select route, count(*) as count, avg(duration_ms) as avg_ms, max(duration_ms) as max_ms from admin_metric_events where scope = 'api' and occurred_at >= ? group by route order by count desc limit 12", (since,))
-        durations = [int(row["duration_ms"] or 0) for row in services.query_all("select duration_ms from admin_metric_events where scope = 'api' and occurred_at >= ? and duration_ms is not null order by duration_ms", (since,))]
+    def system_health(range_minutes: int = 1440, start: Optional[str] = None, end: Optional[str] = None, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        since, until, metric_range = _metric_window(range_minutes, start, end)
+        by_day = services.query_all("select substr(occurred_at, 1, 10) as day, status_code, count(*) as count from admin_metric_events where scope = 'api' and occurred_at >= ? and occurred_at <= ? group by day, status_code order by day", (since, until))
+        latency = services.query_all("select route, count(*) as count, avg(duration_ms) as avg_ms, max(duration_ms) as max_ms from admin_metric_events where scope = 'api' and occurred_at >= ? and occurred_at <= ? group by route order by count desc limit 12", (since, until))
+        durations = [int(row["duration_ms"] or 0) for row in services.query_all("select duration_ms from admin_metric_events where scope = 'api' and occurred_at >= ? and occurred_at <= ? and duration_ms is not null order by duration_ms", (since, until))]
         def percentile(percent: float) -> int:
             if not durations:
                 return 0
             return durations[min(len(durations) - 1, int((len(durations) - 1) * percent))]
         failures = services.query_all("select coalesce(error, 'unknown') as reason, count(*) as count from jobs where status = 'failed' group by reason order by count desc limit 8")
         dependencies = services.runtime_dependencies()
-        return {"request_statuses": [dict(row) for row in by_day], "latency": [dict(row) for row in latency], "latency_summary": {"p50_ms": percentile(.50), "p95_ms": percentile(.95), "p99_ms": percentile(.99)}, "failure_reasons": [dict(row) for row in failures], "queue": {"queued": int(services.query_one("select count(*) as count from jobs where status = 'queued'")["count"]), "processing": int(services.query_one("select count(*) as count from jobs where status = 'processing'")["count"])}, "dependencies": dependencies}
+        return {"metric_range": metric_range, "request_statuses": [dict(row) for row in by_day], "latency": [dict(row) for row in latency], "latency_summary": {"p50_ms": percentile(.50), "p95_ms": percentile(.95), "p99_ms": percentile(.99)}, "failure_reasons": [dict(row) for row in failures], "queue": {"queued": int(services.query_one("select count(*) as count from jobs where status = 'queued'")["count"]), "processing": int(services.query_one("select count(*) as count from jobs where status = 'processing'")["count"])}, "dependencies": dependencies}
 
     @router.get("/product-analytics")
-    def product_analytics(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-        since = (datetime.utcnow() - timedelta(days=30)).isoformat(timespec="seconds")
-        events = services.query_all("select substr(occurred_at, 1, 10) as day, event_name, count(*) as count, count(distinct actor_hash) as actors from admin_metric_events where scope = 'product' and occurred_at >= ? group by day, event_name order by day", (since,))
+    def product_analytics(range_minutes: int = 1440, start: Optional[str] = None, end: Optional[str] = None, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        since, until, metric_range = _metric_window(range_minutes, start, end)
+        events = services.query_all("select substr(occurred_at, 1, 10) as day, event_name, count(*) as count, count(distinct actor_hash) as actors from admin_metric_events where scope = 'product' and occurred_at >= ? and occurred_at <= ? group by day, event_name order by day", (since, until))
         comparisons = services.query_all("select status, count(*) as count from comparisons group by status")
         funnel = {"uploaded": int(services.query_one("select count(*) as count from videos")["count"]), "analysis_requested": int(services.query_one("select count(*) as count from jobs")["count"]), "completed": int(services.query_one("select count(*) as count from videos where status = 'completed'")["count"]), "reports": int(services.query_one("select count(*) as count from reports")["count"])}
-        return {"events": [dict(row) for row in events], "comparison_status": [dict(row) for row in comparisons], "funnel": funnel, "metric_label": "Unique visitors/sessions until customer accounts are introduced."}
+        return {"metric_range": metric_range, "events": [dict(row) for row in events], "comparison_status": [dict(row) for row in comparisons], "funnel": funnel, "metric_label": "Unique visitors/sessions until customer accounts are introduced."}
 
     @router.get("/datasets/assets")
     def list_assets(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
