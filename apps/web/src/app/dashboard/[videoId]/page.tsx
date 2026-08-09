@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CircleHelp, Download, Eye, FileJson, FileText, Search, ShieldCheck, TrendingDown, TrendingUp, Zap } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -22,12 +22,14 @@ import {
 } from "recharts";
 import { AttentionTimeline } from "@/components/attention-timeline";
 import { BrandFitPanel } from "@/components/brand-fit-panel";
+import { ContentSignalOverview } from "@/components/content-signal-overview";
 import { SegmentDrawer } from "@/components/segment-drawer";
 import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { AppShell } from "@/components/shell";
 import { Badge, Button, Card } from "@/components/ui";
 import { capture } from "@/lib/analytics";
 import { absoluteMediaUrl, exportUrl, formatRange, getAnalysis } from "@/lib/api";
+import { useExplorerStore } from "@/lib/store";
 import type { AnalysisPayload, RecommendationTier, Segment } from "@/lib/types";
 
 const tabs = ["Segments", "Objects", "Transcript", "Evidence", "Ad Matches", "Recommendations"] as const;
@@ -72,6 +74,8 @@ export default function DashboardPage() {
   const videoId = params.videoId;
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Segments");
   const [query, setQuery] = useState("");
+  const [seekTarget, setSeekTarget] = useState<{ time: number; requestId: number } | null>(null);
+  const setSelectedSegment = useExplorerStore((state) => state.setSelectedSegment);
 
   const analysisQuery = useQuery({
     queryKey: ["analysis", videoId],
@@ -104,6 +108,13 @@ export default function DashboardPage() {
       return haystack.includes(needle);
     });
   }, [analysis, query]);
+
+  const handleSignalSeek = (time: number) => {
+    setSeekTarget({ time, requestId: Date.now() });
+    const segment = analysis?.segments.find((item) => time >= item.start && time < item.end);
+    if (segment) setSelectedSegment(segment);
+    window.setTimeout(() => document.getElementById("video-preview")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
 
   if (analysisQuery.isLoading) {
     return (
@@ -152,12 +163,17 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        <DashboardSnapshot analysis={analysis} />
+        <ContentSignalOverview analysis={analysis} onSeek={handleSignalSeek} />
+
+        <section className="mt-10">
+          <SectionTitle title="Current scores" body="The original 0–100 metrics are preserved for existing reports, exports, and technical comparisons." />
+          <DashboardSnapshot analysis={analysis} />
+        </section>
 
         <EvidenceReadiness analysis={analysis} />
 
         <section className="mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
-          <VideoPreview analysis={analysis} />
+          <VideoPreview analysis={analysis} seekTarget={seekTarget} />
           <PlacementDecision analysis={analysis} />
         </section>
 
@@ -229,7 +245,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section className="mt-8">
+        <section id="segment-evidence" className="mt-8">
           <SectionTitle title="Segment Evidence" body="Review the exact timestamp evidence behind objects, transcript, ad matches, and recommendations." />
           <div className="flex flex-wrap gap-2 border-b border-border">
             {tabs.map((tab) => (
@@ -260,7 +276,7 @@ export default function DashboardPage() {
           </div>
         </section>
       </div>
-      <SegmentDrawer />
+      <SegmentDrawer videoId={videoId} />
     </AppShell>
   );
 }
@@ -423,17 +439,23 @@ function DashboardSnapshot({ analysis }: { analysis: AnalysisPayload }) {
   );
 }
 
-function VideoPreview({ analysis }: { analysis: AnalysisPayload }) {
+function VideoPreview({ analysis, seekTarget }: { analysis: AnalysisPayload; seekTarget: { time: number; requestId: number } | null }) {
   const videoUrl = absoluteMediaUrl(analysis.video.file_url);
   const thumbnailUrl = absoluteMediaUrl(analysis.video.thumbnail);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (!seekTarget || !videoRef.current) return;
+    videoRef.current.currentTime = seekTarget.time;
+  }, [seekTarget]);
   return (
-    <Card className="overflow-hidden bg-black">
+    <div id="video-preview">
+      <Card className="overflow-hidden bg-black">
       <div className="border-b border-white/10 p-6">
         <GuidedLabel label="Video Preview" guide="Preview the uploaded or ingested media while reviewing the scoring evidence." />
       </div>
       <div className="ph-no-capture aspect-video bg-zinc-950">
         {videoUrl ? (
-          <video id="video-preview-player" className="h-full w-full bg-black object-contain" src={videoUrl} poster={thumbnailUrl ?? undefined} controls preload="metadata" />
+          <video id="video-preview-player" ref={videoRef} className="h-full w-full bg-black object-contain" src={videoUrl} poster={thumbnailUrl ?? undefined} controls preload="metadata" />
         ) : analysis.video.embed_url ? (
           <iframe className="h-full w-full" src={analysis.video.embed_url} title={analysis.video.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
         ) : thumbnailUrl ? (
@@ -443,7 +465,8 @@ function VideoPreview({ analysis }: { analysis: AnalysisPayload }) {
           <div className="flex h-full items-center justify-center text-sm text-slate-500">No preview media available.</div>
         )}
       </div>
-    </Card>
+      </Card>
+    </div>
   );
 }
 

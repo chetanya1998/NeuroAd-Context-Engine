@@ -10,7 +10,7 @@ import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { Badge, Button, Card } from "@/components/ui";
 import { capture } from "@/lib/analytics";
 import { comparisonExportUrl, formatRange, getComparison } from "@/lib/api";
-import type { ComparisonVideo } from "@/lib/types";
+import type { ComparisonPayload, ComparisonVideo } from "@/lib/types";
 
 const metricLabel: Record<string, string> = {
   attention: "Viewer attention",
@@ -20,7 +20,16 @@ const metricLabel: Record<string, string> = {
   visual_quality: "Visual clarity",
   transcript_clarity: "Speech clarity",
   creator_readiness: "Campaign readiness",
-  ad_slot: "Best ad moment"
+  ad_slot: "Best ad moment",
+  hook_strength: "Best hook",
+  content_momentum: "Creative momentum",
+  message_clarity: "Message clarity",
+  low_creative_friction: "Low creative friction",
+  placement_readiness: "Placement readiness",
+  keyword_coverage: "Keyword coverage",
+  text_readability: "On-screen text readability",
+  audio_stability: "Audio stability",
+  evidence_reliability: "Evidence reliability"
 };
 
 const metricHelp: Record<string, string> = {
@@ -31,7 +40,16 @@ const metricHelp: Record<string, string> = {
   visual_quality: "How clear and usable the visuals look.",
   transcript_clarity: "How clearly the spoken words were understood.",
   creator_readiness: "How close the video is to being campaign-ready.",
-  ad_slot: "How natural the best ad moment looks."
+  ad_slot: "How natural the best ad moment looks.",
+  hook_strength: "Whether the first three to five seconds give a clear reason to continue.",
+  content_momentum: "How consistently visual, audio, and narrative movement is maintained.",
+  message_clarity: "How clearly the topic and purpose are communicated.",
+  low_creative_friction: "How effectively the edit avoids silence, repetition, clutter, and weak transitions.",
+  placement_readiness: "Whether a moment has enough context and evidence for a CTA, product, or ad insertion.",
+  keyword_coverage: "How broadly the video supports useful content and campaign keywords.",
+  text_readability: "How reliably on-screen text can be read on a mobile-sized frame.",
+  audio_stability: "How consistently the audio avoids abrupt level changes or discontinuities.",
+  evidence_reliability: "How much transcript, visual, audio, and extractor-health evidence supports the findings."
 };
 
 export default function ComparisonDashboardPage() {
@@ -82,6 +100,8 @@ export default function ComparisonDashboardPage() {
         </section>
         {data.comparison.completed_videos >= 2 ? <InsightReportLauncher targetType="comparison" targetId={data.comparison.id} initial={data.detailed_insight_report} /> : null}
 
+        {data.batch_insights ? <BatchSignalSummary insights={data.batch_insights} /> : null}
+
         <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
           <ComparisonScoreboard rankings={data.rankings} />
           <Card className="min-w-0 p-6">
@@ -117,6 +137,38 @@ function DecisionCard({ title, value, detail, icon, score }: { title: string; va
   return <Card className="min-w-0 p-5"><div className="flex min-w-0 items-center justify-between gap-3"><p className="text-sm font-medium text-zinc-500">{title}</p><span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${iconColors[tone]}`}>{icon}</span></div><p className="mt-4 break-words text-2xl font-semibold text-white">{value}</p><p className="mt-2 break-words text-sm leading-6 text-zinc-500">{detail}</p>{score !== undefined ? <div className="mt-4"><ScorePill score={score} /></div> : null}</Card>;
 }
 
+function BatchSignalSummary({ insights }: { insights: NonNullable<ComparisonPayload["batch_insights"]> }) {
+  const winners = [
+    ["Best hook", insights.best_hook],
+    ["Most consistent momentum", insights.most_consistent_creative_momentum],
+    ["Clearest message", insights.clearest_message],
+    ["Lowest creative friction", insights.lowest_creative_friction],
+    ["Strongest placement moment", insights.strongest_placement_ready_moment],
+    ["Most reliable evidence", insights.evidence_reliability]
+  ] as const;
+  return (
+    <section className="mt-8">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div><h2 className="text-2xl font-semibold text-white">Actionable signals across the batch</h2><p className="mt-2 text-sm leading-6 text-zinc-500">See which creative pattern won, what repeats across videos, and what to reuse next.</p></div>
+        <p className="max-w-sm text-xs leading-5 text-zinc-500">{insights.benchmark_scope}</p>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {winners.map(([label, winner]) => (
+          <Card key={label} className="p-5">
+            <p className="text-sm text-zinc-500">{label}</p>
+            <p className="mt-2 text-xl font-semibold text-white">{winner ? displayTitle(winner.title) : "Not enough evidence"}</p>
+            {winner ? <div className="mt-3 flex flex-wrap items-center gap-2"><ScorePill score={winner.score} />{winner.label ? <Badge tone="cyan">{winner.label}</Badge> : null}</div> : null}
+          </Card>
+        ))}
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <Card className="p-5"><h3 className="font-semibold text-white">Repeated weaknesses</h3><div className="mt-3 space-y-2 text-sm leading-6 text-zinc-400">{insights.repeated_weaknesses?.length ? insights.repeated_weaknesses.map((item) => <p key={item.finding}>• {item.finding} <span className="text-zinc-600">({item.videos} videos)</span></p>) : <p>No repeated weakness has enough evidence yet.</p>}</div></Card>
+        <Card className="p-5"><h3 className="font-semibold text-white">Best practices to reuse</h3><div className="mt-3 space-y-2 text-sm leading-6 text-zinc-400">{insights.best_practices_to_reuse?.length ? insights.best_practices_to_reuse.map((item) => <p key={item}>• {item}</p>) : <p>Complete more analyses to identify reusable patterns.</p>}</div></Card>
+      </div>
+    </section>
+  );
+}
+
 function ComparisonScoreboard({ rankings }: { rankings: ComparisonVideo[] }) {
   return (
     <Card className="min-w-0 overflow-hidden p-6">
@@ -145,7 +197,15 @@ function ComparisonScoreboard({ rankings }: { rankings: ComparisonVideo[] }) {
 
 function MetricComparison({ metrics, rankings }: { metrics: Array<{ metric: string; values: Array<{ video_id: string; value: number; rank: number }> }>; rankings: ComparisonVideo[] }) {
   const videoById = new Map(rankings.map((video) => [video.video_id, video]));
-  const visibleMetrics = metrics.filter((metric) => metric.values.length).slice(0, 8);
+  const priority = ["hook_strength", "content_momentum", "message_clarity", "low_creative_friction", "placement_readiness", "text_readability", "audio_stability", "evidence_reliability"];
+  const visibleMetrics = metrics
+    .filter((metric) => metric.values.length)
+    .sort((left, right) => {
+      const leftIndex = priority.indexOf(left.metric);
+      const rightIndex = priority.indexOf(right.metric);
+      return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+    })
+    .slice(0, 12);
   return (
     <Card className="min-w-0 overflow-hidden p-6">
       <div className="flex flex-wrap items-center gap-2"><Scale className="h-5 w-5 text-zinc-200" /><h2 className="text-2xl font-semibold text-white">What made one video better?</h2><Badge tone="cyan">Beta</Badge></div>

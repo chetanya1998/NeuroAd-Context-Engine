@@ -1,4 +1,4 @@
-import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, ProductFitPayload, ProductProfile } from "./types";
+import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, ProductFitPayload, ProductProfile, SegmentEvidence } from "./types";
 import { analyticsHeaders } from "./analytics";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -210,6 +210,25 @@ export async function createComparisonInsightReport(comparisonId: string) {
 export async function getInsightJob(jobId: string) { return parseResponse<InsightJob>(await apiFetch(`${API_BASE}/api/insight-jobs/${jobId}`)); }
 export async function getInsightReport(reportId: string) { return parseResponse<InsightReport>(await apiFetch(`${API_BASE}/api/insight-reports/${reportId}`)); }
 export function insightExportUrl(reportId: string, format: "pdf" | "json") { return `${API_BASE}/api/insight-reports/${reportId}/export?format=${format}`; }
+
+export async function getSignalTimeline(videoId: string, families = ["visual", "audio", "narrative", "social"]) {
+  const params = new URLSearchParams({ resolution: "auto", families: families.join(",") });
+  return parseResponse<NonNullable<AnalysisPayload["timeline_summary"]> & { video_id: string; analysis_version?: string }>(
+    await apiFetch(`${API_BASE}/api/videos/${videoId}/timeline?${params.toString()}`)
+  );
+}
+
+export async function getSegmentEvidence(videoId: string, segmentId: string) {
+  return parseResponse<SegmentEvidence>(
+    await apiFetch(`${API_BASE}/api/videos/${videoId}/segments/${segmentId}/evidence`)
+  );
+}
+
+export async function reanalyzeVideo(videoId: string) {
+  return parseResponse<{ job_id: string; status: string; target_analysis_version: string }>(
+    await apiFetch(`${API_BASE}/api/videos/${videoId}/reanalyze`, { method: "POST" })
+  );
+}
 
 export async function resolveProduct(url: string) {
   return parseResponse<ProductProfile>(

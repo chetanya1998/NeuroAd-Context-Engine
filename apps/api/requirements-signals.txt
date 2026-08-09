@@ -1,0 +1,5 @@
+scenedetect==0.7.1
+mediapipe==0.10.18; platform_machine == "aarch64"
+mediapipe==0.10.35; platform_machine != "aarch64"
+librosa==0.11.0
+silero-vad[onnx-cpu]==6.2.1

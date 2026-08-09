@@ -10,6 +10,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+from content_signals import build_signal_payload
 from main import (
     attention_label,
     convertible_video_suffix_from_url,
@@ -38,9 +39,9 @@ def test_segmentation_short_video_uses_two_second_chunks():
     assert segments[0]["end"] == 2
 
 
-def test_segmentation_caps_long_video_at_three_minutes():
+def test_segmentation_analyzes_the_full_configured_ten_minutes():
     segments = make_segments(900)
-    assert segments[-1]["end"] == 180
+    assert segments[-1]["end"] == 600
 
 
 def test_attention_score_is_bounded():
@@ -101,7 +102,7 @@ def test_remote_video_without_file_extension_uses_extractor(monkeypatch):
 def test_health_reports_deployment_limits():
     payload = health()
     assert payload["limits"]["max_upload_mb"] == 200
-    assert payload["limits"]["max_analysis_seconds"] == 180
+    assert payload["limits"]["max_analysis_seconds"] == 600
     assert "ffmpeg" in payload["dependencies"]
 
 
@@ -111,12 +112,13 @@ def test_youtube_bot_challenge_is_detected():
 
 
 def test_object_detection_falls_back_when_model_loading_fails(monkeypatch):
+    monkeypatch.setenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo")
     monkeypatch.delenv("NEUROAD_REQUIRE_OBJECT_DETECTION", raising=False)
 
     def broken_detector(frames):
-        raise RuntimeError("OpenCV could not import MobileNet graph")
+        raise RuntimeError("YOLO model could not be loaded")
 
-    monkeypatch.setattr(main, "detect_mobilenet_ssd_objects", broken_detector)
+    monkeypatch.setattr(main, "detect_yolo_objects", broken_detector)
     monkeypatch.setattr(main, "detect_lightweight_visual_context", lambda frames: {1: []})
 
     assert main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}}) == {1: []}
@@ -339,13 +341,24 @@ def test_vad_suppresses_silent_regions(monkeypatch, tmp_path):
     assert int(main.np.max(main.np.abs(samples[-1200:]))) > 0
 
 
-def test_yolo_unavailable_falls_back_to_mobilenet(monkeypatch):
+def test_yolo_unavailable_falls_back_to_mobilenet(monkeypatch, tmp_path):
     monkeypatch.setenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo")
     monkeypatch.delenv("NEUROAD_REQUIRE_OBJECT_DETECTION", raising=False)
+    graph = tmp_path / "model.pb"
+    config = tmp_path / "model.pbtxt"
+    graph.write_bytes(b"model")
+    config.write_text("model")
+    monkeypatch.setattr(main, "MOBILENET_SSD_GRAPH", graph)
+    monkeypatch.setattr(main, "MOBILENET_SSD_CONFIG", config)
     monkeypatch.setattr(main, "detect_yolo_objects", lambda frames: (_ for _ in ()).throw(RuntimeError("missing yolo")))
     monkeypatch.setattr(main, "detect_mobilenet_ssd_objects", lambda frames: {1: [{"label": "person", "confidence": 0.7}]})
 
-    assert main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}}) == {1: [{"label": "person", "confidence": 0.7}]}
+    detections = main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}})
+
+    assert detections[1][0]["label"] == "person"
+    assert detections[1][0]["detector"] == "mobilenet_fallback"
+    assert main.OBJECT_DETECTION_RUNTIME["degraded"] is True
+    assert "missing yolo" in main.OBJECT_DETECTION_RUNTIME["fallback_reason"]
 
 
 def test_faster_whisper_evidence_is_aligned_to_the_segment():
@@ -374,6 +387,38 @@ def test_faster_whisper_evidence_is_aligned_to_the_segment():
     assert evidence["source"] == "faster_whisper"
     assert evidence["language"] == "en"
     assert evidence["word_confidence"] > 0.9
+    assert evidence["words"][0]["confidence"] == 0.91
+
+
+def test_hindi_transcript_words_and_code_switching_are_not_treated_as_silence():
+    evidence = transcript_evidence_for_segment(
+        0,
+        2,
+        [
+            {
+                "start": 0,
+                "end": 2,
+                "text": "आज hydration कैसे बेहतर करें",
+                "source": "faster_whisper",
+                "language": "hi",
+                "language_probability": 0.96,
+                "words": [
+                    {"word": "आज", "start": 0.0, "end": 0.3, "probability": 0.94},
+                    {"word": "hydration", "start": 0.3, "end": 0.8, "probability": 0.9},
+                    {"word": "कैसे", "start": 0.8, "end": 1.2, "probability": 0.93},
+                ],
+            }
+        ],
+    )
+    insights = main.analyze_transcript_segment(
+        "आज hydration कैसे बेहतर करें", 2, 0, 0.8, evidence
+    )
+
+    assert evidence["language"] == "hi-en"
+    assert evidence["language_method"] == "script_and_asr"
+    assert insights["word_count"] == 5
+    assert insights["silence_penalty"] == 0
+    assert "कैसे" in insights["hook_terms"]
 
 
 def test_ad_slot_score_rewards_context_safety_and_low_drop_risk():
@@ -632,3 +677,243 @@ def test_object_normalization_preserves_mixed_detections():
     assert normalized[1] == [{"label": "person", "confidence": 0.91}]
     assert normalized[2] == [{"label": "person", "confidence": 0.88}, {"label": "bottle", "confidence": 0.74}]
     assert normalized[3] == [{"label": "person", "confidence": 0.84}]
+
+
+def test_object_tracking_preserves_multiple_people_and_reuses_temporal_tracks():
+    detections = {
+        1: [
+            {"label": "person", "confidence": 0.92, "bbox": [0, 0, 100, 200], "frame_timestamp": 0.5},
+            {"label": "person", "confidence": 0.88, "bbox": [180, 0, 280, 200], "frame_timestamp": 0.5},
+            {"label": "person", "confidence": 0.90, "bbox": [4, 0, 104, 200], "frame_timestamp": 0.8},
+        ]
+    }
+
+    tracked = main.finalize_object_detections(detections, detector="yolo_local")[1]
+
+    assert len(tracked) == 3
+    first, second = [item for item in tracked if item["frame_timestamp"] == 0.5]
+    continuation = next(item for item in tracked if item["frame_timestamp"] == 0.8)
+    assert first["track_id"] != second["track_id"]
+    assert continuation["track_id"] == first["track_id"]
+    assert [item["instance_index"] for item in (first, second)] == [0, 1]
+
+
+def test_production_ultralytics_inference_requires_license_acknowledgement(monkeypatch):
+    monkeypatch.setenv("NEUROAD_ENVIRONMENT", "production")
+    monkeypatch.setenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo")
+    monkeypatch.delenv("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", raising=False)
+
+    with pytest.raises(RuntimeError, match="license compliance is acknowledged"):
+        main.detect_objects({})
+
+
+def test_yoloe_failure_uses_yolo26_with_explicit_fallback_provenance(monkeypatch, tmp_path):
+    yolo_model = tmp_path / "yolo26s.pt"
+    yolo_model.write_bytes(b"test-weight-placeholder")
+    monkeypatch.setenv("NEUROAD_ENVIRONMENT", "development")
+    monkeypatch.setenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yoloe")
+    monkeypatch.setattr(main, "YOLO_MODEL_PATH", yolo_model)
+    monkeypatch.setattr(main, "detect_yoloe_objects", lambda _frames: (_ for _ in ()).throw(RuntimeError("GPU unavailable")))
+    monkeypatch.setattr(
+        main,
+        "detect_yolo_objects",
+        lambda _frames: {
+            1: [
+                {
+                    "label": "bottle",
+                    "confidence": 0.88,
+                    "bbox": [10, 20, 90, 180],
+                    "frame_timestamp": 0.5,
+                }
+            ]
+        },
+    )
+
+    result = main.detect_objects({1: {"path": "unused", "timestamp": 0.5}})
+
+    assert result[1][0]["detector"] == "yolo26_cpu"
+    assert result[1][0]["track_id"] == "bottle_001"
+    assert main.OBJECT_DETECTION_RUNTIME["degraded"] is False
+    assert "GPU unavailable" in main.OBJECT_DETECTION_RUNTIME["fallback_reason"]
+
+
+def test_signal_payload_adds_six_actionable_metrics_without_removing_legacy_scores():
+    segments = [
+        {
+            "id": "seg_1",
+            "start": 0.0,
+            "end": 2.0,
+            "attention_score": 78,
+            "ad_fit_score": 72,
+            "drop_risk_score": 22,
+            "ad_slot_score": 74,
+            "transcript": "How do you stay hydrated? This bottle keeps water cold.",
+            "transcript_insights": {
+                "word_count": 10,
+                "words_per_second": 2.5,
+                "transcript_confidence": 88,
+                "hook_terms": ["how"],
+                "cta_terms": [],
+                "repetition_penalty": 0.0,
+                "early_hook": True,
+                "language": "en",
+            },
+            "visual_evidence": {
+                "sampled_frames": 12,
+                "visual_novelty": 0.72,
+                "motion": 0.55,
+                "motion_acceleration": 0.3,
+                "visual_clutter": 0.2,
+                "blur_penalty": 0.1,
+                "frame_width": 1080,
+                "frame_height": 1920,
+            },
+            "audio_evidence": {"available": True, "audio_energy": 0.62, "silence_duration": 0.1, "silence_ratio": 0.05, "confidence": 0.9},
+            "detector_provenance": {"active_detector": "yolo_local", "degraded": False},
+            "objects": [{"label": "bottle", "confidence": 0.9, "bbox": [300, 400, 800, 1400], "track_id": "bottle_001"}],
+            "topics": [{"label": "fitness", "confidence": 0.82}],
+            "strong_signals": ["clear hook", "visible product"],
+            "failed_or_weak_signals": [],
+            "ad_slot_reasons": ["clear product context"],
+        },
+        {
+            "id": "seg_2",
+            "start": 2.0,
+            "end": 4.0,
+            "attention_score": 42,
+            "ad_fit_score": 48,
+            "drop_risk_score": 61,
+            "ad_slot_score": 45,
+            "transcript": "This bottle keeps water cold.",
+            "transcript_insights": {
+                "word_count": 6,
+                "words_per_second": 1.0,
+                "transcript_confidence": 76,
+                "hook_terms": [],
+                "cta_terms": [],
+                "repetition_penalty": 0.7,
+                "early_hook": False,
+                "language": "en",
+            },
+            "visual_evidence": {
+                "sampled_frames": 6,
+                "visual_novelty": 0.08,
+                "motion": 0.05,
+                "motion_acceleration": 0.02,
+                "visual_clutter": 0.25,
+                "blur_penalty": 0.2,
+                "frame_width": 1080,
+                "frame_height": 1920,
+            },
+            "audio_evidence": {"available": True, "audio_energy": 0.2, "silence_duration": 1.6, "silence_ratio": 0.8, "confidence": 0.9},
+            "detector_provenance": {"active_detector": "yolo_local", "degraded": False},
+            "objects": [{"label": "bottle", "confidence": 0.86, "bbox": [302, 400, 802, 1400], "track_id": "bottle_001"}],
+            "topics": [{"label": "fitness", "confidence": 0.78}],
+            "strong_signals": [],
+            "failed_or_weak_signals": ["long pause", "repeated message"],
+            "ad_slot_reasons": [],
+        },
+    ]
+
+    payload = build_signal_payload(segments)
+
+    assert {metric["key"] for metric in payload["decision_metrics"]} == {
+        "content_momentum", "hook_strength", "message_clarity", "creative_friction", "placement_readiness", "evidence_reliability"
+    }
+    assert all(metric["confidence"] in {"High", "Medium", "Low"} for metric in payload["decision_metrics"])
+    assert all(metric["timestamp"]["label"] and metric["next_action"] for metric in payload["decision_metrics"])
+    assert segments[0]["attention_score"] == 78
+    assert payload["priority_recommendations"][0]["status"] == "Strongest moment"
+    assert any("silence" in reason for card in payload["priority_recommendations"] for reason in card["why"])
+
+
+def test_degraded_detector_cannot_create_ready_placement_recommendation():
+    segment = {
+        "id": "seg_1", "start": 0.0, "end": 2.0, "attention_score": 90, "ad_fit_score": 90,
+        "drop_risk_score": 5, "ad_slot_score": 95, "transcript": "Buy this product now",
+        "transcript_insights": {"word_count": 4, "words_per_second": 2, "transcript_confidence": 95, "cta_terms": ["buy"], "hook_terms": [], "repetition_penalty": 0},
+        "visual_evidence": {"sampled_frames": 12, "visual_novelty": 0.8, "motion": 0.7, "blur_penalty": 0.05},
+        "audio_evidence": {"available": True, "audio_energy": 0.8, "silence_duration": 0, "silence_ratio": 0, "confidence": 0.9},
+        "detector_provenance": {"active_detector": "heuristic_fallback", "degraded": True},
+        "objects": [{"label": "product", "confidence": 0.4}], "topics": [{"label": "shopping", "confidence": 0.9}],
+        "strong_signals": [], "failed_or_weak_signals": [], "ad_slot_reasons": ["high score"],
+    }
+
+    payload = build_signal_payload([segment])
+    placement = next(metric for metric in payload["decision_metrics"] if metric["key"] == "placement_readiness")
+
+    assert placement["label"] == "Review"
+    assert placement["evidence_reliability"] != "High"
+
+
+def test_versioned_signal_storage_preserves_legacy_analysis_contract(monkeypatch, tmp_path):
+    database = tmp_path / "neuroad.db"
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"consent-safe-test-media")
+    monkeypatch.setattr(main, "DB_PATH", database)
+    main.init_db()
+    main.execute(
+        """
+        insert into videos
+        (id, source_type, source_url, title, description, thumbnail_url, duration_seconds, status, file_path, embed_url, created_at)
+        values ('video_signals', 'upload', null, 'Signal test', '', null, 2, 'completed', ?, null, ?)
+        """,
+        (str(source), main.utc_now()),
+    )
+    run_id = main.create_analysis_run("video_signals", source)
+    segment = {
+        "start": 0.0, "end": 2.0, "attention_score": 80, "ad_fit_score": 75, "drop_risk_score": 20,
+        "brand_safety_score": 100, "label": "High attention", "summary": "Clear product moment.",
+        "transcript": "See this bottle now", "transcript_insights": {"word_count": 4, "words_per_second": 2, "transcript_confidence": 90, "cta_terms": ["see"], "hook_terms": ["see"], "repetition_penalty": 0},
+        "visual_evidence": {"sampled_frames": 12, "visual_novelty": 0.7, "motion": 0.5, "blur_penalty": 0.1, "frame_width": 1080, "frame_height": 1920},
+        "audio_evidence": {
+            "available": True,
+            "audio_energy": 0.6,
+            "silence_duration": 0.1,
+            "silence_ratio": 0.05,
+            "confidence": 0.9,
+            "waveform_energy": [0.1, 0.6, 0.3],
+        },
+        "detector_provenance": {"active_detector": "yolo_local", "degraded": False},
+        "score_reasons": ["clear visual movement"], "recommendation": "Keep the product visible.",
+        "recommendation_tier": "Strong ad slot", "recommendation_confidence": 85, "evidence_mode": "transcript_visual",
+        "strong_signals": ["visible product"], "failed_or_weak_signals": [], "ad_slot_score": 82,
+        "ad_slot_reasons": ["clear context"], "is_best_ad_slot": True, "thumbnail_url": None,
+        "objects": [{"label": "bottle", "confidence": 0.92, "bbox": [100, 100, 500, 900], "frame_timestamp": 0.5, "track_id": "bottle_001", "detector": "yolo_local", "instance_index": 0}],
+        "topics": [{"label": "fitness", "confidence": 0.8}],
+        "ad_matches": [{"category": "fitness", "ad_fit_score": 75, "reason": "product context", "confidence": 80}],
+        "ocr_evidence": {"available": False}, "social_evidence": {"available": False},
+    }
+
+    main.write_analysis("video_signals", [segment], analysis_run_id=run_id)
+    payload = main.build_analysis_payload(main.query_one("select * from videos where id = 'video_signals'"))
+    lazy_evidence = main.get_segment_evidence("video_signals", payload["segments"][0]["id"])
+
+    assert main.query_one("select count(*) as count from object_tracks where analysis_run_id = ?", (run_id,))["count"] == 1
+    assert main.query_one("select count(*) as count from decision_metrics where analysis_run_id = ?", (run_id,))["count"] == 6
+    assert main.query_one("select count(*) as count from signal_samples where analysis_run_id = ?", (run_id,))["count"] > 0
+    assert payload["segments"][0]["attention_score"] == 80
+    assert "waveform_energy" not in payload["segments"][0]["audio_evidence"]
+    assert lazy_evidence["audio"]["waveform_energy"] == [0.1, 0.6, 0.3]
+    assert len(payload["decision_metrics"]) == 6
+    assert payload["analysis_version"] == "content-signals-v1"
+
+
+def test_extractor_cache_is_versioned_by_source_and_configuration(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "DB_PATH", tmp_path / "cache.db")
+    monkeypatch.setenv("NEUROAD_ENABLE_EXTRACTOR_CACHE", "1")
+    main.init_db()
+    configuration = {"model": "multilingual-small", "threshold": 0.5}
+    payload = {"evidence": {1: {"available": True, "confidence": 0.88}}}
+
+    main.write_extractor_cache("source-a", "audio_speech", "v1", configuration, payload)
+
+    cached = main.read_extractor_cache("source-a", "audio_speech", "v1", configuration)
+    changed = main.read_extractor_cache(
+        "source-a", "audio_speech", "v1", {**configuration, "threshold": 0.6}
+    )
+    different_source = main.read_extractor_cache("source-b", "audio_speech", "v1", configuration)
+
+    assert cached == {"evidence": {"1": {"available": True, "confidence": 0.88}}}
+    assert changed is None
+    assert different_source is None

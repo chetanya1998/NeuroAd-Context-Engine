@@ -103,7 +103,7 @@ This repository contains a working local MVP:
 - FastAPI backend
 - SQLite persistence
 - Local file storage
-- In-process background jobs
+- Celery/Redis background jobs in Docker, with an in-process fallback for lightweight local development
 - Real uploaded-video analysis
 - Real direct-video-URL analysis
 - Permitted YouTube ingestion through `yt-dlp`
@@ -237,19 +237,50 @@ The multi-video comparison, A/B analysis, explainable strongest ad-slot score, f
 - FastAPI
 - SQLite
 - Local file storage
-- In-process background jobs with `ThreadPoolExecutor`
+- Celery 5.6 with Redis for retriable production jobs
+- `ThreadPoolExecutor` fallback when `NEUROAD_USE_CELERY=0`
 - Static media serving through FastAPI
 
 ### AI/Video Pipeline
 
 - FFmpeg and FFprobe
-- OpenCV
+- One ordered OpenCV decode shared by visual extractors
+- PySceneDetect adaptive cuts and fade detection
+- YOLO26S with batched multi-frame inference, multi-instance preservation, lightweight temporal track IDs, and detector provenance
+- MediaPipe Face Landmarker for anonymous content-behaviour signals only (no identity, demographic, emotion, or neurological inference)
+- PaddleOCR multilingual OCR with boxes, confidence, and mobile-readability checks
 - faster-whisper with CPU INT8 inference as the default transcription engine
+- Silero VAD ONNX, librosa audio features, multilingual Sentence Transformers, and multilingual GLiNER
 - Vosk as a lightweight offline transcription fallback
-- Ultralytics YOLO
 - NumPy
 - pandas
 - yt-dlp for permitted YouTube media ingestion
+
+### Actionable content-signal contract
+
+The creator report now preserves every legacy 0–100 field while adding a separate decision layer:
+
+- Content momentum, hook strength, message clarity, creative friction, placement readiness, and evidence reliability.
+- Every decision includes an independent confidence band, timestamp, reasons, a next action, and evidence reliability.
+- Segment summaries group visual, audio, narrative, and social signals instead of creating one chart per raw metric.
+- Missing extractors remain `unavailable`; they are not converted to a zero score.
+- `GET /api/videos/{videoId}/analysis` remains backward compatible and adds `decision_metrics`, `priority_recommendations`, `timeline_summary`, `signal_availability`, `analysis_version`, and `review_summary`.
+- Dense evidence is lazy through `/timeline` and `/segments/{segmentId}/evidence`; legacy reports can use `/reanalyze` while the source remains available.
+- Analysis runs, signal samples, object tracks, evidence artifacts, decision metrics, model manifests, and review tasks are versioned in additive tables.
+
+The dashboard leads with the strongest moment, priority fixes, decision signals, and grouped timelines. Existing scores remain under **Current scores**, and raw extractor information is collapsed under **Evidence details**.
+
+### Production release gates
+
+- The configured YOLO weight must exist and pass the image-build inference smoke test. Missing weights make health checks degraded instead of silently reporting successful YOLO analysis.
+- The default YOLO26S image weight is checksum-pinned; `smoke_detector.py` loads it and runs a real inference during the image build and can be reused by CI or operators.
+- Production deployments using Ultralytics remain unhealthy until `NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED=1` explicitly records that the deployment has resolved AGPL-3.0 or enterprise-license obligations.
+- Every object observation records the real detector (`yolo26_cpu`, `yoloe_gpu`, `mobilenet_fallback`, or `heuristic_fallback`) and fallback reason. Degraded detectors cannot emit a `Ready` placement decision.
+- Face processing stores anonymous boxes and behaviour signals only. Face recognition embeddings and inferred personal attributes are not stored.
+- Model manifests record library/model versions, configurations, calibration version, and available weight checksums.
+
+The branch still uses the MVP's SQLite database and local media volume. PostgreSQL/Alembic migrations, S3-compatible evidence storage, RunPod enrichment, diarization, source separation, and PANNs remain the next production-foundation milestone. Versioned extractor caching is implemented for shared frame decode, OCR, audio/transcription, object/social analysis, and multilingual semantic analysis; cache keys combine the source hash, extractor version, and configuration hash.
+
 
 ## Current Deployment Architecture
 
@@ -723,7 +754,7 @@ No fallback turns missing evidence into certainty. For example, a person-only de
 
 ### Object Detection
 
-YOLO detections are sampled from extracted frames. The app keeps the highest-confidence objects per segment.
+YOLO detections use scene-aware frame samples and batched inference. The app preserves multiple same-class objects, assigns temporal track IDs, and records detector provenance for every observation.
 
 ### Transcript
 
@@ -987,9 +1018,11 @@ build time, redeploy/rebuild the web app after changing it.
 NEUROAD_STORAGE_DIR=./storage
 NEUROAD_DB_PATH=./storage/neuroad.db
 NEUROAD_WORKERS=1
+NEUROAD_LOCAL_EXTRACTOR_WORKERS=3
+NEUROAD_ENABLE_EXTRACTOR_CACHE=1
 NEUROAD_MAX_UPLOAD_MB=200
 NEUROAD_MAX_SOURCE_SECONDS=600
-NEUROAD_MAX_ANALYSIS_SECONDS=180
+NEUROAD_MAX_ANALYSIS_SECONDS=600
 NEUROAD_MODEL_DIR=./models
 NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=vosk
@@ -1042,13 +1075,17 @@ Notes:
 - `NEUROAD_DB_PATH` controls the SQLite database path.
 - `NEUROAD_WORKERS` controls in-process job concurrency.
 - Keep it low on CPU-only machines.
+- `NEUROAD_LOCAL_EXTRACTOR_WORKERS` controls the parallel OCR, audio/speech, and object/social stages inside a job; the default is three.
+- `NEUROAD_ENABLE_EXTRACTOR_CACHE=1` reuses unchanged extractor outputs by source, version, and configuration during reanalysis.
 - `NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper` uses the default CPU INT8 path and stores the configured model under `NEUROAD_MODEL_DIR`.
 - `NEUROAD_TRANSCRIPTION_ENGINE=vosk` remains available as a lightweight offline fallback.
 - `NEUROAD_ENABLE_TRANSCRIPTION=0` skips transcription completely.
-- `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` uses the configured Ultralytics YOLO model. The current Dockerfile enables the lightweight `yolov8n.pt` path by default.
+- `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` uses the configured YOLO26S CPU/local fallback at `YOLO_MODEL`.
+- `NEUROAD_OBJECT_DETECTION_ENGINE=yoloe` uses prompted YOLOE segmentation at `YOLOE_MODEL`; build a GPU-worker image with `INSTALL_YOLOE=1` and configure `NEUROAD_YOLOE_PROMPTS` for the product profile.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd` is available as an OpenCV DNN fallback when the MobileNet-SSD files are installed.
 - `NEUROAD_ENABLE_OBJECT_DETECTION=0` skips model-based object detection and uses the OpenCV visual-context fallback.
 - `NEUROAD_REQUIRE_TRANSCRIPTION=1` or `NEUROAD_REQUIRE_OBJECT_DETECTION=1` makes missing model files fail the job instead of falling back.
+- In production, set `NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED=1` only after confirming AGPL compliance or an applicable enterprise license. The primary detector otherwise reports not ready and inference is blocked.
 - `CORS_ORIGINS` is required for deployed Netlify origins.
 - `YTDLP_COOKIES_FILE` is preferred over browser-cookie extraction in deployed environments.
 
@@ -1068,6 +1105,7 @@ INSTALL_VOSK=1
 INSTALL_MOBILENET_SSD=1
 INSTALL_WHISPER=1
 INSTALL_YOLO=1
+INSTALL_YOLOE=0
 ```
 
 The runtime env is:
@@ -1113,16 +1151,23 @@ source apps/api/.venv/bin/activate
 pip install -r apps/api/requirements-yolo.txt
 ```
 
-To include YOLO in a Docker build:
+To include the local YOLO26 fallback in a Docker build:
 
 ```bash
 docker compose build api --build-arg INSTALL_YOLO=1
+```
+
+To build the larger prompted YOLOE model into a GPU-worker image:
+
+```bash
+docker compose build api --build-arg INSTALL_YOLOE=1
 ```
 
 Then set:
 
 ```bash
 NEUROAD_ENABLE_OBJECT_DETECTION=1
+NEUROAD_OBJECT_DETECTION_ENGINE=yolo
 ```
 
 ## Storage

@@ -4,13 +4,16 @@ import csv
 import hashlib
 from collections import Counter
 from html.parser import HTMLParser
+import hashlib
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version as package_version
 import ipaddress
 import json
 import logging
 import math
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import socket
@@ -28,6 +31,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request as FastAPIRequest, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -45,6 +49,10 @@ from insight_report import (
 )
 from runpod_client import RunPodClient, RunPodError, RunPodSettings
 from admin_platform import AdminServices, create_admin_router, init_admin_platform, record_admin_metric_event
+try:
+    from .content_signals import ANALYSIS_SCHEMA_VERSION, build_signal_payload, enrich_segments_with_signals
+except ImportError:
+    from content_signals import ANALYSIS_SCHEMA_VERSION, build_signal_payload, enrich_segments_with_signals
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -125,10 +133,11 @@ MOBILENET_SSD_CONFIG = path_from_env(
     MODEL_DIR / "mobilenet-ssd" / "ssd_mobilenet_v1_coco.pbtxt",
 )
 YOLO_MODEL_PATH = path_from_env("YOLO_MODEL", MODEL_DIR / "yolo11n.pt")
+MEDIAPIPE_FACE_MODEL = path_from_env("MEDIAPIPE_FACE_MODEL", MODEL_DIR / "face_landmarker.task")
 
 MAX_UPLOAD_BYTES = int_from_env("NEUROAD_MAX_UPLOAD_MB", 200) * 1024 * 1024
 MAX_SOURCE_SECONDS = int_from_env("NEUROAD_MAX_SOURCE_SECONDS", 0)
-MAX_ANALYSIS_SECONDS = int_from_env("NEUROAD_MAX_ANALYSIS_SECONDS", 180)
+MAX_ANALYSIS_SECONDS = int_from_env("NEUROAD_MAX_ANALYSIS_SECONDS", 600)
 COMPARISON_MIN_VIDEOS = max(2, int_from_env("COMPARISON_MIN_VIDEOS", 2))
 COMPARISON_MAX_VIDEOS = max(COMPARISON_MIN_VIDEOS, int_from_env("COMPARISON_MAX_VIDEOS", 5))
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
@@ -157,6 +166,15 @@ OCR_CONFIDENCE = float_from_env("NEUROAD_OCR_CONFIDENCE", 55)
 PRODUCT_PROFILE_VERSION = "2.0"
 PRODUCT_FIT_SCORING_VERSION = "2.0"
 PRODUCT_RESOLUTION_TTL_SECONDS = 24 * 60 * 60
+FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "3.0") or "3.0")
+MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 40))
+YOLO_MODEL_PATH = path_from_env("YOLO_MODEL", MODEL_DIR / "yolo26s.pt")
+YOLOE_MODEL_PATH = path_from_env("YOLOE_MODEL", MODEL_DIR / "yoloe-26l-seg.pt")
+YOLO_CONFIDENCE = float_from_env("NEUROAD_YOLO_CONFIDENCE", 0.25)
+YOLO_IMAGE_SIZE = max(320, int_from_env("NEUROAD_YOLO_IMAGE_SIZE", 640))
+YOLO_BATCH_SIZE = max(1, int_from_env("NEUROAD_YOLO_BATCH_SIZE", 12))
+MAX_OBJECTS_PER_FRAME = max(1, int_from_env("NEUROAD_MAX_OBJECTS_PER_FRAME", 30))
+MAX_OBJECTS_PER_SEGMENT = max(MAX_OBJECTS_PER_FRAME, int_from_env("NEUROAD_MAX_OBJECTS_PER_SEGMENT", 90))
 VOSK_MODEL_CACHE: Any | None = None
 FASTER_WHISPER_MODEL_CACHE: Any | None = None
 FASTER_WHISPER_MODEL_SIGNATURE: tuple[str, str, str] | None = None
@@ -164,13 +182,27 @@ MOBILENET_SSD_NET_CACHE: Any | None = None
 YOLO_MODEL_CACHE: Any | None = None
 YOLO_MODEL_CACHE_PATH: str | None = None
 OBJECT_DETECTOR_FALLBACK_REASON: str | None = None
+YOLO_MODEL_SIGNATURE: str | None = None
+YOLOE_MODEL_CACHE: Any | None = None
+YOLOE_MODEL_SIGNATURE: tuple[str, tuple[str, ...]] | None = None
+PADDLE_OCR_CACHE: dict[str, Any] = {}
+SILERO_VAD_MODEL_CACHE: Any | None = None
+SENTENCE_MODEL_CACHE: Any | None = None
+GLINER_MODEL_CACHE: Any | None = None
+OBJECT_DETECTION_RUNTIME: dict[str, Any] = {
+    "requested_engine": None,
+    "active_detector": "unavailable",
+    "model": None,
+    "fallback_reason": None,
+    "degraded": True,
+}
 
 PROCESSING_STEPS = [
     ("metadata", "Metadata fetched"),
     ("frames", "Frames extracted"),
     ("audio", "Audio prepared"),
     ("transcript", "Transcript processed"),
-    ("objects", "YOLO/Object detection complete"),
+    ("objects", "Object detection and provenance recorded"),
     ("topics", "Topics extracted"),
     ("attention", "Attention timeline scored"),
     ("ad_scoring", "Ad-match scoring complete"),
@@ -333,8 +365,14 @@ def build_ad_catalog() -> list[dict[str, Any]]:
 
 AD_CATALOG = build_ad_catalog()
 
-HOOK_TERMS = ["how", "why", "what if", "today", "before", "after", "mistake", "secret", "show you", "watch"]
-CTA_TERMS = ["subscribe", "try", "buy", "click", "comment", "save", "share", "check out", "download", "follow"]
+HOOK_TERMS = [
+    "how", "why", "what if", "today", "before", "after", "mistake", "secret", "show you", "watch",
+    "कैसे", "क्यों", "क्या", "आज", "गलती", "राज़", "kaise", "kyun", "kya", "dekho",
+]
+CTA_TERMS = [
+    "subscribe", "try", "buy", "click", "comment", "save", "share", "check out", "download", "follow",
+    "खरीदें", "खरीदो", "क्लिक", "सब्सक्राइब", "फॉलो", "डाउनलोड", "शेयर", "kharido", "subscribe karo", "follow karo",
+]
 CLAIM_TERMS = ["guaranteed", "cure", "best", "number one", "risk free", "instant", "always", "never", "proven"]
 RISK_TERMS = {
     "profanity": ["damn", "hell", "shit", "fuck"],
@@ -489,6 +527,42 @@ def runtime_dependency_status() -> dict[str, Any]:
     pytesseract_available = importlib.util.find_spec("pytesseract") is not None
     tesseract_path = shutil.which("tesseract")
     runpod_settings = RunPodSettings.from_env()
+    scenedetect_available = importlib.util.find_spec("scenedetect") is not None
+    mediapipe_available = importlib.util.find_spec("mediapipe") is not None
+    paddleocr_available = importlib.util.find_spec("paddleocr") is not None
+    celery_enabled = env_enabled("NEUROAD_USE_CELERY", False)
+    celery_available = importlib.util.find_spec("celery") is not None
+    queue_ready = not celery_enabled
+    queue_error: str | None = None
+    if celery_enabled and celery_available:
+        try:
+            import redis
+
+            client = redis.Redis.from_url(
+                os.getenv("NEUROAD_REDIS_URL", "redis://redis:6379/0"),
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+            queue_ready = bool(client.ping())
+        except Exception as exc:
+            queue_error = f"{type(exc).__name__}: {exc}"
+    object_detection_enabled = env_enabled("NEUROAD_ENABLE_OBJECT_DETECTION", True)
+    object_detection_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo").lower()
+    production_environment = os.getenv("NEUROAD_ENVIRONMENT", "development").lower() == "production"
+    ultralytics_license_accepted = env_enabled("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", False)
+    detector_license_ready = bool(
+        object_detection_engine not in {"yolo", "yoloe"} or not production_environment or ultralytics_license_accepted
+    )
+    yolo_model_ready = YOLO_MODEL_PATH.is_file() and YOLO_MODEL_PATH.stat().st_size > 0
+    yoloe_model_ready = YOLOE_MODEL_PATH.is_file() and YOLOE_MODEL_PATH.stat().st_size > 0
+    mobilenet_ready = MOBILENET_SSD_GRAPH.is_file() and MOBILENET_SSD_CONFIG.is_file()
+    primary_detector_ready = (
+        not object_detection_enabled
+        or (object_detection_engine == "yolo" and ultralytics_available and yolo_model_ready and detector_license_ready)
+        or (object_detection_engine == "yoloe" and ultralytics_available and yoloe_model_ready and detector_license_ready)
+        or (object_detection_engine == "mobilenet_ssd" and mobilenet_ready)
+        or object_detection_engine in {"heuristic", "lightweight"}
+    )
     return {
         "ffmpeg": {"available": bool(ffmpeg_path), "path": ffmpeg_path},
         "ffprobe": {"available": bool(ffprobe_path), "path": ffprobe_path},
@@ -508,13 +582,13 @@ def runtime_dependency_status() -> dict[str, Any]:
         "vosk": {"available": vosk_available, "model_path": str(VOSK_MODEL_DIR), "model_ready": VOSK_MODEL_DIR.exists()},
         "faster_whisper": {
             "available": faster_whisper_available,
-            "model": os.getenv("WHISPER_MODEL", "small.en"),
+            "model": os.getenv("WHISPER_MODEL", "small"),
             "device": os.getenv("WHISPER_DEVICE", "cpu"),
             "compute_type": os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
             "model_dir": str(MODEL_DIR),
         },
         "mobilenet_ssd": {
-            "available": MOBILENET_SSD_GRAPH.exists() and MOBILENET_SSD_CONFIG.exists(),
+            "available": mobilenet_ready,
             "graph_path": str(MOBILENET_SSD_GRAPH),
             "config_path": str(MOBILENET_SSD_CONFIG),
         },
@@ -527,6 +601,39 @@ def runtime_dependency_status() -> dict[str, Any]:
         "runpod": {
             **runpod_settings.public_status(),
             "enabled": runpod_insights_enabled(runpod_settings),
+            "available": ultralytics_available,
+            "model": str(YOLO_MODEL_PATH),
+            "model_ready": yolo_model_ready,
+            "yoloe_model": str(YOLOE_MODEL_PATH),
+            "yoloe_model_ready": yoloe_model_ready,
+        },
+        "object_detection": {
+            "enabled": object_detection_enabled,
+            "requested_engine": object_detection_engine,
+            "primary_ready": primary_detector_ready,
+            "active_detector": OBJECT_DETECTION_RUNTIME.get("active_detector", "unavailable"),
+            "fallback_reason": OBJECT_DETECTION_RUNTIME.get("fallback_reason"),
+            "degraded": bool(object_detection_enabled and not primary_detector_ready),
+            "license_gate": {
+                "required": bool(production_environment and object_detection_engine in {"yolo", "yoloe"}),
+                "passed": detector_license_ready,
+                "acknowledged": ultralytics_license_accepted,
+            },
+        },
+        "scene_detection": {"available": scenedetect_available, "engine": "pyscenedetect"},
+        "face_landmarker": {
+            "available": mediapipe_available,
+            "model_path": str(MEDIAPIPE_FACE_MODEL),
+            "model_ready": MEDIAPIPE_FACE_MODEL.is_file(),
+            "identity_or_emotion_inference": False,
+        },
+        "ocr": {"available": paddleocr_available, "engine": "paddleocr_ppocrv5"},
+        "jobs": {
+            "engine": "celery" if celery_enabled else "in_process",
+            "available": celery_available if celery_enabled else True,
+            "ready": queue_ready,
+            "broker": os.getenv("NEUROAD_REDIS_URL", "redis://redis:6379/0") if celery_enabled else None,
+            "error": queue_error,
         },
     }
 
@@ -676,6 +783,19 @@ class ProductUpdateRequest(BaseModel):
 
 class ProductFitRequest(BaseModel):
     product_id: str
+
+
+class EvidenceReviewCreateRequest(BaseModel):
+    analysis_run_id: str
+    segment_id: Optional[str] = None
+    assignment: Optional[str] = None
+
+
+class EvidenceReviewUpdateRequest(BaseModel):
+    state: str
+    notes: Optional[str] = None
+    reviewer: Optional[str] = None
+    assignment: Optional[str] = None
 
 
 def utc_now() -> str:
@@ -831,6 +951,113 @@ def init_db() -> None:
               confidence real not null,
               bbox text,
               frame_timestamp real,
+              track_id text,
+              detector text,
+              instance_index integer default 0,
+              mask text,
+              evidence_kind text default 'object',
+              created_at text not null
+            );
+
+            create table if not exists analysis_runs (
+              id text primary key,
+              video_id text not null,
+              schema_version text not null,
+              state text not null,
+              source_hash text,
+              model_manifest text,
+              signal_availability text,
+              timings text,
+              error text,
+              started_at text not null,
+              completed_at text
+            );
+
+            create table if not exists segment_signals (
+              id text primary key,
+              analysis_run_id text not null,
+              segment_id text not null,
+              family text not null,
+              summary text not null,
+              confidence real not null,
+              created_at text not null
+            );
+
+            create table if not exists signal_samples (
+              id text primary key,
+              analysis_run_id text not null,
+              segment_id text,
+              family text not null,
+              signal_name text not null,
+              timestamp real not null,
+              value real,
+              confidence real,
+              metadata text,
+              created_at text not null
+            );
+
+            create table if not exists object_tracks (
+              id text primary key,
+              analysis_run_id text not null,
+              video_id text not null,
+              track_id text not null,
+              label text not null,
+              confidence real not null,
+              first_seen real not null,
+              last_seen real not null,
+              detector text not null,
+              observations text,
+              created_at text not null,
+              unique(analysis_run_id, track_id)
+            );
+
+            create table if not exists evidence_artifacts (
+              id text primary key,
+              analysis_run_id text not null,
+              segment_id text,
+              artifact_type text not null,
+              timestamp real,
+              uri text,
+              payload text,
+              confidence real,
+              created_at text not null
+            );
+
+            create table if not exists decision_metrics (
+              id text primary key,
+              analysis_run_id text not null,
+              metric_key text not null,
+              label text not null,
+              internal_score real,
+              confidence real not null,
+              start_time real,
+              end_time real,
+              reasons text,
+              next_action text,
+              created_at text not null
+            );
+
+            create table if not exists evidence_review_tasks (
+              id text primary key,
+              analysis_run_id text not null,
+              segment_id text,
+              assignment text,
+              state text not null default 'unreviewed',
+              notes text,
+              reviewer text,
+              created_at text not null,
+              updated_at text not null
+            );
+
+            create table if not exists model_manifests (
+              id text primary key,
+              analysis_run_id text not null,
+              extractor text not null,
+              library_version text,
+              model_version text,
+              weight_checksum text,
+              configuration text,
+              calibration_version text,
               created_at text not null
             );
 
@@ -843,6 +1070,20 @@ def init_db() -> None:
               frame_timestamp real,
               created_at text not null
             );
+
+            create table if not exists extractor_cache (
+              cache_key text primary key,
+              source_hash text not null,
+              extractor text not null,
+              extractor_version text not null,
+              configuration_hash text not null,
+              payload text not null,
+              created_at text not null,
+              last_accessed_at text not null
+            );
+
+            create index if not exists idx_extractor_cache_source
+            on extractor_cache(source_hash, extractor);
 
             create table if not exists topics (
               id text primary key,
@@ -1054,6 +1295,24 @@ def init_db() -> None:
                 "ad_slot_score": "real default 0",
                 "ad_slot_reasons": "text",
                 "is_best_ad_slot": "integer default 0",
+                "audio_evidence": "text",
+                "narrative_evidence": "text",
+                "social_evidence": "text",
+                "ocr_evidence": "text",
+                "signal_summary": "text",
+                "detector_provenance": "text",
+                "review_state": "text default 'unreviewed'",
+            },
+        )
+        ensure_table_columns(
+            conn,
+            "detected_objects",
+            {
+                "track_id": "text",
+                "detector": "text",
+                "instance_index": "integer default 0",
+                "mask": "text",
+                "evidence_kind": "text default 'object'",
             },
         )
         ensure_table_columns(
@@ -1982,12 +2241,16 @@ def health() -> dict[str, Any]:
     storage_ready = STORAGE_DIR.exists() and os.access(STORAGE_DIR, os.W_OK)
     db_ready = DB_PATH.parent.exists() and os.access(DB_PATH.parent, os.W_OK)
     media_ready = bool(dependencies["ffmpeg"]["available"] and dependencies["ffprobe"]["available"])
-    ready = bool(storage_ready and db_ready and media_ready)
+    detector_ready = bool(dependencies["object_detection"]["primary_ready"])
+    queue_ready = bool(dependencies["jobs"]["ready"])
+    ready = bool(storage_ready and db_ready and media_ready and detector_ready and queue_ready)
     return {
         "status": "ok" if ready else "degraded",
         "ready": ready,
         "storage_ready": storage_ready,
         "database_ready": db_ready,
+        "detector_ready": detector_ready,
+        "queue_ready": queue_ready,
         "storage_dir": str(STORAGE_DIR),
         "database_path": str(DB_PATH),
         "limits": {
@@ -2245,6 +2508,18 @@ def create_video_from_url(payload: VideoUrlRequest) -> dict[str, Any]:
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": 0}
 
 
+def dispatch_processing_task(task_name: str, args: list[Any], local_callable: Any) -> None:
+    if env_enabled("NEUROAD_USE_CELERY", False):
+        try:
+            from celery_app import celery_app
+
+            celery_app.send_task(task_name, args=args)
+            return
+        except Exception as exc:
+            raise RuntimeError(f"Celery could not queue {task_name}: {exc}") from exc
+    EXECUTOR.submit(local_callable, *args)
+
+
 def create_video_analysis_job(
     video_id: str,
     comparison_id: str | None = None,
@@ -2318,7 +2593,12 @@ def create_video_analysis_job(
         return {"job_id": job_id, "status": "failed"}
 
     if submit:
-        EXECUTOR.submit(process_upload_job, job_id, video_id)
+        try:
+            dispatch_processing_task("neuroad.process_upload_job", [job_id, video_id], process_upload_job)
+        except RuntimeError as exc:
+            update_job(job_id, "failed", 100, "queue", public_job_error(exc))
+            execute("update videos set status = 'failed' where id = ?", (video_id,))
+            raise HTTPException(status_code=503, detail="The analysis queue is unavailable. Try again shortly.") from exc
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -2355,6 +2635,16 @@ def analyze_comparison(request: FastAPIRequest, comparison_id: str, payload: Opt
         insert_id=f"comparison:{comparison_id}:analysis_requested",
     )
     EXECUTOR.submit(process_comparison_job, comparison_id, [dict(member) for member in members])
+    execute("update comparisons set status = 'queued', updated_at = ? where id = ?", (utc_now(), comparison_id))
+    try:
+        dispatch_processing_task(
+            "neuroad.process_comparison_job",
+            [comparison_id, [dict(member) for member in members]],
+            process_comparison_job,
+        )
+    except RuntimeError as exc:
+        execute("update comparisons set status = 'failed', updated_at = ? where id = ?", (utc_now(), comparison_id))
+        raise HTTPException(status_code=503, detail="The comparison queue is unavailable. Try again shortly.") from exc
     return {"comparison_id": comparison_id, "status": "queued", "total_videos": len(members)}
 
 
@@ -2656,6 +2946,196 @@ def get_analysis(video_id: str) -> dict[str, Any]:
     if not segments and video["status"] not in {"completed", "metadata_fetched", "uploaded", "processing"}:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return build_analysis_payload(video)
+
+
+@app.get("/api/videos/{video_id}/timeline")
+def get_signal_timeline(
+    video_id: str,
+    resolution: str = Query("auto", pattern="^(auto|segment)$"),
+    families: str = Query("visual,audio,narrative,social"),
+) -> dict[str, Any]:
+    payload = get_analysis(video_id)
+    requested = [family.strip() for family in families.split(",") if family.strip()]
+    allowed = {"visual", "audio", "narrative", "social"}
+    selected = [family for family in requested if family in allowed]
+    if not selected:
+        raise HTTPException(status_code=400, detail="Choose at least one supported signal family.")
+    timeline = payload.get("timeline_summary", {})
+    points = []
+    for point in timeline.get("points", []):
+        points.append(
+            {
+                "segment_id": point.get("segment_id"),
+                "start": point.get("start"),
+                "end": point.get("end"),
+                "label": point.get("label"),
+                "reliability": point.get("reliability"),
+                **{family: point.get(family, {}) for family in selected},
+            }
+        )
+    return {
+        "video_id": video_id,
+        "analysis_version": payload.get("analysis_version"),
+        "resolution": "segment" if resolution == "auto" else resolution,
+        "families": selected,
+        "points": points,
+        "signal_availability": payload.get("signal_availability", {}),
+    }
+
+
+@app.get("/api/videos/{video_id}/segments/{segment_id}/evidence")
+def get_segment_evidence(video_id: str, segment_id: str) -> dict[str, Any]:
+    segment = query_one("select * from segments where id = ? and video_id = ?", (segment_id, video_id))
+    if not segment:
+        raise HTTPException(status_code=404, detail="Segment evidence not found")
+    payload = get_analysis(video_id)
+    public_segment = next((item for item in payload.get("segments", []) if item.get("id") == segment_id), None)
+    if not public_segment:
+        raise HTTPException(status_code=404, detail="Segment evidence not found")
+    run = query_one(
+        "select * from analysis_runs where video_id = ? order by started_at desc limit 1",
+        (video_id,),
+    )
+    manifests = []
+    review = None
+    evidence_by_type: dict[str, dict[str, Any]] = {}
+    if run:
+        manifests = [dict(row) for row in query_all("select * from model_manifests where analysis_run_id = ?", (run["id"],))]
+        for manifest in manifests:
+            manifest["configuration"] = json.loads(manifest["configuration"]) if manifest.get("configuration") else {}
+        artifact_rows = query_all(
+            "select artifact_type, payload, uri, confidence from evidence_artifacts where analysis_run_id = ? and segment_id = ?",
+            (run["id"], segment_id),
+        )
+        for artifact in artifact_rows:
+            try:
+                artifact_payload = json.loads(artifact["payload"]) if artifact["payload"] else {}
+            except json.JSONDecodeError:
+                artifact_payload = {}
+            evidence_by_type[artifact["artifact_type"]] = {
+                **artifact_payload,
+                "uri": artifact["uri"],
+                "confidence": artifact["confidence"],
+            }
+        review_row = query_one(
+            "select * from evidence_review_tasks where analysis_run_id = ? and segment_id = ? order by updated_at desc limit 1",
+            (run["id"], segment_id),
+        )
+        review = dict(review_row) if review_row else None
+    transcript = public_segment.get("transcript", "")
+    transcript_insights = public_segment.get("transcript_insights", {})
+    transcript_confidence = transcript_insights.get("transcript_confidence")
+    transcript_words = transcript_insights.get("words") or [
+        {"word": word, "confidence": transcript_confidence} for word in transcript.split()
+    ]
+    return {
+        "video_id": video_id,
+        "segment_id": segment_id,
+        "timestamp": {"start": public_segment["start"], "end": public_segment["end"]},
+        "frame": {
+            "thumbnail_url": public_segment.get("thumbnail_url"),
+            "objects": evidence_by_type.get("frame", {}).get("objects", public_segment.get("objects", [])),
+            "face_subject_boxes": [
+                item for item in public_segment.get("objects", []) if str(item.get("label", "")).lower() == "person"
+            ],
+            "face_landmark_boxes": evidence_by_type.get("face_behavior", {}).get("face_boxes", []),
+        },
+        "ocr": evidence_by_type.get(
+            "ocr", public_segment.get("ocr_evidence", {"status": "unavailable", "texts": []})
+        ),
+        "transcript": {
+            "text": transcript,
+            "words": transcript_words,
+            "confidence": transcript_confidence,
+            "language": transcript_insights.get("language"),
+            "language_method": transcript_insights.get("language_method"),
+        },
+        "audio": evidence_by_type.get("audio", public_segment.get("audio_evidence", {})),
+        "scenes": {
+            **evidence_by_type.get("scene", {}),
+            "change_strength": public_segment.get("visual_evidence", {}).get("visual_novelty"),
+            "boundary_confirmed": None,
+        },
+        "signals": public_segment.get("signal_summary", {}),
+        "model_manifests": manifests,
+        "human_review": review or {"state": "unreviewed"},
+    }
+
+
+@app.post("/api/videos/{video_id}/reanalyze")
+def reanalyze_video(video_id: str) -> dict[str, Any]:
+    video = get_video_or_404(video_id)
+    if not video["file_path"] or not Path(video["file_path"]).is_file():
+        raise HTTPException(status_code=409, detail="The original source is no longer available for reanalysis.")
+    previous_run = query_one(
+        "select id, schema_version, state from analysis_runs where video_id = ? order by started_at desc limit 1",
+        (video_id,),
+    )
+    job = create_video_analysis_job(video_id)
+    return {
+        **job,
+        "video_id": video_id,
+        "previous_analysis": dict(previous_run) if previous_run else None,
+        "target_analysis_version": ANALYSIS_SCHEMA_VERSION,
+    }
+
+
+def require_review_access(x_neuroad_review_key: str | None) -> None:
+    configured = os.getenv("NEUROAD_REVIEW_API_KEY")
+    if not configured:
+        raise HTTPException(status_code=503, detail="Evidence review API is not configured.")
+    if not x_neuroad_review_key or not secrets.compare_digest(configured, x_neuroad_review_key):
+        raise HTTPException(status_code=401, detail="Invalid evidence review credentials.")
+
+
+@app.post("/api/admin/evidence-reviews")
+def create_evidence_review(
+    payload: EvidenceReviewCreateRequest,
+    x_neuroad_review_key: Optional[str] = Header(None),
+) -> dict[str, Any]:
+    require_review_access(x_neuroad_review_key)
+    run = query_one("select * from analysis_runs where id = ?", (payload.analysis_run_id,))
+    if not run:
+        raise HTTPException(status_code=404, detail="Analysis run not found")
+    if payload.segment_id and not query_one(
+        "select id from segments where id = ? and video_id = ?", (payload.segment_id, run["video_id"])
+    ):
+        raise HTTPException(status_code=404, detail="Segment not found")
+    task_id = new_id("review")
+    now = utc_now()
+    execute(
+        """
+        insert into evidence_review_tasks
+        (id, analysis_run_id, segment_id, assignment, state, notes, reviewer, created_at, updated_at)
+        values (?, ?, ?, ?, 'unreviewed', null, null, ?, ?)
+        """,
+        (task_id, payload.analysis_run_id, payload.segment_id, payload.assignment, now, now),
+    )
+    return dict(query_one("select * from evidence_review_tasks where id = ?", (task_id,)))
+
+
+@app.patch("/api/admin/evidence-reviews/{task_id}")
+def update_evidence_review(
+    task_id: str,
+    payload: EvidenceReviewUpdateRequest,
+    x_neuroad_review_key: Optional[str] = Header(None),
+) -> dict[str, Any]:
+    require_review_access(x_neuroad_review_key)
+    allowed_states = {"unreviewed", "assigned", "submitted", "approved", "changes_requested"}
+    if payload.state not in allowed_states:
+        raise HTTPException(status_code=400, detail="Unsupported review state.")
+    task = query_one("select * from evidence_review_tasks where id = ?", (task_id,))
+    if not task:
+        raise HTTPException(status_code=404, detail="Evidence review task not found")
+    execute(
+        """
+        update evidence_review_tasks
+        set state = ?, notes = ?, reviewer = ?, assignment = coalesce(?, assignment), updated_at = ?
+        where id = ?
+        """,
+        (payload.state, payload.notes, payload.reviewer, payload.assignment, utc_now(), task_id),
+    )
+    return dict(query_one("select * from evidence_review_tasks where id = ?", (task_id,)))
 
 
 @app.get("/api/comparisons/{comparison_id}/status")
@@ -3126,6 +3606,214 @@ def recover_insight_jobs() -> None:
             continue
         update_insight_job(job["id"], "queued", 0, "queued")
         INSIGHT_EXECUTOR.submit(process_insight_job, job["id"])
+def source_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def cache_json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Unsupported extractor-cache value: {type(value).__name__}")
+
+
+def extractor_configuration_hash(configuration: dict[str, Any]) -> str:
+    encoded = json.dumps(configuration, sort_keys=True, separators=(",", ":"), default=cache_json_default)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def extractor_cache_key(
+    source_hash: str, extractor: str, extractor_version: str, configuration: dict[str, Any]
+) -> tuple[str, str]:
+    configuration_hash = extractor_configuration_hash(configuration)
+    material = f"{source_hash}:{extractor}:{extractor_version}:{configuration_hash}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest(), configuration_hash
+
+
+def read_extractor_cache(
+    source_hash: str, extractor: str, extractor_version: str, configuration: dict[str, Any]
+) -> dict[str, Any] | None:
+    if not env_enabled("NEUROAD_ENABLE_EXTRACTOR_CACHE", True):
+        return None
+    cache_key, _ = extractor_cache_key(source_hash, extractor, extractor_version, configuration)
+    row = query_one("select payload from extractor_cache where cache_key = ?", (cache_key,))
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, json.JSONDecodeError):
+        execute("delete from extractor_cache where cache_key = ?", (cache_key,))
+        return None
+    execute("update extractor_cache set last_accessed_at = ? where cache_key = ?", (utc_now(), cache_key))
+    return payload if isinstance(payload, dict) else None
+
+
+def write_extractor_cache(
+    source_hash: str,
+    extractor: str,
+    extractor_version: str,
+    configuration: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    if not env_enabled("NEUROAD_ENABLE_EXTRACTOR_CACHE", True):
+        return
+    cache_key, configuration_hash = extractor_cache_key(
+        source_hash, extractor, extractor_version, configuration
+    )
+    now = utc_now()
+    serialized = json.dumps(payload, separators=(",", ":"), default=cache_json_default)
+    execute(
+        """
+        insert into extractor_cache
+        (cache_key, source_hash, extractor, extractor_version, configuration_hash, payload, created_at, last_accessed_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(cache_key) do update set payload = excluded.payload, last_accessed_at = excluded.last_accessed_at
+        """,
+        (cache_key, source_hash, extractor, extractor_version, configuration_hash, serialized, now, now),
+    )
+
+
+def indexed_cache_payload(value: Any) -> dict[int, Any]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[int, Any] = {}
+    for key, item in value.items():
+        try:
+            output[int(key)] = item
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
+def serialize_frame_cache(frames: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    return {"frames": frames}
+
+
+def restore_frame_cache(payload: dict[str, Any]) -> dict[int, dict[str, Any]] | None:
+    frames = indexed_cache_payload(payload.get("frames"))
+    if not frames:
+        return None
+    for frame in frames.values():
+        path = Path(str(frame.get("path", "")))
+        if not path.is_file():
+            return None
+        frame["path"] = path
+        for sample in frame.get("sample_frames", []):
+            sample_path = Path(str(sample.get("path", "")))
+            if not sample_path.is_file():
+                return None
+            sample["path"] = sample_path
+    return frames
+
+
+def model_file_signature(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"path": str(path), "ready": False}
+    stats = path.stat()
+    return {
+        "path": str(path),
+        "ready": True,
+        "size": stats.st_size,
+        "modified_ns": stats.st_mtime_ns,
+    }
+
+
+def create_analysis_run(video_id: str, source: Path, source_hash: str | None = None) -> str:
+    run_id = new_id("run")
+    dependencies = runtime_dependency_status()
+    execute(
+        """
+        insert into analysis_runs
+        (id, video_id, schema_version, state, source_hash, model_manifest, signal_availability, timings, error, started_at, completed_at)
+        values (?, ?, ?, 'processing', ?, ?, ?, ?, null, ?, null)
+        """,
+        (
+            run_id,
+            video_id,
+            ANALYSIS_SCHEMA_VERSION,
+            source_hash or source_sha256(source),
+            json.dumps(
+                {
+                    "object_detection": dependencies.get("object_detection"),
+                    "ultralytics": dependencies.get("ultralytics"),
+                    "faster_whisper": dependencies.get("faster_whisper"),
+                }
+            ),
+            json.dumps({}),
+            json.dumps({}),
+            utc_now(),
+        ),
+    )
+    return run_id
+
+
+def finish_analysis_run(
+    analysis_run_id: str, state: str, timings: dict[str, Any], signal_status: dict[str, Any] | None = None, error: str | None = None
+) -> None:
+    execute(
+        """
+        update analysis_runs
+        set state = ?, timings = ?, signal_availability = ?, error = ?, completed_at = ?
+        where id = ?
+        """,
+        (state, json.dumps(timings), json.dumps(signal_status or {}), error, utc_now(), analysis_run_id),
+    )
+
+
+def run_ocr_extractor_bundle(frames: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    started = time.perf_counter()
+    return {
+        "evidence": extract_ocr_signals(frames),
+        "seconds": round(time.perf_counter() - started, 3),
+    }
+
+
+def run_audio_extractor_bundle(
+    video_id: str, source: Path, segments: list[dict[str, Any]]
+) -> dict[str, Any]:
+    audio_started = time.perf_counter()
+    audio_path = extract_audio(video_id, source)
+    analysis_audio_path = prepare_audio_for_analysis(video_id, audio_path) if audio_path else None
+    if analysis_audio_path:
+        audio_metrics, audio_evidence = compute_audio_analysis(analysis_audio_path, segments)
+    else:
+        audio_metrics, audio_evidence = {}, {}
+    audio_seconds = round(time.perf_counter() - audio_started, 3)
+
+    transcript_started = time.perf_counter()
+    transcript_segments = transcribe_audio(analysis_audio_path) if analysis_audio_path else []
+    return {
+        "metrics": audio_metrics,
+        "evidence": audio_evidence,
+        "transcript": transcript_segments,
+        "audio_seconds": audio_seconds,
+        "transcript_seconds": round(time.perf_counter() - transcript_started, 3),
+    }
+
+
+def run_object_extractor_bundle(
+    frames: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    detector_started = time.perf_counter()
+    detections = detect_objects(frames)
+    detector_seconds = round(time.perf_counter() - detector_started, 3)
+
+    face_started = time.perf_counter()
+    social_evidence = extract_face_behavior_signals(frames, detections)
+    return {
+        "detections": detections,
+        "social_evidence": social_evidence,
+        "runtime": dict(OBJECT_DETECTION_RUNTIME),
+        "detector_seconds": detector_seconds,
+        "face_seconds": round(time.perf_counter() - face_started, 3),
+    }
 
 
 def process_upload_job(job_id: str, video_id: str) -> None:
@@ -3142,6 +3830,9 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             insert_id=f"analysis:{job_id}:failed",
         )
         return
+    analysis_run_id: str | None = None
+    run_started = time.perf_counter()
+    timings: dict[str, Any] = {}
     try:
         execute("update videos set status = 'processing' where id = ?", (video_id,))
         update_job(job_id, "processing", 4, "metadata")
@@ -3192,10 +3883,34 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             video = query_one("select * from videos where id = ?", (video_id,))
         duration = probe_duration_or_raise(source)
         enforce_source_duration(duration)
+        source_hash = source_sha256(source)
+        analysis_run_id = create_analysis_run(video_id, source, source_hash=source_hash)
         update_job(job_id, "processing", 8, "metadata")
 
         segments = make_segments(duration)
-        frames = extract_frames(video_id, source, segments)
+        visual_configuration = {
+            "schema": "shared-sequential-decode-v1",
+            "opencv": installed_package_version("opencv-python-headless") or installed_package_version("opencv-python"),
+            "scenedetect": installed_package_version("scenedetect"),
+            "frame_sample_rate": FRAME_SAMPLE_RATE,
+            "hook_sample_rate": 8.0,
+            "max_frames_per_segment": MAX_FRAMES_PER_SEGMENT,
+            "max_analysis_seconds": MAX_ANALYSIS_SECONDS,
+            "adaptive_threshold": float_from_env("NEUROAD_SCENE_ADAPTIVE_THRESHOLD", 3.0),
+            "fade_threshold": float_from_env("NEUROAD_FADE_THRESHOLD", 12.0),
+        }
+        cached_frames = read_extractor_cache(source_hash, "visual_decode", "v1", visual_configuration)
+        frames = restore_frame_cache(cached_frames) if cached_frames else None
+        visual_cache_hit = frames is not None
+        if frames is None:
+            step_started = time.perf_counter()
+            frames = extract_frames(video_id, source, segments)
+            timings["visual_decode_seconds"] = round(time.perf_counter() - step_started, 3)
+            write_extractor_cache(
+                source_hash, "visual_decode", "v1", visual_configuration, serialize_frame_cache(frames)
+            )
+        else:
+            timings["visual_decode_seconds"] = 0.0
         update_job(job_id, "processing", 20, "frames")
 
         audio_path = extract_audio(video_id, source)
@@ -3211,10 +3926,134 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "processing", 62, "objects")
 
         enriched_segments = assemble_segments(segments, frames, transcript_segments, detections, detected_text, audio_metrics, video)
+        audio_configuration = {
+            "schema": "multilingual-audio-speech-v1",
+            "whisper_library": installed_package_version("faster-whisper"),
+            "whisper_model": os.getenv("WHISPER_MODEL", "small"),
+            "whisper_device": os.getenv("WHISPER_DEVICE", "cpu"),
+            "whisper_compute_type": os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
+            "word_timestamps": env_enabled("WHISPER_WORD_TIMESTAMPS", True),
+            "vad_filter": env_enabled("WHISPER_VAD_FILTER", True),
+            "silero": env_enabled("NEUROAD_ENABLE_SILERO_VAD", True),
+            "librosa": env_enabled("NEUROAD_ENABLE_LIBROSA", True),
+            "audio_cleanup": env_enabled("NEUROAD_ENABLE_AUDIO_CLEANUP", False),
+        }
+        object_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo").lower()
+        object_configuration = {
+            "schema": "tracked-multi-object-v1",
+            "library": installed_package_version("ultralytics"),
+            "engine": object_engine,
+            "environment": os.getenv("NEUROAD_ENVIRONMENT", "development").lower(),
+            "license_acknowledged": env_enabled("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", False),
+            "model": model_file_signature(YOLOE_MODEL_PATH if object_engine == "yoloe" else YOLO_MODEL_PATH),
+            "fallback_model": model_file_signature(YOLO_MODEL_PATH) if object_engine == "yoloe" else None,
+            "prompts": yoloe_text_prompts() if object_engine == "yoloe" else [],
+            "confidence": YOLO_CONFIDENCE,
+            "image_size": YOLO_IMAGE_SIZE,
+            "batch_size": YOLO_BATCH_SIZE,
+            "face_model": model_file_signature(MEDIAPIPE_FACE_MODEL),
+        }
+        ocr_configuration = {
+            "schema": "multilingual-keyframe-ocr-v1",
+            "library": installed_package_version("paddleocr"),
+            "languages": os.getenv("NEUROAD_OCR_LANGUAGES", "en,devanagari"),
+            "confidence": float_from_env("NEUROAD_OCR_CONFIDENCE", 0.5),
+        }
+        audio_bundle = read_extractor_cache(source_hash, "audio_speech", "v1", audio_configuration)
+        object_bundle = read_extractor_cache(source_hash, "object_social", "v1", object_configuration)
+        ocr_bundle = read_extractor_cache(source_hash, "ocr", "v1", ocr_configuration)
+        audio_cache_hit = audio_bundle is not None
+        object_cache_hit = object_bundle is not None
+        ocr_cache_hit = ocr_bundle is not None
+
+        update_job(job_id, "processing", 24, "audio")
+        extractor_workers = max(1, min(3, int_from_env("NEUROAD_LOCAL_EXTRACTOR_WORKERS", 3)))
+        with ThreadPoolExecutor(max_workers=extractor_workers) as extractor_pool:
+            audio_future = (
+                None if audio_bundle is not None else extractor_pool.submit(run_audio_extractor_bundle, video_id, source, segments)
+            )
+            object_future = (
+                None if object_bundle is not None else extractor_pool.submit(run_object_extractor_bundle, frames)
+            )
+            ocr_future = None if ocr_bundle is not None else extractor_pool.submit(run_ocr_extractor_bundle, frames)
+            if audio_future is not None:
+                audio_bundle = audio_future.result()
+                write_extractor_cache(source_hash, "audio_speech", "v1", audio_configuration, audio_bundle)
+            if object_future is not None:
+                object_bundle = object_future.result()
+                write_extractor_cache(source_hash, "object_social", "v1", object_configuration, object_bundle)
+            if ocr_future is not None:
+                ocr_bundle = ocr_future.result()
+                write_extractor_cache(source_hash, "ocr", "v1", ocr_configuration, ocr_bundle)
+
+        if not isinstance(audio_bundle, dict) or not isinstance(object_bundle, dict) or not isinstance(ocr_bundle, dict):
+            raise RuntimeError("An extractor returned an invalid result bundle.")
+        audio_bundle["metrics"] = indexed_cache_payload(audio_bundle.get("metrics"))
+        audio_bundle["evidence"] = indexed_cache_payload(audio_bundle.get("evidence"))
+        object_bundle["detections"] = indexed_cache_payload(object_bundle.get("detections"))
+        object_bundle["social_evidence"] = indexed_cache_payload(object_bundle.get("social_evidence"))
+        ocr_bundle["evidence"] = indexed_cache_payload(ocr_bundle.get("evidence"))
+        if object_cache_hit and isinstance(object_bundle.get("runtime"), dict):
+            OBJECT_DETECTION_RUNTIME.update(object_bundle["runtime"])
+
+        audio_metrics = audio_bundle["metrics"]
+        audio_evidence = audio_bundle["evidence"]
+        transcript_segments = audio_bundle["transcript"]
+        detections = object_bundle["detections"]
+        social_evidence = object_bundle["social_evidence"]
+        ocr_evidence = ocr_bundle["evidence"]
+        timings["audio_extract_seconds"] = 0.0 if audio_cache_hit else audio_bundle["audio_seconds"]
+        timings["transcript_seconds"] = 0.0 if audio_cache_hit else audio_bundle["transcript_seconds"]
+        timings["object_detection_seconds"] = 0.0 if object_cache_hit else object_bundle["detector_seconds"]
+        timings["face_behavior_seconds"] = 0.0 if object_cache_hit else object_bundle["face_seconds"]
+        timings["ocr_seconds"] = 0.0 if ocr_cache_hit else ocr_bundle["seconds"]
+        timings["extractor_cache_hits"] = {
+            "visual_decode": visual_cache_hit,
+            "audio_speech": audio_cache_hit,
+            "object_social": object_cache_hit,
+            "ocr": ocr_cache_hit,
+        }
+        update_job(job_id, "processing", 64, "objects")
+
+        enriched_segments = assemble_segments(
+            segments,
+            frames,
+            transcript_segments,
+            detections,
+            audio_metrics,
+            video,
+            audio_evidence=audio_evidence,
+            social_evidence=social_evidence,
+            ocr_evidence=ocr_evidence,
+        )
+        semantic_configuration = {
+            "schema": "multilingual-semantic-v1",
+            "sentence_transformers": installed_package_version("sentence-transformers"),
+            "sentence_model": os.getenv(
+                "NEUROAD_SENTENCE_MODEL", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+            ),
+            "gliner": installed_package_version("gliner"),
+            "gliner_model": os.getenv("NEUROAD_GLINER_MODEL", "urchade/gliner_multi-v2.1"),
+        }
+        semantic_bundle = read_extractor_cache(source_hash, "semantic", "v1", semantic_configuration)
+        semantic_cache_hit = semantic_bundle is not None
+        if semantic_bundle is None:
+            step_started = time.perf_counter()
+            semantic_evidence = extract_semantic_evidence(enriched_segments)
+            timings["semantic_seconds"] = round(time.perf_counter() - step_started, 3)
+            semantic_bundle = {"evidence": semantic_evidence}
+            write_extractor_cache(source_hash, "semantic", "v1", semantic_configuration, semantic_bundle)
+        else:
+            semantic_evidence = indexed_cache_payload(semantic_bundle.get("evidence"))
+            timings["semantic_seconds"] = 0.0
+        timings["extractor_cache_hits"]["semantic"] = semantic_cache_hit
+        for segment_index, segment in enumerate(enriched_segments):
+            segment["narrative_evidence"] = semantic_evidence.get(segment_index, {"available": False})
+        enrich_segments_with_signals(enriched_segments)
         update_job(job_id, "processing", 74, "topics")
 
         update_job(job_id, "processing", 82, "attention")
-        write_analysis(video_id, enriched_segments)
+        write_analysis(video_id, enriched_segments, analysis_run_id=analysis_run_id)
         update_job(job_id, "processing", 90, "ad_scoring")
 
         generate_exports(video_id)
@@ -3222,6 +4061,9 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             "update videos set status = 'completed', duration_seconds = ?, thumbnail_url = ? where id = ?",
             (int(duration), enriched_segments[0].get("thumbnail_url") if enriched_segments else None, video_id),
         )
+        timings["total_seconds"] = round(time.perf_counter() - run_started, 3)
+        signal_status = build_signal_payload(enriched_segments).get("signal_availability", {})
+        finish_analysis_run(analysis_run_id, "completed", timings, signal_status)
         update_job(job_id, "completed", 100, "report")
         capture_event(
             "analysis_completed",
@@ -3239,6 +4081,9 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             insert_id=f"analysis:{job_id}:completed",
         )
     except Exception as exc:
+        if analysis_run_id:
+            timings["total_seconds"] = round(time.perf_counter() - run_started, 3)
+            finish_analysis_run(analysis_run_id, "failed", timings, error=public_job_error(exc))
         execute("update videos set status = 'failed' where id = ?", (video_id,))
         update_job(job_id, "failed", 100, "failed", public_job_error(exc))
         capture_event(
@@ -3477,7 +4322,8 @@ def make_segments(duration: float) -> list[dict[str, Any]]:
 
 def sample_timestamps(start: float, end: float) -> list[float]:
     duration = max(0.1, end - start)
-    interval = 1.0 / max(0.1, FRAME_SAMPLE_RATE)
+    sample_rate = max(FRAME_SAMPLE_RATE, 8.0) if start < 5.0 else FRAME_SAMPLE_RATE
+    interval = 1.0 / max(0.1, sample_rate)
     count = max(1, min(MAX_FRAMES_PER_SEGMENT, int(math.ceil(duration / interval))))
     if count == 1:
         return [(start + end) / 2]
@@ -3497,13 +4343,23 @@ def frame_metric_snapshot(frame: Any) -> dict[str, float]:
     try:
         import cv2
     except ImportError:
-        return {"brightness": 0.5, "contrast": 0.0, "sharpness": 0.0, "colorfulness": 0.0}
+        return {
+            "brightness": 0.5,
+            "contrast": 0.0,
+            "sharpness": 0.0,
+            "colorfulness": 0.0,
+            "saturation": 0.0,
+            "edge_density": 0.0,
+        }
     grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     return {
         "brightness": float(np.mean(grayscale) / 255),
         "contrast": float(np.std(grayscale) / 90),
         "sharpness": clamp(float(cv2.Laplacian(grayscale, cv2.CV_64F).var()) / 500),
         "colorfulness": colorfulness_score(frame),
+        "saturation": float(np.mean(hsv[:, :, 1]) / 255),
+        "edge_density": float(np.mean(cv2.Canny(grayscale, 80, 160) > 0)),
     }
 
 
@@ -3519,12 +4375,83 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
 
     output_dir = FRAME_DIR / video_id
     output_dir.mkdir(parents=True, exist_ok=True)
+    requested = sorted(
+        (timestamp, int(segment["index"]), sample_index)
+        for segment in segments
+        for sample_index, timestamp in enumerate(sample_timestamps(segment["start"], segment["end"]))
+    )
+    captured: dict[int, list[dict[str, Any]]] = {int(segment["index"]): [] for segment in segments}
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    frame_interval = 1.0 / fps if fps > 0 else 1.0 / 30.0
+    target_index = 0
+    frame_index = 0
+    scene_detectors: list[Any] = []
+    scene_cut_frames: set[int] = set()
+    try:
+        from scenedetect.detectors import AdaptiveDetector, ThresholdDetector
+
+        scene_detectors = [
+            AdaptiveDetector(
+                adaptive_threshold=float_from_env("NEUROAD_SCENE_ADAPTIVE_THRESHOLD", 3.0),
+                min_scene_len=max(3, int((fps or 30) * 0.3)),
+                window_width=2,
+            ),
+            ThresholdDetector(
+                threshold=float_from_env("NEUROAD_FADE_THRESHOLD", 12.0),
+                min_scene_len=max(3, int((fps or 30) * 0.3)),
+            ),
+        ]
+    except ImportError:
+        scene_detectors = []
+
+    # Decode once in timestamp order. Every downstream visual extractor reuses
+    # these persisted samples instead of issuing independent random seeks.
+    while target_index < len(requested):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        timestamp = float(cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0)
+        if timestamp <= 0 and fps > 0:
+            timestamp = frame_index / fps
+        if scene_detectors:
+            scene_frame = frame
+            if frame.shape[1] > 640:
+                scene_frame = cv2.resize(frame, (640, max(1, int(frame.shape[0] * 640 / frame.shape[1]))))
+            for detector in scene_detectors:
+                try:
+                    scene_cut_frames.update(int(value) for value in detector.process_frame(frame_index, scene_frame))
+                except Exception:
+                    continue
+        frame_index += 1
+        while target_index < len(requested) and requested[target_index][0] <= timestamp + frame_interval / 2:
+            requested_timestamp, segment_index, sample_index = requested[target_index]
+            captured[segment_index].append(
+                {
+                    "frame": frame.copy(),
+                    "timestamp": max(0.0, requested_timestamp),
+                    "sample_index": sample_index,
+                }
+            )
+            target_index += 1
+    cap.release()
+    for detector in scene_detectors:
+        try:
+            scene_cut_frames.update(int(value) for value in detector.post_process(frame_index))
+        except Exception:
+            continue
+    scene_cut_timestamps = sorted(frame_number / (fps or 30.0) for frame_number in scene_cut_frames)
+
     frame_data: dict[int, dict[str, Any]] = {}
     previous_gray_small: Any | None = None
     saved_detection_frames = 0
 
+    previous_motion = 0.0
     for segment in segments:
-        timestamps = sample_timestamps(segment["start"], segment["end"])
+        segment_index = int(segment["index"])
+        samples = captured.get(segment_index, [])
+        if not samples:
+            continue
+
         snapshots: list[dict[str, float]] = []
         motion_values: list[float] = []
         representative_frame: Any | None = None
@@ -3541,19 +4468,56 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
                 representative_frame = frame
                 representative_timestamp = timestamp
 
+        acceleration_values: list[float] = []
+        camera_motion_values: list[float] = []
+        sample_artifacts: list[dict[str, Any]] = []
+        previous_segment_gray: Any | None = None
+
+        for sample in samples:
+            frame = sample["frame"]
+            snapshot = frame_metric_snapshot(frame)
             grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_small = cv2.resize(grayscale, (160, 90))
-            if representative_gray_small is None or index == len(timestamps) // 2:
-                representative_gray_small = gray_small
+            motion = 0.0
             if previous_gray_small is not None:
-                motion_values.append(float(np.mean(np.abs(gray_small.astype(np.float32) - previous_gray_small.astype(np.float32))) / 255))
+                motion = float(
+                    np.mean(np.abs(gray_small.astype(np.float32) - previous_gray_small.astype(np.float32))) / 255
+                )
+                acceleration_values.append(abs(motion - previous_motion))
+                previous_motion = motion
+            if previous_segment_gray is not None:
+                try:
+                    shift, _ = cv2.phaseCorrelate(
+                        previous_segment_gray.astype(np.float32), gray_small.astype(np.float32)
+                    )
+                    camera_motion_values.append(clamp(math.hypot(float(shift[0]), float(shift[1])) / 40.0))
+                except Exception:
+                    camera_motion_values.append(0.0)
             previous_gray_small = gray_small
             snapshots.append(frame_metric_snapshot(frame))
             candidates.append((float(snapshots[-1]["sharpness"]), timestamp, frame.copy()))
+            previous_segment_gray = gray_small
+            motion_values.append(motion)
+            snapshots.append(snapshot)
 
-        if representative_frame is None or not snapshots:
-            continue
-        frame_path = output_dir / f"frame_{segment['index']:03d}.jpg"
+            sample_path = output_dir / f"sample_{segment_index:03d}_{int(sample['sample_index']):03d}.jpg"
+            cv2.imwrite(str(sample_path), frame)
+            sample_artifacts.append(
+                {
+                    "path": sample_path,
+                    "timestamp": float(sample["timestamp"]),
+                    "sharpness": snapshot["sharpness"],
+                    "motion": clamp(motion),
+                }
+            )
+
+        midpoint = (float(segment["start"]) + float(segment["end"])) / 2
+        representative_index = min(
+            range(len(samples)), key=lambda index: abs(float(samples[index]["timestamp"]) - midpoint)
+        )
+        representative_frame = samples[representative_index]["frame"]
+        representative_timestamp = float(samples[representative_index]["timestamp"])
+        frame_path = output_dir / f"frame_{segment_index:03d}.jpg"
         cv2.imwrite(str(frame_path), representative_frame)
         # Save a small, sharp/diverse set for real multi-frame inference and OCR.
         selected_samples: list[dict[str, Any]] = [{"path": frame_path, "timestamp": representative_timestamp}]
@@ -3572,14 +4536,22 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
                 selected_samples.append({"path": sample_path, "timestamp": timestamp})
             saved_detection_frames += len(selected_samples)
         grayscale = cv2.cvtColor(representative_frame, cv2.COLOR_BGR2GRAY)
+        metric_names = ["brightness", "contrast", "sharpness", "colorfulness", "saturation", "edge_density"]
         averaged = {
             key: float(np.mean([snapshot[key] for snapshot in snapshots]))
-            for key in ["brightness", "contrast", "sharpness", "colorfulness"]
+            for key in metric_names
         }
-        frame_data[segment["index"]] = {
+        mean_motion = float(np.mean(motion_values)) if motion_values else 0.0
+        segment_scene_cuts = [
+            timestamp
+            for timestamp in scene_cut_timestamps
+            if float(segment["start"]) <= timestamp < float(segment["end"])
+        ]
+        frame_data[segment_index] = {
             "path": frame_path,
             "sample_frames": selected_samples or [{"path": frame_path, "timestamp": representative_timestamp}],
             "timestamp": representative_timestamp,
+            "sample_frames": sample_artifacts,
             "mean": float(np.mean(grayscale)),
             "std": float(np.std(grayscale)),
             "shape": representative_frame.shape,
@@ -3588,11 +4560,186 @@ def extract_frames(video_id: str, source: Path, segments: list[dict[str, Any]]) 
             "contrast": clamp(averaged["contrast"]),
             "sharpness": averaged["sharpness"],
             "colorfulness": averaged["colorfulness"],
-            "motion": clamp(float(np.mean(motion_values)) if motion_values else 0.0),
-            "visual_quality": clamp(averaged["sharpness"] * 0.6 + (1 - abs(averaged["brightness"] - 0.5) * 2) * 0.4),
+            "saturation": averaged["saturation"],
+            "edge_density": averaged["edge_density"],
+            "clutter": clamp(averaged["edge_density"] / 0.18),
+            "motion": clamp(mean_motion),
+            "motion_acceleration": clamp(float(np.mean(acceleration_values)) * 4 if acceleration_values else 0.0),
+            "camera_movement": clamp(float(np.mean(camera_motion_values)) if camera_motion_values else 0.0),
+            "pacing_variation": clamp(float(np.std(motion_values)) * 5 if len(motion_values) > 1 else 0.0),
+            "scene_boundaries": segment_scene_cuts,
+            "shot_change_count": len(segment_scene_cuts),
+            "scene_detector": "pyscenedetect_adaptive_threshold" if scene_detectors else "unavailable",
+            "visual_quality": clamp(
+                averaged["sharpness"] * 0.6 + (1 - abs(averaged["brightness"] - 0.5) * 2) * 0.4
+            ),
         }
-    cap.release()
     return frame_data
+
+
+def get_paddle_ocr_models() -> list[tuple[str, Any]]:
+    if not env_enabled("NEUROAD_ENABLE_OCR", True):
+        return []
+    try:
+        from paddleocr import PaddleOCR
+    except ImportError:
+        return []
+    languages = [
+        value.strip()
+        for value in os.getenv("NEUROAD_OCR_LANGUAGES", "en,devanagari").split(",")
+        if value.strip()
+    ]
+    models: list[tuple[str, Any]] = []
+    for language in languages:
+        if language not in PADDLE_OCR_CACHE:
+            try:
+                PADDLE_OCR_CACHE[language] = PaddleOCR(
+                    lang=language,
+                    use_doc_orientation_classify=True,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=True,
+                )
+            except TypeError:
+                try:
+                    PADDLE_OCR_CACHE[language] = PaddleOCR(lang=language, use_angle_cls=True, show_log=False)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        if PADDLE_OCR_CACHE.get(language) is not None:
+            models.append((language, PADDLE_OCR_CACHE[language]))
+    return models
+
+
+def parse_paddle_ocr_result(result: Any, language: str) -> list[dict[str, Any]]:
+    parsed: list[dict[str, Any]] = []
+    payload = getattr(result, "json", None)
+    if callable(payload):
+        payload = payload()
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = None
+    if isinstance(payload, dict):
+        data = payload.get("res", payload)
+        texts = data.get("rec_texts", [])
+        scores = data.get("rec_scores", [])
+        boxes = data.get("dt_polys", data.get("rec_polys", []))
+        for index, text in enumerate(texts):
+            parsed.append(
+                {
+                    "text": str(text),
+                    "confidence": float(scores[index]) if index < len(scores) else 0.0,
+                    "box": boxes[index].tolist() if index < len(boxes) and hasattr(boxes[index], "tolist") else boxes[index] if index < len(boxes) else None,
+                    "language_model": language,
+                }
+            )
+        return parsed
+
+    def visit(value: Any) -> None:
+        if not isinstance(value, (list, tuple)):
+            return
+        if (
+            len(value) == 2
+            and isinstance(value[1], (list, tuple))
+            and len(value[1]) >= 2
+            and isinstance(value[1][0], str)
+        ):
+            parsed.append(
+                {
+                    "text": value[1][0],
+                    "confidence": float(value[1][1]),
+                    "box": value[0],
+                    "language_model": language,
+                }
+            )
+            return
+        for child in value:
+            visit(child)
+
+    visit(result)
+    return parsed
+
+
+def ocr_box_geometry(box: Any, width: int, height: int) -> tuple[float, float]:
+    if not isinstance(box, (list, tuple)) or not box:
+        return 0.0, 0.0
+    points = [point for point in box if isinstance(point, (list, tuple)) and len(point) >= 2]
+    if not points:
+        return 0.0, 0.0
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    box_width = max(xs) - min(xs)
+    box_height = max(ys) - min(ys)
+    return clamp(box_width * box_height / max(1, width * height)), clamp(box_height / max(1, height))
+
+
+def extract_ocr_signals(frames: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    models = get_paddle_ocr_models()
+    if not models:
+        return {segment_index: {"available": False, "extractor": "paddleocr_ppocrv5"} for segment_index in frames}
+    try:
+        import cv2
+    except ImportError:
+        return {segment_index: {"available": False, "extractor": "paddleocr_ppocrv5"} for segment_index in frames}
+    output: dict[int, dict[str, Any]] = {}
+    for segment_index, frame in frames.items():
+        samples = list(frame.get("sample_frames") or [])
+        if not samples:
+            samples = [{"path": frame["path"], "timestamp": frame["timestamp"], "sharpness": frame.get("sharpness", 0)}]
+        ordered = sorted(samples, key=lambda sample: float(sample.get("timestamp", 0.0) or 0.0))
+        selected = [ordered[0], ordered[-1]] if len(ordered) > 1 else [ordered[0]]
+        sharpest = max(ordered, key=lambda sample: float(sample.get("sharpness", 0.0) or 0.0))
+        if sharpest not in selected:
+            selected.append(sharpest)
+        detections: list[dict[str, Any]] = []
+        for sample in selected:
+            image = cv2.imread(str(sample["path"]))
+            if image is None:
+                continue
+            height, width = image.shape[:2]
+            for language, model in models:
+                try:
+                    if hasattr(model, "predict"):
+                        raw_results = model.predict(str(sample["path"]))
+                    else:
+                        raw_results = model.ocr(str(sample["path"]), cls=True)
+                except Exception:
+                    continue
+                for raw_result in raw_results or []:
+                    for item in parse_paddle_ocr_result(raw_result, language):
+                        text = str(item.get("text", "")).strip()
+                        confidence = float(item.get("confidence", 0.0) or 0.0)
+                        if not text or confidence < float_from_env("NEUROAD_OCR_CONFIDENCE", 0.5):
+                            continue
+                        area_ratio, height_ratio = ocr_box_geometry(item.get("box"), width, height)
+                        detections.append(
+                            {
+                                **item,
+                                "timestamp": float(sample.get("timestamp", 0.0) or 0.0),
+                                "area_ratio": round(area_ratio, 4),
+                                "height_ratio": round(height_ratio, 4),
+                                "mobile_readable": bool(confidence >= 0.7 and height_ratio >= 0.028),
+                            }
+                        )
+        unique: dict[tuple[str, float], dict[str, Any]] = {}
+        for item in detections:
+            key = (re.sub(r"\s+", " ", item["text"].lower()).strip(), round(float(item["timestamp"]), 2))
+            if key not in unique or item["confidence"] > unique[key]["confidence"]:
+                unique[key] = item
+        values = list(unique.values())
+        output[segment_index] = {
+            "available": True,
+            "extractor": "paddleocr_ppocrv5",
+            "texts": values,
+            "text_prominence": round(max((item["area_ratio"] for item in values), default=0.0), 4),
+            "text_readability": round(average_values([item["confidence"] for item in values]), 4) if values else None,
+            "mobile_readable": all(item["mobile_readable"] for item in values) if values else None,
+            "confidence": round(average_values([item["confidence"] for item in values]), 4) if values else 0.0,
+            "sampled_keyframes": len(selected),
+        }
+    return output
 
 
 def extract_audio(video_id: str, source: Path) -> Path | None:
@@ -3743,20 +4890,172 @@ def apply_vad_to_audio(video_id: str, audio_path: Path) -> Path:
 
 
 def compute_audio_metrics(audio_path: Path, segments: list[dict[str, Any]]) -> dict[int, float]:
+    metrics, _ = compute_audio_analysis(audio_path, segments)
+    return metrics
+
+
+def silero_speech_ranges(samples: np.ndarray[Any, Any], rate: int) -> tuple[list[tuple[float, float]], str]:
+    global SILERO_VAD_MODEL_CACHE
+    if not env_enabled("NEUROAD_ENABLE_SILERO_VAD", True):
+        return [], "energy_fallback"
+    try:
+        import torch
+        from silero_vad import get_speech_timestamps, load_silero_vad
+    except ImportError:
+        return [], "energy_fallback"
+    try:
+        if SILERO_VAD_MODEL_CACHE is None:
+            SILERO_VAD_MODEL_CACHE = load_silero_vad(onnx=True)
+        waveform = torch.from_numpy((samples / 32768.0).astype(np.float32))
+        timestamps = get_speech_timestamps(
+            waveform,
+            SILERO_VAD_MODEL_CACHE,
+            sampling_rate=rate,
+            threshold=float_from_env("NEUROAD_SILERO_THRESHOLD", 0.5),
+            min_silence_duration_ms=int_from_env("NEUROAD_SILERO_MIN_SILENCE_MS", 300),
+            return_seconds=True,
+        )
+        return [
+            (float(item.get("start", 0.0) or 0.0), float(item.get("end", 0.0) or 0.0))
+            for item in timestamps
+        ], "silero_vad_onnx"
+    except Exception:
+        return [], "energy_fallback"
+
+
+def librosa_audio_features(samples: np.ndarray[Any, Any], rate: int) -> dict[str, Any]:
+    if not env_enabled("NEUROAD_ENABLE_LIBROSA", True) or samples.size < rate // 2:
+        return {"available": False}
+    try:
+        import librosa
+    except ImportError:
+        return {"available": False}
+    try:
+        onset_envelope = librosa.onset.onset_strength(y=samples, sr=rate, hop_length=320)
+        tempo_values = librosa.feature.tempo(onset_envelope=onset_envelope, sr=rate, hop_length=320)
+        f0, _, voiced_probabilities = librosa.pyin(
+            samples,
+            fmin=65,
+            fmax=500,
+            sr=rate,
+            frame_length=1024,
+            hop_length=320,
+        )
+        voiced_f0 = f0[np.isfinite(f0)] if f0 is not None else np.array([])
+        voiced_probabilities = voiced_probabilities[np.isfinite(voiced_probabilities)] if voiced_probabilities is not None else np.array([])
+        return {
+            "available": True,
+            "tempo_bpm": round(float(np.mean(tempo_values)), 2) if tempo_values.size else None,
+            "pitch_variation": round(float(np.std(voiced_f0) / max(1.0, np.mean(voiced_f0))), 4) if voiced_f0.size > 1 else None,
+            "voiced_probability": round(float(np.mean(voiced_probabilities)), 4) if voiced_probabilities.size else None,
+            "extractor": "librosa_0_11",
+        }
+    except Exception:
+        return {"available": False}
+
+
+def compute_audio_analysis(
+    audio_path: Path, segments: list[dict[str, Any]]
+) -> tuple[dict[int, float], dict[int, dict[str, Any]]]:
     with wave.open(str(audio_path), "rb") as wav:
         rate = wav.getframerate()
         samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16).astype(np.float32)
     metrics: dict[int, float] = {}
+    evidence: dict[int, dict[str, Any]] = {}
+    previous_energy: float | None = None
+    previous_tail: np.ndarray[Any, Any] | None = None
+    silence_threshold = float_from_env("NEUROAD_SILENCE_RMS_THRESHOLD", 0.008)
+    speech_ranges, vad_engine = silero_speech_ranges(samples, rate)
     for segment in segments:
         start = int(segment["start"] * rate)
         end = int(segment["end"] * rate)
         chunk = samples[start:end]
         if chunk.size == 0:
             metrics[segment["index"]] = 0.0
+            evidence[segment["index"]] = {
+                "available": False,
+                "audio_energy": None,
+                "silence_duration": None,
+            }
             continue
-        rms = float(np.sqrt(np.mean(np.square(chunk))) / 32768)
-        metrics[segment["index"]] = clamp(rms * 4)
-    return metrics
+        normalized = chunk / 32768.0
+        rms = float(np.sqrt(np.mean(np.square(normalized))))
+        energy = clamp(rms * 4)
+        metrics[segment["index"]] = energy
+        hop = max(1, int(rate * 0.02))
+        window_rms = np.asarray(
+            [
+                float(np.sqrt(np.mean(np.square(normalized[index : index + hop]))))
+                for index in range(0, normalized.size, hop)
+                if normalized[index : index + hop].size
+            ],
+            dtype=np.float32,
+        )
+        silent_windows = int(np.sum(window_rms < silence_threshold)) if window_rms.size else 0
+        segment_duration = float(segment["end"] - segment["start"])
+        energy_silence_duration = min(segment_duration, silent_windows * hop / rate)
+        speech_duration = sum(
+            max(0.0, min(float(segment["end"]), speech_end) - max(float(segment["start"]), speech_start))
+            for speech_start, speech_end in speech_ranges
+        )
+        silence_duration = max(0.0, segment_duration - speech_duration) if vad_engine == "silero_vad_onnx" else energy_silence_duration
+        spectrum = np.abs(np.fft.rfft(normalized * np.hanning(normalized.size))) if normalized.size > 8 else np.array([])
+        frequencies = np.fft.rfftfreq(normalized.size, 1 / rate) if spectrum.size else np.array([])
+        total_spectral_energy = float(np.sum(spectrum)) if spectrum.size else 0.0
+        voice_band_energy = (
+            float(np.sum(spectrum[(frequencies >= 300) & (frequencies <= 3400)])) if spectrum.size else 0.0
+        )
+        spectral_centroid = (
+            float(np.sum(frequencies * spectrum) / total_spectral_energy) if total_spectral_energy > 0 else None
+        )
+        zero_crossing_rate = float(np.mean(np.abs(np.diff(np.signbit(normalized))))) if normalized.size > 1 else 0.0
+        onset_strength = np.maximum(0.0, np.diff(window_rms)) if window_rms.size > 1 else np.array([])
+        onset_threshold = float(np.mean(onset_strength) + np.std(onset_strength)) if onset_strength.size else 1.0
+        onset_count = int(np.sum(onset_strength > onset_threshold)) if onset_strength.size else 0
+        waveform_bucket_count = min(80, int(window_rms.size))
+        waveform_energy = []
+        if waveform_bucket_count:
+            bucket_edges = np.linspace(0, window_rms.size, waveform_bucket_count + 1, dtype=int)
+            waveform_energy = [
+                round(clamp(float(np.mean(window_rms[bucket_edges[index] : bucket_edges[index + 1]])) * 4), 4)
+                for index in range(waveform_bucket_count)
+                if bucket_edges[index + 1] > bucket_edges[index]
+            ]
+        discontinuity = None
+        if previous_tail is not None and previous_tail.size and normalized.size:
+            discontinuity = clamp(abs(float(np.mean(np.abs(normalized[:hop]))) - float(np.mean(np.abs(previous_tail)))) * 8)
+        librosa_features = librosa_audio_features(normalized.astype(np.float32), rate)
+        evidence[segment["index"]] = {
+            "available": True,
+            "audio_energy": round(energy, 4),
+            "rms_db": round(20 * math.log10(max(rms, 1e-8)), 2),
+            "peak_db": round(20 * math.log10(max(float(np.max(np.abs(normalized))), 1e-8)), 2),
+            "sudden_volume_change": round(abs(energy - previous_energy), 4) if previous_energy is not None else None,
+            "silence_duration": round(silence_duration, 3),
+            "silence_ratio": round(silence_duration / max(0.1, float(segment["end"] - segment["start"])), 4),
+            "speech_duration": round(speech_duration, 3) if vad_engine == "silero_vad_onnx" else None,
+            "vad_engine": vad_engine,
+            "voice_band_ratio": round(voice_band_energy / total_spectral_energy, 4) if total_spectral_energy > 0 else None,
+            "voice_clarity": round(clamp((voice_band_energy / total_spectral_energy) * 1.8), 4)
+            if total_spectral_energy > 0
+            else None,
+            "spectral_centroid_hz": round(spectral_centroid, 2) if spectral_centroid is not None else None,
+            "zero_crossing_rate": round(zero_crossing_rate, 4),
+            "beat_onset_density": round(onset_count / max(0.1, float(segment["end"] - segment["start"])), 3),
+            "waveform_energy": waveform_energy,
+            "sudden_audio_discontinuity": round(discontinuity, 4) if discontinuity is not None else None,
+            **librosa_features,
+            "extractor": "numpy_waveform_v1",
+            "feature_extractors": [
+                "numpy_waveform_v1",
+                *(["silero_vad_onnx"] if vad_engine == "silero_vad_onnx" else ["energy_vad"]),
+                *(["librosa_0_11"] if librosa_features.get("available") else []),
+            ],
+            "confidence": 0.9 if vad_engine == "silero_vad_onnx" else 0.72,
+        }
+        previous_energy = energy
+        previous_tail = normalized[-hop:]
+    return metrics, evidence
 
 
 def transcribe_audio(audio_path: Path) -> list[dict[str, Any]]:
@@ -3788,7 +5087,7 @@ def transcribe_audio(audio_path: Path) -> list[dict[str, Any]]:
 
 def get_faster_whisper_model() -> Any:
     global FASTER_WHISPER_MODEL_CACHE, FASTER_WHISPER_MODEL_SIGNATURE
-    model_name = os.getenv("WHISPER_MODEL", "small.en")
+    model_name = os.getenv("WHISPER_MODEL", "small")
     device = os.getenv("WHISPER_DEVICE", "cpu")
     compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
     signature = (model_name, device, compute_type)
@@ -3929,32 +5228,151 @@ def vosk_words_to_segment(words: list[dict[str, Any]], index: int) -> dict[str, 
     }
 
 
-def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
-    global OBJECT_DETECTOR_FALLBACK_REASON
-    OBJECT_DETECTOR_FALLBACK_REASON = None
-    if os.getenv("NEUROAD_ENABLE_OBJECT_DETECTION", "1").lower() in {"0", "false", "no", "off"}:
-        return detect_lightweight_visual_context(frames)
-    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
+def extract_semantic_evidence(segments: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    global SENTENCE_MODEL_CACHE, GLINER_MODEL_CACHE
+    output = {
+        index: {
+            "available": False,
+            "semantic_novelty": None,
+            "semantic_repetition": None,
+            "named_entities": [],
+            "extractors": [],
+        }
+        for index in range(len(segments))
+    }
+    text_indexes = [index for index, segment in enumerate(segments) if str(segment.get("transcript", "")).strip()]
+    if not text_indexes or not env_enabled("NEUROAD_ENABLE_SEMANTIC_MODELS", True):
+        return output
+    texts = [str(segments[index].get("transcript", "")) for index in text_indexes]
     try:
-        if engine == "mobilenet_ssd":
-            return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
+        from sentence_transformers import SentenceTransformer
+
+        if SENTENCE_MODEL_CACHE is None:
+            SENTENCE_MODEL_CACHE = SentenceTransformer(
+                os.getenv("NEUROAD_SENTENCE_MODEL", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
+                cache_folder=str(MODEL_DIR),
+            )
+        embeddings = np.asarray(
+            SENTENCE_MODEL_CACHE.encode(texts, batch_size=16, normalize_embeddings=True, show_progress_bar=False)
+        )
+        for position, segment_index in enumerate(text_indexes):
+            previous_similarities = [float(np.dot(embeddings[position], embeddings[prior])) for prior in range(position)]
+            previous_similarity = previous_similarities[-1] if previous_similarities else None
+            output[segment_index].update(
+                {
+                    "available": True,
+                    "semantic_novelty": round(clamp(1 - previous_similarity), 4) if previous_similarity is not None else 1.0,
+                    "semantic_repetition": round(clamp(max(previous_similarities)), 4) if previous_similarities else 0.0,
+                    "topic_transition_strength": round(clamp(1 - previous_similarity), 4) if previous_similarity is not None else 0.0,
+                }
+            )
+            output[segment_index]["extractors"].append("paraphrase_multilingual_mpnet")
+    except (ImportError, OSError, RuntimeError):
+        pass
+
+    try:
+        from gliner import GLiNER
+
+        if GLINER_MODEL_CACHE is None:
+            GLINER_MODEL_CACHE = GLiNER.from_pretrained(
+                os.getenv("NEUROAD_GLINER_MODEL", "urchade/gliner_multi-v2.1"), cache_dir=str(MODEL_DIR)
+            )
+        labels = ["person", "organization", "brand", "product", "location", "call to action"]
+        predictions = GLINER_MODEL_CACHE.batch_predict_entities(
+            texts,
+            labels,
+            threshold=float_from_env("NEUROAD_GLINER_THRESHOLD", 0.45),
+        )
+        for segment_index, entities in zip(text_indexes, predictions):
+            output[segment_index]["named_entities"] = [
+                {
+                    "text": str(entity.get("text", "")),
+                    "label": str(entity.get("label", "entity")),
+                    "confidence": round(float(entity.get("score", 0.0) or 0.0), 4),
+                }
+                for entity in entities[:12]
+            ]
+            output[segment_index]["available"] = True
+            output[segment_index]["extractors"].append("gliner_multilingual")
+    except (ImportError, OSError, RuntimeError, TypeError):
+        pass
+    return output
+
+
+def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    enabled = env_enabled("NEUROAD_ENABLE_OBJECT_DETECTION", True)
+    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo").lower()
+    OBJECT_DETECTION_RUNTIME.update(
+        {
+            "requested_engine": engine,
+            "active_detector": "unavailable",
+            "model": str(YOLOE_MODEL_PATH) if engine == "yoloe" else str(YOLO_MODEL_PATH) if engine == "yolo" else None,
+            "fallback_reason": None,
+            "degraded": True,
+        }
+    )
+    if not enabled:
+        return finalize_object_detections(
+            detect_lightweight_visual_context(frames),
+            detector="heuristic_disabled",
+            fallback_reason="Object detection is disabled by configuration.",
+        )
+    if (
+        engine in {"yolo", "yoloe"}
+        and os.getenv("NEUROAD_ENVIRONMENT", "development").lower() == "production"
+        and not env_enabled("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", False)
+    ):
+        raise RuntimeError(
+            "Ultralytics production use is blocked until AGPL or enterprise-license compliance is acknowledged."
+        )
+
+    try:
+        if engine == "yoloe":
+            detections = detect_yoloe_objects(frames)
+            return finalize_object_detections(detections, detector="yoloe_gpu")
         if engine == "yolo":
-            try:
-                return normalize_object_detections(detect_yolo_objects(frames))
-            except Exception as exc:
-                OBJECT_DETECTOR_FALLBACK_REASON = f"YOLO unavailable: {bounded_text(exc, 180)}"
-                if object_detection_required():
-                    raise
-                return normalize_object_detections(detect_mobilenet_ssd_objects(frames))
-        return detect_lightweight_visual_context(frames)
-    except Exception:
+            detections = detect_yolo_objects(frames)
+            return finalize_object_detections(detections, detector=local_yolo_detector_name())
+        if engine == "mobilenet_ssd":
+            if not MOBILENET_SSD_GRAPH.is_file() or not MOBILENET_SSD_CONFIG.is_file():
+                raise RuntimeError("MobileNet-SSD model files are missing.")
+            detections = detect_mobilenet_ssd_objects(frames)
+            return finalize_object_detections(detections, detector="mobilenet_fallback")
+        if engine in {"heuristic", "lightweight"}:
+            return finalize_object_detections(detect_lightweight_visual_context(frames), detector="heuristic")
+        raise RuntimeError(f"Unsupported object-detection engine: {engine}")
+    except Exception as primary_error:
         if object_detection_required():
             raise
-        return detect_lightweight_visual_context(frames)
+        fallback_reason = f"{type(primary_error).__name__}: {primary_error}"
+        try:
+            if engine == "yoloe" and YOLO_MODEL_PATH.is_file():
+                return finalize_object_detections(
+                    detect_yolo_objects(frames),
+                    detector=local_yolo_detector_name(),
+                    fallback_reason=fallback_reason,
+                )
+            if engine != "mobilenet_ssd" and MOBILENET_SSD_GRAPH.is_file() and MOBILENET_SSD_CONFIG.is_file():
+                return finalize_object_detections(
+                    detect_mobilenet_ssd_objects(frames),
+                    detector="mobilenet_fallback",
+                    fallback_reason=fallback_reason,
+                )
+        except Exception as fallback_error:
+            fallback_reason = f"{fallback_reason}; MobileNet fallback failed: {fallback_error}"
+        return finalize_object_detections(
+            detect_lightweight_visual_context(frames),
+            detector="heuristic_fallback",
+            fallback_reason=fallback_reason,
+        )
 
 
 def object_detection_required() -> bool:
     return os.getenv("NEUROAD_REQUIRE_OBJECT_DETECTION", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def local_yolo_detector_name() -> str:
+    return "yolo26_cpu" if "yolo26" in YOLO_MODEL_PATH.name.lower() else "yolo_local"
 
 
 def normalize_object_detections(detections: dict[int, list[dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:
@@ -3962,38 +5380,248 @@ def normalize_object_detections(detections: dict[int, list[dict[str, Any]]]) -> 
         return detections
     normalized: dict[int, list[dict[str, Any]]] = {}
     for segment_index, objects in detections.items():
-        strongest_by_label: dict[str, dict[str, Any]] = {}
-        for obj in sorted(objects, key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True):
-            label = str(obj.get("label", "")).lower()
-            if label and label not in strongest_by_label:
-                strongest_by_label[label] = obj
-        # One strongest person is retained, while non-person labels cannot be crowded out.
-        normalized[segment_index] = sorted(strongest_by_label.values(), key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True)[:MAX_OBJECTS_PER_SEGMENT]
+        unique: list[dict[str, Any]] = []
+        for item in sorted(objects, key=lambda value: float(value.get("confidence", 0.0) or 0.0), reverse=True):
+            label = str(item.get("label", "")).strip()
+            if not label:
+                continue
+            duplicate = any(
+                str(existing.get("label", "")).lower() == label.lower()
+                and (
+                    (
+                        not isinstance(existing.get("bbox"), (list, tuple))
+                        and not isinstance(item.get("bbox"), (list, tuple))
+                    )
+                    or (
+                        abs(float(existing.get("frame_timestamp", -1000) or -1000) - float(item.get("frame_timestamp", -2000) or -2000)) < 0.01
+                        and bbox_iou(existing.get("bbox"), item.get("bbox")) >= 0.97
+                    )
+                )
+                for existing in unique
+            )
+            if not duplicate:
+                unique.append(item)
+            if len(unique) >= MAX_OBJECTS_PER_SEGMENT:
+                break
+        normalized[segment_index] = unique
     return normalized
 
 
-def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
-    global YOLO_MODEL_CACHE, YOLO_MODEL_CACHE_PATH
+def bbox_iou(first: Any, second: Any) -> float:
+    if not isinstance(first, (list, tuple)) or not isinstance(second, (list, tuple)) or len(first) != 4 or len(second) != 4:
+        return 0.0
+    ax1, ay1, ax2, ay2 = [float(value) for value in first]
+    bx1, by1, bx2, by2 = [float(value) for value in second]
+    intersection_width = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    intersection_height = max(0.0, min(ay2, by2) - max(ay1, by1))
+    intersection = intersection_width * intersection_height
+    first_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    second_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = first_area + second_area - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def finalize_object_detections(
+    detections: dict[int, list[dict[str, Any]]], detector: str, fallback_reason: str | None = None
+) -> dict[int, list[dict[str, Any]]]:
+    normalized = normalize_object_detections(detections)
+    ordered_objects: list[tuple[int, dict[str, Any]]] = []
+    instance_counts: Counter[tuple[int, float, str]] = Counter()
+    for segment_index, objects in normalized.items():
+        for item in objects:
+            item["detector"] = item.get("detector") or detector
+            item["evidence_kind"] = item.get("evidence_kind") or "object"
+            timestamp = round(float(item.get("frame_timestamp", 0.0) or 0.0), 3)
+            key = (segment_index, timestamp, str(item.get("label", "")).lower())
+            item["instance_index"] = instance_counts[key]
+            instance_counts[key] += 1
+            ordered_objects.append((segment_index, item))
+    assign_object_track_ids(ordered_objects)
+    OBJECT_DETECTION_RUNTIME.update(
+        {
+            "active_detector": detector,
+            "model": (
+                str(YOLOE_MODEL_PATH)
+                if detector == "yoloe_gpu"
+                else str(YOLO_MODEL_PATH)
+                if detector in {"yolo_local", "yolo26_cpu"}
+                else None
+            ),
+            "fallback_reason": fallback_reason,
+            "degraded": detector not in {"yolo_local", "yoloe_gpu", "yolo26_cpu"},
+        }
+    )
+    return normalized
+
+
+def assign_object_track_ids(objects: list[tuple[int, dict[str, Any]]]) -> None:
+    active_tracks: dict[str, list[dict[str, Any]]] = {}
+    track_counts: Counter[str] = Counter()
+    ordered = sorted(objects, key=lambda item: float(item[1].get("frame_timestamp", 0.0) or 0.0))
+    timestamp_usage: dict[tuple[float, str], set[str]] = {}
+    for _, item in ordered:
+        bbox = item.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        label = str(item.get("label", "object")).strip().lower() or "object"
+        timestamp = float(item.get("frame_timestamp", 0.0) or 0.0)
+        used = timestamp_usage.setdefault((round(timestamp, 3), label), set())
+        candidates = [
+            track
+            for track in active_tracks.get(label, [])
+            if timestamp >= track["timestamp"]
+            and timestamp - track["timestamp"] <= 2.5
+            and track["track_id"] not in used
+        ]
+        best = max(candidates, key=lambda track: bbox_iou(track["bbox"], bbox), default=None)
+        if best is None or bbox_iou(best["bbox"], bbox) < 0.2:
+            track_counts[label] += 1
+            safe_label = re.sub(r"[^a-z0-9]+", "_", label).strip("_") or "object"
+            best = {
+                "track_id": f"{safe_label}_{track_counts[label]:03d}",
+                "bbox": bbox,
+                "timestamp": timestamp,
+            }
+            active_tracks.setdefault(label, []).append(best)
+        else:
+            best["bbox"] = bbox
+            best["timestamp"] = timestamp
+        item["track_id"] = best["track_id"]
+        used.add(best["track_id"])
+
+
+def detection_frame_samples(frames: dict[int, dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
+    samples: list[tuple[int, dict[str, Any]]] = []
+    for segment_index, frame in frames.items():
+        frame_samples = frame.get("sample_frames") or [{"path": frame["path"], "timestamp": frame["timestamp"]}]
+        samples.extend((segment_index, sample) for sample in frame_samples)
+    return sorted(samples, key=lambda item: float(item[1].get("timestamp", 0.0) or 0.0))
+
+
+def yoloe_text_prompts() -> list[str]:
+    configured = [
+        value.strip()
+        for value in os.getenv(
+            "NEUROAD_YOLOE_PROMPTS",
+            "person,product packaging,bottle,box,packet,sachet,tube,jar,can,cosmetics,clothing,electronics,food product,brand logo",
+        ).split(",")
+        if value.strip()
+    ]
+    return list(dict.fromkeys(configured))
+
+
+def get_yoloe_model() -> Any:
+    global YOLOE_MODEL_CACHE, YOLOE_MODEL_SIGNATURE
+    prompts = tuple(yoloe_text_prompts())
+    signature = (str(YOLOE_MODEL_PATH), prompts)
+    if not YOLOE_MODEL_PATH.is_file() or YOLOE_MODEL_PATH.stat().st_size <= 0:
+        raise RuntimeError(f"Configured YOLOE model is missing: {YOLOE_MODEL_PATH}")
+    if YOLOE_MODEL_CACHE is not None and YOLOE_MODEL_SIGNATURE == signature:
+        return YOLOE_MODEL_CACHE
+    try:
+        from ultralytics import YOLOE
+    except ImportError as exc:
+        raise RuntimeError("A YOLOE-capable ultralytics build is required for open-vocabulary detection.") from exc
+    model = YOLOE(str(YOLOE_MODEL_PATH))
+    model.set_classes(list(prompts))
+    YOLOE_MODEL_CACHE = model
+    YOLOE_MODEL_SIGNATURE = signature
+    return YOLOE_MODEL_CACHE
+
+
+def detect_yoloe_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    model = get_yoloe_model()
+    samples = detection_frame_samples(frames)
+    output: dict[int, list[dict[str, Any]]] = {segment_index: [] for segment_index in frames}
+    device = os.getenv("NEUROAD_YOLOE_DEVICE", "0")
+    for batch_start in range(0, len(samples), YOLO_BATCH_SIZE):
+        batch = samples[batch_start : batch_start + YOLO_BATCH_SIZE]
+        results = model.predict(
+            source=[str(sample["path"]) for _, sample in batch],
+            verbose=False,
+            conf=YOLO_CONFIDENCE,
+            imgsz=YOLO_IMAGE_SIZE,
+            device=device,
+        )
+        for (segment_index, sample), result in zip(batch, results):
+            names = result.names
+            masks = list(result.masks.xy) if getattr(result, "masks", None) is not None else []
+            frame_objects: list[dict[str, Any]] = []
+            for box_index, box in enumerate(result.boxes):
+                cls_id = int(box.cls[0])
+                label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else names[cls_id]
+                mask = masks[box_index].tolist() if box_index < len(masks) and hasattr(masks[box_index], "tolist") else None
+                frame_objects.append(
+                    {
+                        "label": str(label),
+                        "confidence": float(box.conf[0]),
+                        "bbox": [float(value) for value in box.xyxy[0].tolist()],
+                        "mask": mask,
+                        "frame_timestamp": float(sample.get("timestamp", 0.0) or 0.0),
+                        "detector": "yoloe_gpu",
+                        "evidence_kind": "object",
+                    }
+                )
+            output[segment_index].extend(
+                sorted(frame_objects, key=lambda item: item["confidence"], reverse=True)[:MAX_OBJECTS_PER_FRAME]
+            )
+    return output
+
+
+def get_yolo_model() -> Any:
+    global YOLO_MODEL_CACHE, YOLO_MODEL_SIGNATURE
+    model_path = str(YOLO_MODEL_PATH)
+    if not YOLO_MODEL_PATH.is_file() or YOLO_MODEL_PATH.stat().st_size <= 0:
+        raise RuntimeError(f"Configured YOLO model is missing: {YOLO_MODEL_PATH}")
+    if YOLO_MODEL_CACHE is not None and YOLO_MODEL_SIGNATURE == model_path:
+        return YOLO_MODEL_CACHE
     try:
         from ultralytics import YOLO
     except ImportError as exc:
         raise RuntimeError("ultralytics is required for YOLO object detection.") from exc
-    model_name = str(YOLO_MODEL_PATH)
-    if YOLO_MODEL_CACHE is None or YOLO_MODEL_CACHE_PATH != model_name:
-        YOLO_MODEL_CACHE = YOLO(model_name)
-        YOLO_MODEL_CACHE_PATH = model_name
-    model = YOLO_MODEL_CACHE
-    output: dict[int, list[dict[str, Any]]] = {}
-    for segment_index, frame in frames.items():
-        detections: list[dict[str, Any]] = []
-        for sample in frame.get("sample_frames", [{"path": frame["path"], "timestamp": frame["timestamp"]}]):
-            results = model(str(sample["path"]), verbose=False, imgsz=YOLO_IMAGE_SIZE, conf=YOLO_CONFIDENCE)
-            for result in results:
-                names = result.names
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    detections.append({"label": names.get(cls_id, str(cls_id)), "confidence": float(box.conf[0]), "bbox": [float(value) for value in box.xyxy[0].tolist()], "frame_timestamp": sample["timestamp"]})
-        output[segment_index] = detections
+    YOLO_MODEL_CACHE = YOLO(model_path)
+    YOLO_MODEL_SIGNATURE = model_path
+    return YOLO_MODEL_CACHE
+
+
+def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    model = get_yolo_model()
+    samples = detection_frame_samples(frames)
+    output: dict[int, list[dict[str, Any]]] = {segment_index: [] for segment_index in frames}
+    device = os.getenv("NEUROAD_YOLO_DEVICE") or None
+    for batch_start in range(0, len(samples), YOLO_BATCH_SIZE):
+        batch = samples[batch_start : batch_start + YOLO_BATCH_SIZE]
+        paths = [str(sample["path"]) for _, sample in batch]
+        predict_kwargs: dict[str, Any] = {
+            "source": paths,
+            "verbose": False,
+            "conf": YOLO_CONFIDENCE,
+            "imgsz": YOLO_IMAGE_SIZE,
+        }
+        if device:
+            predict_kwargs["device"] = device
+        results = model.predict(**predict_kwargs)
+        for (segment_index, sample), result in zip(batch, results):
+            names = result.names
+            frame_objects: list[dict[str, Any]] = []
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                xyxy = [float(value) for value in box.xyxy[0].tolist()]
+                label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else names[cls_id]
+                frame_objects.append(
+                    {
+                        "label": str(label),
+                        "confidence": confidence,
+                        "bbox": xyxy,
+                        "frame_timestamp": float(sample.get("timestamp", 0.0) or 0.0),
+                        "detector": local_yolo_detector_name(),
+                        "evidence_kind": "object",
+                    }
+                )
+            output[segment_index].extend(
+                sorted(frame_objects, key=lambda item: item["confidence"], reverse=True)[:MAX_OBJECTS_PER_FRAME]
+            )
     return output
 
 
@@ -4029,11 +5657,10 @@ def detect_mobilenet_ssd_objects(frames: dict[int, dict[str, Any]]) -> dict[int,
     if net is None:
         return detect_lightweight_visual_context(frames)
 
-    output: dict[int, list[dict[str, Any]]] = {}
-    for segment_index, frame in frames.items():
-        image = cv2.imread(str(frame["path"]))
+    output: dict[int, list[dict[str, Any]]] = {segment_index: [] for segment_index in frames}
+    for segment_index, sample in detection_frame_samples(frames):
+        image = cv2.imread(str(sample["path"]))
         if image is None:
-            output[segment_index] = []
             continue
         height, width = image.shape[:2]
         blob = cv2.dnn.blobFromImage(image, size=(300, 300), swapRB=True, crop=False)
@@ -4055,10 +5682,14 @@ def detect_mobilenet_ssd_objects(frames: dict[int, dict[str, Any]]) -> dict[int,
                     "label": label,
                     "confidence": confidence,
                     "bbox": [x1, y1, x2, y2],
-                    "frame_timestamp": frame["timestamp"],
+                    "frame_timestamp": float(sample.get("timestamp", 0.0) or 0.0),
+                    "detector": "mobilenet_fallback",
+                    "evidence_kind": "object",
                 }
             )
-        output[segment_index] = sorted(objects, key=lambda item: item["confidence"], reverse=True)[:5]
+        output[segment_index].extend(
+            sorted(objects, key=lambda item: item["confidence"], reverse=True)[:MAX_OBJECTS_PER_FRAME]
+        )
     return output
 
 
@@ -4069,11 +5700,10 @@ def detect_lightweight_visual_context(frames: dict[int, dict[str, Any]]) -> dict
         return {segment_index: [] for segment_index in frames}
 
     face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    output: dict[int, list[dict[str, Any]]] = {}
-    for segment_index, frame in frames.items():
-        image = cv2.imread(str(frame["path"]))
+    output: dict[int, list[dict[str, Any]]] = {segment_index: [] for segment_index in frames}
+    for segment_index, sample in detection_frame_samples(frames):
+        image = cv2.imread(str(sample["path"]))
         if image is None:
-            output[segment_index] = []
             continue
 
         height, width = image.shape[:2]
@@ -4088,7 +5718,9 @@ def detect_lightweight_visual_context(frames: dict[int, dict[str, Any]]) -> dict
                         "label": "person",
                         "confidence": 0.58,
                         "bbox": [float(x), float(y), float(x + w), float(y + h)],
-                        "frame_timestamp": frame["timestamp"],
+                        "frame_timestamp": float(sample.get("timestamp", 0.0) or 0.0),
+                        "detector": "heuristic_fallback",
+                        "evidence_kind": "face_proxy",
                     }
                 )
 
@@ -4114,11 +5746,154 @@ def detect_lightweight_visual_context(frames: dict[int, dict[str, Any]]) -> dict
                     "label": label,
                     "confidence": confidence,
                     "bbox": [0.0, 0.0, float(width), float(height)],
-                    "frame_timestamp": frame["timestamp"],
+                    "frame_timestamp": float(sample.get("timestamp", 0.0) or 0.0),
+                    "detector": "heuristic_fallback",
+                    "evidence_kind": "scene_tag",
                 }
             )
+        output[segment_index].extend(detections[:MAX_OBJECTS_PER_FRAME])
+    return output
 
-        output[segment_index] = detections[:5]
+
+def extract_face_behavior_signals(
+    frames: dict[int, dict[str, Any]], detections: dict[int, list[dict[str, Any]]]
+) -> dict[int, dict[str, Any]]:
+    active_segments = {
+        segment_index
+        for segment_index, objects in detections.items()
+        if any(str(item.get("label", "")).lower() == "person" for item in objects)
+    }
+    if not active_segments:
+        return {}
+    unavailable = {
+        segment_index: {
+            "available": False,
+            "extractor": "mediapipe_face_landmarker",
+            "confidence": 0.0,
+        }
+        for segment_index in active_segments
+    }
+    if not MEDIAPIPE_FACE_MODEL.is_file():
+        return unavailable
+    try:
+        import cv2
+        import mediapipe as mp
+        from mediapipe.tasks import python as mediapipe_python
+        from mediapipe.tasks.python import vision
+    except ImportError:
+        return unavailable
+
+    observations: dict[int, list[dict[str, Any]]] = {segment_index: [] for segment_index in active_segments}
+    try:
+        options = vision.FaceLandmarkerOptions(
+            base_options=mediapipe_python.BaseOptions(model_asset_path=str(MEDIAPIPE_FACE_MODEL)),
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=max(1, int_from_env("NEUROAD_MAX_FACES", 4)),
+            min_face_detection_confidence=float_from_env("NEUROAD_FACE_DETECTION_CONFIDENCE", 0.5),
+            min_face_presence_confidence=float_from_env("NEUROAD_FACE_PRESENCE_CONFIDENCE", 0.5),
+            min_tracking_confidence=float_from_env("NEUROAD_FACE_TRACKING_CONFIDENCE", 0.5),
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=True,
+        )
+        with vision.FaceLandmarker.create_from_options(options) as landmarker:
+            last_timestamp_ms = -1
+            for segment_index, sample in detection_frame_samples(frames):
+                if segment_index not in active_segments:
+                    continue
+                image = cv2.imread(str(sample["path"]))
+                if image is None:
+                    continue
+                timestamp_ms = max(last_timestamp_ms + 1, int(float(sample.get("timestamp", 0.0) or 0.0) * 1000))
+                last_timestamp_ms = timestamp_ms
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                result = landmarker.detect_for_video(
+                    mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp_ms
+                )
+                faces = []
+                for landmarks in result.face_landmarks:
+                    if len(landmarks) < 387:
+                        continue
+                    xs = [float(point.x) for point in landmarks]
+                    ys = [float(point.y) for point in landmarks]
+                    x1, x2, y1, y2 = min(xs), max(xs), min(ys), max(ys)
+                    face_width = max(0.001, x2 - x1)
+                    face_height = max(0.001, y2 - y1)
+                    nose = landmarks[1]
+                    left_eye = landmarks[33]
+                    right_eye = landmarks[263]
+                    eye_midpoint_x = (float(left_eye.x) + float(right_eye.x)) / 2
+                    mouth_aperture = abs(float(landmarks[13].y) - float(landmarks[14].y)) / face_height
+                    eye_aperture = average_values(
+                        [
+                            abs(float(landmarks[159].y) - float(landmarks[145].y)) / face_height,
+                            abs(float(landmarks[386].y) - float(landmarks[374].y)) / face_height,
+                        ]
+                    )
+                    faces.append(
+                        {
+                            "bbox_normalized": [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)],
+                            "prominence": clamp(face_width * face_height),
+                            "direct_to_camera": abs(float(nose.x) - eye_midpoint_x) / face_width < 0.12,
+                            "nose": [float(nose.x), float(nose.y)],
+                            "mouth_aperture": mouth_aperture,
+                            "eye_aperture": eye_aperture,
+                        }
+                    )
+                observations[segment_index].append(
+                    {
+                        "timestamp": timestamp_ms / 1000,
+                        "faces": faces,
+                    }
+                )
+    except Exception as exc:
+        for item in unavailable.values():
+            item["error"] = f"{type(exc).__name__}: {exc}"
+        return unavailable
+
+    output: dict[int, dict[str, Any]] = {}
+    for segment_index, samples in observations.items():
+        samples_with_faces = [sample for sample in samples if sample["faces"]]
+        primary_faces = [max(sample["faces"], key=lambda item: item["prominence"]) for sample in samples_with_faces]
+        head_movements = [
+            math.hypot(
+                primary_faces[index]["nose"][0] - primary_faces[index - 1]["nose"][0],
+                primary_faces[index]["nose"][1] - primary_faces[index - 1]["nose"][1],
+            )
+            for index in range(1, len(primary_faces))
+        ]
+        mouth_values = [face["mouth_aperture"] for face in primary_faces]
+        eye_values = [face["eye_aperture"] for face in primary_faces]
+        output[segment_index] = {
+            "available": bool(primary_faces),
+            "extractor": "mediapipe_face_landmarker",
+            "face_prominence": round(max((face["prominence"] for face in primary_faces), default=0.0), 4),
+            "face_persistence": round(len(samples_with_faces) / max(1, len(samples)), 4),
+            "direct_to_camera_presence": round(
+                average_values([1.0 if face["direct_to_camera"] else 0.0 for face in primary_faces]), 4
+            )
+            if primary_faces
+            else None,
+            "head_movement": round(average_values(head_movements), 4) if head_movements else 0.0,
+            "mouth_activity": round(float(np.std(mouth_values)), 4) if len(mouth_values) > 1 else 0.0,
+            "eye_region_movement": round(float(np.std(eye_values)), 4) if len(eye_values) > 1 else 0.0,
+            "facial_behaviour_change_rate": round(
+                average_values(
+                    [
+                        average_values(head_movements),
+                        float(np.std(mouth_values)) if len(mouth_values) > 1 else 0.0,
+                        float(np.std(eye_values)) if len(eye_values) > 1 else 0.0,
+                    ]
+                ),
+                4,
+            ),
+            "people_on_screen": max((len(sample["faces"]) for sample in samples), default=0),
+            "face_boxes": [
+                {"timestamp": sample["timestamp"], "boxes": [face["bbox_normalized"] for face in sample["faces"]]}
+                for sample in samples_with_faces
+            ],
+            "confidence": round(clamp(len(samples_with_faces) / max(2, len(samples)) * 0.85), 3),
+            "identity_or_emotion_inference": False,
+        }
     return output
 
 
@@ -4164,6 +5939,8 @@ def detect_ocr_text(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[st
                 records.append({"text": text, "confidence": confidence / 100, "bbox": [x, y, x + width, y + height], "frame_timestamp": sample["timestamp"]})
         output[segment_index] = records[:12]
     return output
+def average_values(values: list[float]) -> float:
+    return float(np.mean(values)) if values else 0.0
 
 
 def assemble_segments(
@@ -4174,11 +5951,17 @@ def assemble_segments(
     detected_text_by_segment: dict[int, list[dict[str, Any]]],
     audio_metrics: dict[int, float],
     video: sqlite3.Row,
+    audio_evidence: dict[int, dict[str, Any]] | None = None,
+    social_evidence: dict[int, dict[str, Any]] | None = None,
+    ocr_evidence: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     previous_frame: dict[str, Any] | None = None
     previous_transcript = ""
     enriched = []
     metadata_text = " ".join([video["title"] or "", video["description"] or ""])
+    audio_evidence = audio_evidence or {}
+    social_evidence = social_evidence or {}
+    ocr_evidence = ocr_evidence or {}
 
     for segment in segments:
         idx = segment["index"]
@@ -4188,6 +5971,8 @@ def assemble_segments(
         detected_text = detected_text_by_segment.get(idx, [])
         ocr_text = " ".join(str(item.get("text", "")) for item in detected_text)
         topics = classify_topics(" ".join([transcript, ocr_text, metadata_text, " ".join(obj["label"] for obj in objects)]))
+        object_instances = representative_object_instances(objects)
+        topics = classify_topics(" ".join([transcript, metadata_text, " ".join(obj["label"] for obj in object_instances)]))
         frame = frames.get(idx)
         visual_novelty = compute_visual_novelty(frame, previous_frame)
         motion = float(frame.get("motion", 0.0)) if frame else 0.0
@@ -4274,6 +6059,14 @@ def assemble_segments(
                 "transcript": transcript,
                 "transcript_insights": transcript_insights,
                 "visual_evidence": visual_evidence,
+                "audio_evidence": audio_evidence.get(idx, {"available": False}),
+                "social_evidence": social_evidence.get(idx, {"available": False}),
+                "ocr_evidence": ocr_evidence.get(idx, {"available": False}),
+                "detector_provenance": {
+                    **OBJECT_DETECTION_RUNTIME,
+                    "observations": len(objects),
+                    "tracked_instances": len(object_instances),
+                },
                 "score_reasons": score_reasons,
                 "recommendation": build_recommendation(
                     segment["start"],
@@ -4420,19 +6213,59 @@ def transcript_evidence_for_segment(start: float, end: float, transcript_segment
     def weighted_average(key: str, default: float = 0.0) -> float:
         return sum(float(item.get(key, default) or default) * item_overlap for item, item_overlap in overlaps) / max(weight, 0.001)
 
-    words = [word for item, _ in overlaps for word in (item.get("words") or []) if isinstance(word, dict)]
-    word_confidence = float(np.mean([float(word.get("probability", 0.0) or 0.0) for word in words])) if words else 0.0
+    words = []
+    for item, _ in overlaps:
+        for word in item.get("words") or []:
+            if not isinstance(word, dict):
+                continue
+            word_start = transcript_time(word.get("start"), start)
+            word_end = transcript_time(word.get("end"), word_start)
+            midpoint = word_start + max(0.0, word_end - word_start) / 2
+            if not (start <= midpoint < end):
+                continue
+            words.append(
+                {
+                    "word": str(word.get("word", "")).strip(),
+                    "start": round(word_start, 3),
+                    "end": round(word_end, 3),
+                    "confidence": round(float(word.get("probability", 0.0) or 0.0), 4),
+                }
+            )
+    word_confidence = float(np.mean([float(word.get("confidence", 0.0) or 0.0) for word in words])) if words else 0.0
     source = next((str(item.get("source")) for item, _ in overlaps if item.get("source")), "legacy")
     language = next((item.get("language") for item, _ in overlaps if item.get("language")), None)
+    segment_text = " ".join(str(item.get("text", "")) for item, _ in overlaps)
+    devanagari_characters = len(re.findall(r"[\u0900-\u097f]", segment_text))
+    latin_characters = len(re.findall(r"[A-Za-z]", segment_text))
+    language_label = language
+    language_method = "asr"
+    if devanagari_characters and latin_characters:
+        language_label = "hi-en"
+        language_method = "script_and_asr"
+    elif devanagari_characters:
+        language_label = "hi"
+        language_method = "script"
+    elif language == "hi" and latin_characters:
+        language_label = "likely Hindi/Hinglish"
+        language_method = "asr_with_latin_script"
     return {
         "source": source,
-        "language": language,
+        "language": language_label,
+        "language_method": language_method,
         "language_probability": round(weighted_average("language_probability"), 3),
         "word_confidence": round(word_confidence, 3),
+        "words": words,
         "avg_logprob": round(weighted_average("avg_logprob"), 3),
         "no_speech_prob": round(weighted_average("no_speech_prob"), 3),
         "compression_ratio": round(weighted_average("compression_ratio"), 3),
-        "timestamp_coverage": round(min(1.0, len(words) / max(1, len(re.findall(r"\\w+", " ".join(str(item.get("text", "")) for item, _ in overlaps))))), 3),
+        "timestamp_coverage": round(
+            min(
+                1.0,
+                len(words)
+                / max(1, len(re.findall(r"\w+", " ".join(str(item.get("text", "")) for item, _ in overlaps)))),
+            ),
+            3,
+        ),
     }
 
 
@@ -4463,17 +6296,33 @@ def compute_visual_novelty(frame: dict[str, Any] | None, previous_frame: dict[st
 def compute_object_clarity(objects: list[dict[str, Any]], frame: dict[str, Any] | None) -> float:
     if not objects:
         return 0.15
-    confidence = float(np.mean([obj["confidence"] for obj in objects]))
+    instances = representative_object_instances(objects)
+    confidence = float(np.mean([obj["confidence"] for obj in instances]))
     size_bonus = 0.0
     if frame:
         height, width = frame["shape"][:2]
         frame_area = width * height
         ratios = []
-        for obj in objects:
-            x1, y1, x2, y2 = obj["bbox"]
+        for obj in instances:
+            bbox = obj.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            x1, y1, x2, y2 = bbox
             ratios.append(max(0.0, ((x2 - x1) * (y2 - y1)) / frame_area))
-        size_bonus = min(0.25, float(np.mean(ratios)) * 2)
+        size_bonus = min(0.25, float(np.mean(ratios)) * 2) if ratios else 0.0
     return clamp(confidence * 0.75 + size_bonus)
+
+
+def representative_object_instances(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    instances: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(objects):
+        track_id = str(item.get("track_id") or "")
+        key = track_id or f"{item.get('label', 'object')}:{item.get('instance_index', index)}"
+        if key not in instances or float(item.get("confidence", 0.0) or 0.0) > float(
+            instances[key].get("confidence", 0.0) or 0.0
+        ):
+            instances[key] = item
+    return list(instances.values())
 
 
 def compute_speech_density(transcript: str, duration: float) -> float:
@@ -4505,8 +6354,12 @@ def analyze_transcript_segment(
     asr_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lowered = transcript.lower()
-    words = re.findall(r"\b[a-zA-Z][a-zA-Z']+\b", lowered)
-    filler_terms = ["um", "uh", "like", "basically", "actually", "literally"]
+    words = [
+        token
+        for raw_token in re.findall(r"\S+", lowered, flags=re.UNICODE)
+        if (token := raw_token.strip(".,!?;:\"'()[]{}<>…।॥-–—")) and any(character.isalpha() for character in token)
+    ]
+    filler_terms = ["um", "uh", "like", "basically", "actually", "literally", "मतलब", "यानी", "matlab"]
     filler_count = sum(1 for word in words if word in filler_terms)
     keyword_counts = Counter(word for word in words if len(word) > 3)
     repetition_ratio = max(keyword_counts.values(), default=0) / max(1, len(words))
@@ -4585,8 +6438,10 @@ def analyze_transcript_segment(
         "early_hook": bool(start < 10 and hook_terms),
         "source": asr_evidence.get("source", "legacy"),
         "language": asr_evidence.get("language"),
+        "language_method": asr_evidence.get("language_method"),
         "language_probability": asr_evidence.get("language_probability", 0),
         "word_confidence": asr_evidence.get("word_confidence", 0),
+        "words": asr_evidence.get("words", []),
         "avg_logprob": asr_evidence.get("avg_logprob"),
         "no_speech_probability": asr_evidence.get("no_speech_prob"),
         "timestamp_coverage": asr_evidence.get("timestamp_coverage", 0),
@@ -4631,17 +6486,32 @@ def build_visual_evidence(
     motion: float,
     visual_quality: float,
 ) -> dict[str, Any]:
-    object_labels = [obj["label"] for obj in objects[:5]]
+    instances = representative_object_instances(objects)
+    object_labels = list(dict.fromkeys(str(obj["label"]) for obj in instances))[:5]
     return {
         "sampled_frames": int(frame.get("sampled_frames", 0)) if frame else 0,
+        "frame_width": int(frame["shape"][1]) if frame and frame.get("shape") else None,
+        "frame_height": int(frame["shape"][0]) if frame and frame.get("shape") else None,
         "visual_novelty": round(visual_novelty, 3),
         "motion": round(motion, 3),
         "visual_quality": round(visual_quality, 3),
         "brightness": round(float(frame.get("brightness", 0.0)), 3) if frame else 0.0,
         "contrast": round(float(frame.get("contrast", 0.0)), 3) if frame else 0.0,
         "sharpness": round(float(frame.get("sharpness", 0.0)), 3) if frame else 0.0,
-        "object_count": len(objects),
+        "object_count": len(instances),
+        "object_observation_count": len(objects),
         "top_objects": object_labels,
+        "detector": OBJECT_DETECTION_RUNTIME.get("active_detector", "unavailable"),
+        "detector_degraded": bool(OBJECT_DETECTION_RUNTIME.get("degraded", True)),
+        "fallback_reason": OBJECT_DETECTION_RUNTIME.get("fallback_reason"),
+        "motion_acceleration": round(float(frame.get("motion_acceleration", 0.0)), 3) if frame else 0.0,
+        "camera_movement": round(float(frame.get("camera_movement", 0.0)), 3) if frame else 0.0,
+        "pacing_variation": round(float(frame.get("pacing_variation", 0.0)), 3) if frame else 0.0,
+        "scene_boundaries": list(frame.get("scene_boundaries", [])) if frame else [],
+        "shot_change_count": int(frame.get("shot_change_count", 0)) if frame else 0,
+        "scene_detector": frame.get("scene_detector", "unavailable") if frame else "unavailable",
+        "saturation": round(float(frame.get("saturation", 0.0)), 3) if frame else 0.0,
+        "visual_clutter": round(float(frame.get("clutter", 0.0)), 3) if frame else 0.0,
         "blur_penalty": clamp(1 - visual_quality),
     }
 
@@ -5019,18 +6889,30 @@ def build_recommendation(
     return f"{timestamp} is steady but could use a clearer object, example, or CTA to improve monetization fit."
 
 
-def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
+def write_analysis(
+    video_id: str, segments: list[dict[str, Any]], analysis_run_id: str | None = None
+) -> None:
+    signal_payload = build_signal_payload(segments)
+    track_records: dict[str, dict[str, Any]] = {}
     with connect() as conn:
         for table in ("detected_objects", "detected_text", "topics", "ad_matches"):
             conn.execute(f"delete from {table} where segment_id in (select id from segments where video_id = ?)", (video_id,))
+        previous_segment_ids = [
+            row["id"] for row in conn.execute("select id from segments where video_id = ?", (video_id,)).fetchall()
+        ]
+        for previous_segment_id in previous_segment_ids:
+            conn.execute("delete from detected_objects where segment_id = ?", (previous_segment_id,))
+            conn.execute("delete from topics where segment_id = ?", (previous_segment_id,))
+            conn.execute("delete from ad_matches where segment_id = ?", (previous_segment_id,))
         conn.execute("delete from segments where video_id = ?", (video_id,))
         for segment in segments:
             segment_id = new_id("seg")
+            segment["id"] = segment_id
             conn.execute(
                 """
                 insert into segments
-                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, recommendation_tier, recommendation_confidence, evidence_mode, strong_signals, failed_or_weak_signals, ad_slot_score, ad_slot_reasons, is_best_ad_slot, thumbnail_url, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, video_id, start_time, end_time, attention_score, ad_fit_score, drop_risk_score, brand_safety_score, label, summary, transcript, transcript_insights, visual_evidence, score_reasons, recommendation, recommendation_tier, recommendation_confidence, evidence_mode, strong_signals, failed_or_weak_signals, ad_slot_score, ad_slot_reasons, is_best_ad_slot, thumbnail_url, detector_provenance, audio_evidence, narrative_evidence, social_evidence, ocr_evidence, signal_summary, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment_id,
@@ -5057,6 +6939,12 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                     json.dumps(segment.get("ad_slot_reasons", [])),
                     1 if segment.get("is_best_ad_slot") else 0,
                     segment["thumbnail_url"],
+                    json.dumps(segment.get("detector_provenance", {})),
+                    json.dumps(segment.get("audio_evidence", {})),
+                    json.dumps(segment.get("narrative_evidence", {})),
+                    json.dumps(segment.get("social_evidence", {})),
+                    json.dumps(segment.get("ocr_evidence", {})),
+                    json.dumps(segment.get("signal_summary", {})),
                     utc_now(),
                 ),
             )
@@ -5064,8 +6952,8 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                 conn.execute(
                     """
                     insert into detected_objects
-                    (id, segment_id, label, confidence, bbox, frame_timestamp, created_at)
-                    values (?, ?, ?, ?, ?, ?, ?)
+                    (id, segment_id, label, confidence, bbox, frame_timestamp, track_id, detector, instance_index, mask, evidence_kind, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_id("obj"),
@@ -5074,9 +6962,39 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                         obj["confidence"],
                         json.dumps(obj.get("bbox")),
                         obj.get("frame_timestamp"),
+                        obj.get("track_id"),
+                        obj.get("detector"),
+                        obj.get("instance_index", 0),
+                        json.dumps(obj.get("mask")) if obj.get("mask") is not None else None,
+                        obj.get("evidence_kind", "object"),
                         utc_now(),
                     ),
                 )
+                track_id = str(obj.get("track_id") or "")
+                if analysis_run_id and track_id:
+                    timestamp = float(obj.get("frame_timestamp", segment["start"]) or segment["start"])
+                    record = track_records.setdefault(
+                        track_id,
+                        {
+                            "label": str(obj.get("label", "object")),
+                            "confidence": [],
+                            "first_seen": timestamp,
+                            "last_seen": timestamp,
+                            "detector": str(obj.get("detector") or "unavailable"),
+                            "observations": [],
+                        },
+                    )
+                    record["confidence"].append(float(obj.get("confidence", 0.0) or 0.0))
+                    record["first_seen"] = min(float(record["first_seen"]), timestamp)
+                    record["last_seen"] = max(float(record["last_seen"]), timestamp)
+                    record["observations"].append(
+                        {
+                            "segment_id": segment_id,
+                            "timestamp": timestamp,
+                            "bbox": obj.get("bbox"),
+                            "confidence": obj.get("confidence"),
+                        }
+                    )
             for text in segment.get("detected_text", []):
                 conn.execute(
                     """insert into detected_text (id, segment_id, text, confidence, bbox, frame_timestamp, created_at)
@@ -5105,7 +7023,229 @@ def write_analysis(video_id: str, segments: list[dict[str, Any]]) -> None:
                         utc_now(),
                     ),
                 )
+            if analysis_run_id:
+                for family in ("visual", "audio", "narrative", "social"):
+                    family_summary = segment.get("signal_summary", {}).get(family, {})
+                    conn.execute(
+                        """
+                        insert into segment_signals
+                        (id, analysis_run_id, segment_id, family, summary, confidence, created_at)
+                        values (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id("signal"),
+                            analysis_run_id,
+                            segment_id,
+                            family,
+                            json.dumps(family_summary),
+                            float(family_summary.get("confidence", 0.0) or 0.0),
+                            utc_now(),
+                        ),
+                    )
+                    for signal_name, value in family_summary.items():
+                        if signal_name == "confidence" or not isinstance(value, (int, float)) or isinstance(value, bool):
+                            continue
+                        conn.execute(
+                            """
+                            insert into signal_samples
+                            (id, analysis_run_id, segment_id, family, signal_name, timestamp, value, confidence, metadata, created_at)
+                            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                new_id("sample"),
+                                analysis_run_id,
+                                segment_id,
+                                family,
+                                signal_name,
+                                segment["start"],
+                                float(value),
+                                float(family_summary.get("confidence", 0.0) or 0.0),
+                                json.dumps({"end_time": segment["end"]}),
+                                utc_now(),
+                            ),
+                        )
+                evidence_payloads = [
+                    ("frame", segment.get("thumbnail_url"), {"objects": segment.get("objects", [])}, None),
+                    ("transcript", None, {"text": segment.get("transcript", ""), "insights": segment.get("transcript_insights", {})}, segment.get("transcript_insights", {}).get("transcript_confidence", 0) / 100),
+                    ("audio", None, segment.get("audio_evidence", {}), segment.get("audio_evidence", {}).get("confidence")),
+                    ("ocr", None, segment.get("ocr_evidence", {}), segment.get("ocr_evidence", {}).get("confidence")),
+                    ("face_behavior", None, segment.get("social_evidence", {}), segment.get("social_evidence", {}).get("confidence")),
+                    ("scene", None, {"boundaries": segment.get("visual_evidence", {}).get("scene_boundaries", [])}, None),
+                ]
+                for artifact_type, uri, artifact_payload, artifact_confidence in evidence_payloads:
+                    conn.execute(
+                        """
+                        insert into evidence_artifacts
+                        (id, analysis_run_id, segment_id, artifact_type, timestamp, uri, payload, confidence, created_at)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id("evidence"), analysis_run_id, segment_id, artifact_type, segment["start"], uri,
+                            json.dumps(artifact_payload), artifact_confidence, utc_now(),
+                        ),
+                    )
+        if analysis_run_id:
+            for track_id, record in track_records.items():
+                conn.execute(
+                    """
+                    insert into object_tracks
+                    (id, analysis_run_id, video_id, track_id, label, confidence, first_seen, last_seen, detector, observations, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id("track"),
+                        analysis_run_id,
+                        video_id,
+                        track_id,
+                        record["label"],
+                        float(np.mean(record["confidence"])) if record["confidence"] else 0.0,
+                        record["first_seen"],
+                        record["last_seen"],
+                        record["detector"],
+                        json.dumps(record["observations"]),
+                        utc_now(),
+                    ),
+                )
+            for metric in signal_payload.get("decision_metrics", []):
+                timestamp = metric.get("timestamp", {})
+                conn.execute(
+                    """
+                    insert into decision_metrics
+                    (id, analysis_run_id, metric_key, label, internal_score, confidence, start_time, end_time, reasons, next_action, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id("decision"),
+                        analysis_run_id,
+                        metric.get("key"),
+                        metric.get("label"),
+                        metric.get("score"),
+                        metric.get("confidence_score", 0),
+                        timestamp.get("start"),
+                        timestamp.get("end"),
+                        json.dumps(metric.get("reasons", [])),
+                        metric.get("next_action"),
+                        utc_now(),
+                    ),
+                )
+            active_detector = str(OBJECT_DETECTION_RUNTIME.get("active_detector") or "unavailable")
+            detector_model_path = (
+                YOLOE_MODEL_PATH
+                if active_detector == "yoloe_gpu"
+                else YOLO_MODEL_PATH
+                if active_detector in {"yolo_local", "yolo26_cpu"}
+                else None
+            )
+            detector_checksum = (
+                source_sha256(detector_model_path)
+                if detector_model_path is not None and detector_model_path.is_file()
+                else None
+            )
+            face_model_checksum = source_sha256(MEDIAPIPE_FACE_MODEL) if MEDIAPIPE_FACE_MODEL.is_file() else None
+            manifests = [
+                {
+                    "extractor": "object_detection",
+                    "library_version": installed_package_version("ultralytics"),
+                    "model_version": str(detector_model_path.name) if detector_model_path is not None else active_detector,
+                    "weight_checksum": detector_checksum,
+                    "configuration": {
+                        "detector": OBJECT_DETECTION_RUNTIME,
+                        "confidence": YOLO_CONFIDENCE,
+                        "image_size": YOLO_IMAGE_SIZE,
+                    },
+                },
+                {
+                    "extractor": "transcription",
+                    "library_version": installed_package_version("faster-whisper"),
+                    "model_version": os.getenv("WHISPER_MODEL", "small"),
+                    "weight_checksum": None,
+                    "configuration": {
+                        "device": os.getenv("WHISPER_DEVICE", "cpu"),
+                        "compute_type": os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
+                    },
+                },
+                {
+                    "extractor": "ocr",
+                    "library_version": installed_package_version("paddleocr"),
+                    "model_version": "PP-OCRv5 multilingual",
+                    "weight_checksum": None,
+                    "configuration": {
+                        "languages": os.getenv("NEUROAD_OCR_LANGUAGES", "en,devanagari").split(","),
+                        "confidence": float_from_env("NEUROAD_OCR_CONFIDENCE", 0.5),
+                    },
+                },
+                {
+                    "extractor": "face_behavior",
+                    "library_version": installed_package_version("mediapipe"),
+                    "model_version": MEDIAPIPE_FACE_MODEL.name,
+                    "weight_checksum": face_model_checksum,
+                    "configuration": {
+                        "video_mode": True,
+                        "identity_or_emotion_inference": False,
+                    },
+                },
+                {
+                    "extractor": "audio_features",
+                    "library_version": installed_package_version("librosa"),
+                    "model_version": "librosa-silero-v1",
+                    "weight_checksum": None,
+                    "configuration": {
+                        "silero_vad": env_enabled("NEUROAD_ENABLE_SILERO_VAD", True),
+                        "feature_hop_ms": 20,
+                    },
+                },
+                {
+                    "extractor": "semantic_embeddings",
+                    "library_version": installed_package_version("sentence-transformers"),
+                    "model_version": os.getenv(
+                        "NEUROAD_SENTENCE_MODEL", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+                    ),
+                    "weight_checksum": None,
+                    "configuration": {
+                        "gliner_model": os.getenv("NEUROAD_GLINER_MODEL", "urchade/gliner_multi-v2.1"),
+                        "gliner_version": installed_package_version("gliner"),
+                    },
+                },
+                {
+                    "extractor": "visual_signals",
+                    "library_version": installed_package_version("opencv-python-headless"),
+                    "model_version": "shared_decode_v1",
+                    "weight_checksum": None,
+                    "configuration": {
+                        "sample_rate": FRAME_SAMPLE_RATE,
+                        "hook_sample_rate": 8.0,
+                        "scene_detector": "PySceneDetect AdaptiveDetector + ThresholdDetector",
+                        "scenedetect_version": installed_package_version("scenedetect"),
+                    },
+                },
+            ]
+            for manifest in manifests:
+                conn.execute(
+                    """
+                    insert into model_manifests
+                    (id, analysis_run_id, extractor, library_version, model_version, weight_checksum, configuration, calibration_version, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id("manifest"),
+                        analysis_run_id,
+                        manifest["extractor"],
+                        manifest["library_version"],
+                        manifest["model_version"],
+                        manifest["weight_checksum"],
+                        json.dumps(manifest["configuration"]),
+                        ANALYSIS_SCHEMA_VERSION,
+                        utc_now(),
+                    ),
+                )
         conn.commit()
+
+
+def installed_package_version(name: str) -> str | None:
+    try:
+        return package_version(name)
+    except PackageNotFoundError:
+        return None
 
 
 def fit_text_hits(terms: list[str], text: str) -> list[str]:
@@ -5560,6 +7700,10 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
             obj["bbox"] = json.loads(obj["bbox"]) if obj.get("bbox") else None
         for item in detected_text:
             item["bbox"] = json.loads(item["bbox"]) if item.get("bbox") else None
+            obj["mask"] = json.loads(obj["mask"]) if obj.get("mask") else None
+        audio_evidence = json.loads(row["audio_evidence"]) if row["audio_evidence"] else {"available": False}
+        if isinstance(audio_evidence, dict):
+            audio_evidence.pop("waveform_energy", None)
         segments.append(
             {
                 "id": row["id"],
@@ -5574,6 +7718,13 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
                 "transcript": row["transcript"],
                 "transcript_insights": json.loads(row["transcript_insights"]) if row["transcript_insights"] else {},
                 "visual_evidence": json.loads(row["visual_evidence"]) if row["visual_evidence"] else {},
+                "detector_provenance": json.loads(row["detector_provenance"]) if row["detector_provenance"] else {},
+                "audio_evidence": audio_evidence,
+                "narrative_evidence": json.loads(row["narrative_evidence"]) if row["narrative_evidence"] else {},
+                "social_evidence": json.loads(row["social_evidence"]) if row["social_evidence"] else {},
+                "ocr_evidence": json.loads(row["ocr_evidence"]) if row["ocr_evidence"] else {"available": False},
+                "signal_summary": json.loads(row["signal_summary"]) if row["signal_summary"] else {},
+                "review_state": row["review_state"] or "unreviewed",
                 "score_reasons": json.loads(row["score_reasons"]) if row["score_reasons"] else [],
                 "recommendation": row["recommendation"],
                 "recommendation_tier": row["recommendation_tier"] or "Edit before monetization",
@@ -5600,6 +7751,35 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
         "csv": f"/api/videos/{video['id']}/export?format=csv" if video["status"] == "completed" else None,
         "json": f"/api/videos/{video['id']}/export?format=json" if video["status"] == "completed" else None,
     }
+    signal_payload = build_signal_payload(segments)
+    latest_run = query_one(
+        "select * from analysis_runs where video_id = ? order by started_at desc limit 1", (video["id"],)
+    )
+    if latest_run:
+        run_payload = dict(latest_run)
+        for field in ("model_manifest", "signal_availability", "timings"):
+            run_payload[field] = json.loads(run_payload[field]) if run_payload.get(field) else {}
+        signal_payload["analysis_run"] = run_payload
+        review_rows = query_all(
+            "select state, count(*) as count from evidence_review_tasks where analysis_run_id = ? group by state",
+            (latest_run["id"],),
+        )
+        review_counts = {row["state"]: int(row["count"]) for row in review_rows}
+        approved_segments = review_counts.get("approved", 0)
+        signal_payload["review_summary"] = {
+            "state": (
+                "approved"
+                if segments and approved_segments >= len(segments)
+                else "in_review"
+                if review_rows
+                else "unreviewed"
+            ),
+            "reviewed_segments": approved_segments,
+            "total_segments": len(segments),
+            "counts": review_counts,
+        }
+    else:
+        signal_payload["analysis_run"] = None
     return {
         "video": {
             "id": video["id"],
@@ -5622,6 +7802,7 @@ def build_analysis_payload(video: sqlite3.Row) -> dict[str, Any]:
         "recommendations": build_recommendations(summary, segments),
         "detailed_insight_report": detailed_insight_status("video", video["id"]),
         "exports": exports,
+        **signal_payload,
     }
 
 
@@ -5716,6 +7897,33 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
         summary = payload["summary"]
         best_slot = max(payload["segments"], key=lambda item: item.get("ad_slot_score", 0), default=None)
         evidence_confidence = comparison_evidence_confidence(payload)
+        decision_by_key = {metric.get("key"): metric for metric in payload.get("decision_metrics", [])}
+        readable_values = [
+            float(segment.get("signal_summary", {}).get("visual", {}).get("text_readability")) * 100
+            for segment in payload["segments"]
+            if segment.get("signal_summary", {}).get("visual", {}).get("text_readability") is not None
+        ]
+        audio_change_values = [
+            average_values(
+                [
+                    float(segment.get("audio_evidence", {}).get("sudden_volume_change", 0) or 0),
+                    float(segment.get("audio_evidence", {}).get("sudden_audio_discontinuity", 0) or 0),
+                ]
+            )
+            for segment in payload["segments"]
+            if segment.get("audio_evidence", {}).get("available")
+        ]
+        batch_signals = {
+            "hook_strength": decision_by_key.get("hook_strength", {}).get("score"),
+            "content_momentum": decision_by_key.get("content_momentum", {}).get("score"),
+            "message_clarity": decision_by_key.get("message_clarity", {}).get("score"),
+            "low_creative_friction": decision_by_key.get("creative_friction", {}).get("score"),
+            "placement_readiness": decision_by_key.get("placement_readiness", {}).get("score"),
+            "keyword_coverage": min(100, len(extract_video_keywords(payload)) * 10),
+            "text_readability": int(round(float(np.mean(readable_values)))) if readable_values else None,
+            "audio_stability": int(round((1 - clamp(float(np.mean(audio_change_values)))) * 100)) if audio_change_values else None,
+            "evidence_reliability": decision_by_key.get("evidence_reliability", {}).get("score", evidence_confidence),
+        }
         composite = int(round(
             summary.get("overall_attention_score", 0) * 0.30
             + summary.get("monetization_opportunity_score", 0) * 0.20
@@ -5746,6 +7954,8 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
                     "creator_readiness": summary.get("creator_readiness_score", 0),
                     "ad_slot": best_slot.get("ad_slot_score", 0) if best_slot else 0,
                 },
+                "batch_signals": batch_signals,
+                "decision_labels": {key: value.get("label") for key, value in decision_by_key.items()},
                 "best_hook": summary.get("best_hook"),
                 "strongest_ad_slot": {
                     "start": best_slot.get("start"),
@@ -5755,6 +7965,16 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
                     "reasons": best_slot.get("ad_slot_reasons", []),
                 } if best_slot else None,
                 "keywords": extract_video_keywords(payload),
+                "repeated_weaknesses": [
+                    reason
+                    for recommendation in payload.get("priority_recommendations", [])[1:5]
+                    for reason in recommendation.get("why", [])
+                ],
+                "best_practices": (
+                    payload.get("priority_recommendations", [{}])[0].get("why", [])
+                    if payload.get("priority_recommendations")
+                    else []
+                ),
             }
         )
 
@@ -5767,6 +7987,16 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
         item["rank"] = index + 1
         item["percentile"] = 50 if len(ranked) == 1 else int(round(100 * (len(ranked) - index - 1) / (len(ranked) - 1)))
         item["normalized_score"] = 50 if len(ranked) == 1 else int(round(100 * (item["score"] - ranked[-1]["score"]) / max(1, ranked[0]["score"] - ranked[-1]["score"])))
+    for category in categories:
+        category_items = sorted(
+            [item for item in completed if item["category"] == category], key=lambda item: item["score"], reverse=True
+        )
+        for category_index, item in enumerate(category_items):
+            item["category_benchmark_position"] = {
+                "rank": category_index + 1,
+                "total": len(category_items),
+                "label": f"{category_index + 1} of {len(category_items)} in this uploaded batch",
+            }
 
     shared_keywords: set[str] = set()
     if completed:
@@ -5783,6 +8013,27 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
         }
         for metric in metric_names
     ]
+    for metric in [
+        "hook_strength", "content_momentum", "message_clarity", "low_creative_friction", "placement_readiness",
+        "keyword_coverage", "text_readability", "audio_stability", "evidence_reliability",
+    ]:
+        available_items = [item for item in completed if item.get("batch_signals", {}).get(metric) is not None]
+        if not available_items:
+            continue
+        ordered_items = sorted(available_items, key=lambda item: item["batch_signals"][metric], reverse=True)
+        metric_comparison.append(
+            {
+                "metric": metric,
+                "values": [
+                    {
+                        "video_id": item["video_id"],
+                        "value": item["batch_signals"][metric],
+                        "rank": ordered_items.index(item) + 1,
+                    }
+                    for item in available_items
+                ],
+            }
+        )
     ab = None
     if len(completed) == 2:
         a, b = completed
@@ -5807,6 +8058,49 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
         if winner["strongest_ad_slot"]:
             slot = winner["strongest_ad_slot"]
             recommendations.append({"title": "Strongest ad slot", "body": f"Use {format_range(slot['start'], slot['end'])} in {winner['title']} for the strongest evidence-backed contextual placement.", "video_id": winner["video_id"], "timestamp": format_range(slot["start"], slot["end"])})
+    def best_batch_signal(signal_name: str) -> dict[str, Any] | None:
+        candidates = [item for item in completed if item.get("batch_signals", {}).get(signal_name) is not None]
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda item: item["batch_signals"][signal_name])
+        decision_key = {
+            "low_creative_friction": "creative_friction",
+            "evidence_reliability": "evidence_reliability",
+        }.get(signal_name, signal_name)
+        return {
+            "video_id": best["video_id"],
+            "title": best["title"],
+            "score": best["batch_signals"][signal_name],
+            "label": best.get("decision_labels", {}).get(decision_key),
+        }
+
+    weakness_counts = Counter(
+        weakness for item in completed for weakness in item.get("repeated_weaknesses", [])
+    )
+    reusable_practices = list(
+        dict.fromkeys(practice for item in ranked for practice in item.get("best_practices", []))
+    )[:6]
+    strongest_placement = best_batch_signal("placement_readiness")
+    if strongest_placement:
+        source_video = next(item for item in completed if item["video_id"] == strongest_placement["video_id"])
+        strongest_placement["moment"] = source_video.get("strongest_ad_slot")
+    batch_insights = {
+        "best_hook": best_batch_signal("hook_strength"),
+        "most_consistent_creative_momentum": best_batch_signal("content_momentum"),
+        "clearest_message": best_batch_signal("message_clarity"),
+        "lowest_creative_friction": best_batch_signal("low_creative_friction"),
+        "strongest_placement_ready_moment": strongest_placement,
+        "best_keyword_coverage": best_batch_signal("keyword_coverage"),
+        "most_readable_on_screen_text": best_batch_signal("text_readability"),
+        "most_stable_audio_quality": best_batch_signal("audio_stability"),
+        "evidence_reliability": best_batch_signal("evidence_reliability"),
+        "shared_themes": sorted(shared_keywords),
+        "repeated_weaknesses": [
+            {"finding": finding, "videos": count} for finding, count in weakness_counts.most_common(6)
+        ],
+        "best_practices_to_reuse": reusable_practices,
+        "benchmark_scope": "Completed same-category videos in this uploaded batch only.",
+    }
     return {
         "comparison": {
             "id": comparison["id"],
@@ -5822,6 +8116,7 @@ def build_comparison_payload(comparison: sqlite3.Row) -> dict[str, Any]:
         "videos": videos,
         "metric_comparison": metric_comparison,
         "shared_keywords": sorted(shared_keywords),
+        "batch_insights": batch_insights,
         "ab": ab,
         "recommendations": recommendations,
         "detailed_insight_report": detailed_insight_status("comparison", comparison["id"]),

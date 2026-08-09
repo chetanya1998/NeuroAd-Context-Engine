@@ -1,14 +1,30 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
-import { formatRange } from "@/lib/api";
+import { absoluteMediaUrl, formatRange, getSegmentEvidence } from "@/lib/api";
 import { useExplorerStore } from "@/lib/store";
 import { Badge, Button } from "./ui";
 
-export function SegmentDrawer() {
+export function SegmentDrawer({ videoId }: { videoId: string }) {
   const segment = useExplorerStore((state) => state.selectedSegment);
   const setSelectedSegment = useExplorerStore((state) => state.setSelectedSegment);
+  const evidenceQuery = useQuery({
+    queryKey: ["segment-evidence", videoId, segment?.id],
+    queryFn: () => getSegmentEvidence(videoId, segment?.id ?? ""),
+    enabled: Boolean(videoId && segment?.id),
+    staleTime: Number.POSITIVE_INFINITY
+  });
   if (!segment) return null;
+  const evidence = evidenceQuery.data;
+  const frameUrl = absoluteMediaUrl(evidence?.frame.thumbnail_url ?? segment.thumbnail_url);
+  const waveform = evidence?.audio?.waveform_energy ?? [];
+  const ocrTexts = (evidence?.ocr?.texts ?? []).map((item) => String(item.text ?? "")).filter(Boolean);
+  const findings = (["visual", "audio", "narrative", "social"] as const).flatMap((family) => {
+    const values = segment.signal_summary?.[family]?.findings;
+    return Array.isArray(values) ? values : [];
+  });
+  const reliability = segment.signal_summary?.reliability?.band ?? "Low";
 
   return (
     <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setSelectedSegment(undefined)}>
@@ -26,13 +42,29 @@ export function SegmentDrawer() {
           </Button>
         </div>
 
-        <div className="mt-8 grid grid-cols-2 gap-3">
-          <ScoreBox label="Attention Proxy Score" value={segment.attention_score} />
-          <ScoreBox label="Ad-Fit Score" value={segment.ad_fit_score} />
-          <ScoreBox label="Recommendation Confidence" value={segment.recommendation_confidence ?? 0} />
-          <ScoreBox label="Drop Risk" value={segment.drop_risk_score ?? 0} />
-          <ScoreBox label="Brand Safety" value={segment.brand_safety_score ?? 100} />
-        </div>
+        <section className="mt-8 rounded-lg border border-warning/25 bg-warning/5 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-semibold text-white">What this moment needs</h3>
+            <Badge tone={reliability === "High" ? "success" : reliability === "Medium" ? "warning" : "danger"}>Evidence reliability: {reliability}</Badge>
+          </div>
+          <p className="mt-4 text-sm font-semibold uppercase tracking-[0.12em] text-slate-500">Why</p>
+          <ul className="mt-2 space-y-1.5 text-sm leading-6 text-slate-300">
+            {(findings.length ? findings : segment.failed_or_weak_signals ?? []).slice(0, 4).map((finding) => <li key={finding}>• {finding}</li>)}
+            {!findings.length && !(segment.failed_or_weak_signals ?? []).length ? <li>• No urgent issue is supported by the current evidence.</li> : null}
+          </ul>
+          <p className="mt-4 border-t border-white/10 pt-4 text-sm leading-6 text-white"><span className="font-semibold">Suggested action:</span> {segment.recommendation}</p>
+        </section>
+
+        <details className="mt-6 rounded-lg border border-border bg-surface p-4">
+          <summary className="cursor-pointer font-semibold text-slate-200">Current 0–100 scores</summary>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <ScoreBox label="Attention Proxy Score" value={segment.attention_score} />
+            <ScoreBox label="Ad-Fit Score" value={segment.ad_fit_score} />
+            <ScoreBox label="Recommendation Confidence" value={segment.recommendation_confidence ?? 0} />
+            <ScoreBox label="Drop Risk" value={segment.drop_risk_score ?? 0} />
+            <ScoreBox label="Brand Safety" value={segment.brand_safety_score ?? 100} />
+          </div>
+        </details>
 
         <section className="mt-8 space-y-3">
           <h3 className="font-semibold">Placement tier</h3>
@@ -41,6 +73,46 @@ export function SegmentDrawer() {
             <Badge tone="cyan">{segment.evidence_mode ?? "weak_evidence"}</Badge>
           </div>
         </section>
+
+        <details className="mt-8 rounded-lg border border-border bg-surface p-4">
+          <summary className="cursor-pointer font-semibold text-slate-200">Advanced evidence details</summary>
+          <div className="mt-4 space-y-4 text-sm leading-6 text-slate-400">
+            {evidenceQuery.isLoading ? <p>Loading timestamp evidence…</p> : null}
+            {evidenceQuery.isError ? <p className="text-danger">Could not load the lazy evidence layer: {evidenceQuery.error.message}</p> : null}
+            {frameUrl ? (
+              <div className="overflow-hidden rounded-lg border border-white/10 bg-black">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={frameUrl} alt={`Evidence frame at ${formatRange(segment.start, segment.end)}`} className="max-h-72 w-full object-contain" />
+              </div>
+            ) : null}
+            <p><span className="text-slate-200">Detector:</span> {segment.detector_provenance?.active_detector ?? "unavailable"}{segment.detector_provenance?.fallback_reason ? ` — ${segment.detector_provenance.fallback_reason}` : ""}</p>
+            <p><span className="text-slate-200">Tracked objects:</span> {evidence?.frame.objects?.length ?? segment.detector_provenance?.tracked_instances ?? segment.objects.length}</p>
+            <p><span className="text-slate-200">Face/subject boxes:</span> {(evidence?.frame.face_landmark_boxes?.reduce((total, sample) => total + (sample.boxes?.length ?? 0), 0) ?? 0) + (evidence?.frame.face_subject_boxes?.length ?? 0)}</p>
+            <p><span className="text-slate-200">OCR:</span> {ocrTexts.length ? ocrTexts.join(" · ") : segment.ocr_evidence?.available ? `${segment.ocr_evidence.texts?.length ?? 0} text observations` : "unavailable"}</p>
+            <p><span className="text-slate-200">Audio extractor:</span> {String(segment.audio_evidence?.extractor ?? "unavailable")}</p>
+            {waveform.length ? (
+              <div>
+                <p className="text-slate-200">Audio waveform / energy</p>
+                <div className="mt-2 flex h-16 items-center gap-px rounded-md border border-white/10 bg-black/30 px-2" aria-label="Audio energy waveform">
+                  {waveform.map((value, index) => <span key={`${index}-${value}`} className="min-w-px flex-1 rounded-sm bg-cyan-400/70" style={{ height: `${Math.max(4, Math.min(100, value * 100))}%` }} />)}
+                </div>
+              </div>
+            ) : null}
+            <p><span className="text-slate-200">Scene boundaries:</span> {evidence?.scenes?.boundaries?.length ? evidence.scenes.boundaries.map((value) => `${value.toFixed(2)}s`).join(", ") : "none detected in this segment"}</p>
+            <p><span className="text-slate-200">Word evidence:</span> {evidence?.transcript?.words?.length ? `${evidence.transcript.words.length} timestamped words · ${evidence.transcript.language ?? "language unknown"}` : "unavailable"}</p>
+            <p><span className="text-slate-200">Human review:</span> {evidence?.human_review?.state ?? segment.review_state ?? "unreviewed"}</p>
+            {evidence?.model_manifests?.length ? (
+              <div>
+                <p className="text-slate-200">Extractor/model versions</p>
+                <ul className="mt-2 space-y-1 font-mono text-xs text-slate-500">
+                  {evidence.model_manifests.map((manifest) => (
+                    <li key={manifest.extractor}>{manifest.extractor}: {manifest.model_version ?? "model unavailable"}{manifest.library_version ? ` · ${manifest.library_version}` : ""}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </details>
 
         <section className="mt-8 space-y-3">
           <h3 className="font-semibold">Score evidence</h3>

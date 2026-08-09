@@ -4,6 +4,11 @@ export type DetectedObject = {
   confidence: number;
   bbox?: number[] | null;
   frame_timestamp?: number;
+  track_id?: string | null;
+  detector?: string | null;
+  instance_index?: number;
+  mask?: unknown;
+  evidence_kind?: "object" | "face_proxy" | "scene_tag" | string;
 };
 
 export type Topic = {
@@ -33,6 +38,13 @@ export type Segment = {
   transcript: string;
   transcript_insights: TranscriptInsights;
   visual_evidence: VisualEvidence;
+  audio_evidence?: Record<string, unknown> & { available?: boolean; confidence?: number; audio_energy?: number; silence_duration?: number };
+  narrative_evidence?: Record<string, unknown>;
+  social_evidence?: Record<string, unknown>;
+  ocr_evidence?: Record<string, unknown> & { available?: boolean; texts?: Array<Record<string, unknown>> };
+  signal_summary?: SegmentSignalSummary;
+  detector_provenance?: DetectorProvenance;
+  review_state?: string;
   score_reasons: string[];
   recommendation: string;
   recommendation_tier?: RecommendationTier;
@@ -66,11 +78,43 @@ export type TranscriptInsights = {
   early_hook?: boolean;
   source?: string;
   language?: string | null;
+  language_method?: string | null;
   language_probability?: number;
   word_confidence?: number;
+  words?: Array<{ word: string; start?: number; end?: number; confidence?: number }>;
   avg_logprob?: number | null;
   no_speech_probability?: number | null;
   timestamp_coverage?: number;
+};
+
+export type SegmentEvidence = {
+  video_id: string;
+  segment_id: string;
+  timestamp: { start: number; end: number };
+  frame: {
+    thumbnail_url?: string | null;
+    objects?: DetectedObject[];
+    face_subject_boxes?: DetectedObject[];
+    face_landmark_boxes?: Array<{ timestamp?: number; boxes?: number[][] }>;
+  };
+  ocr?: Record<string, unknown> & { texts?: Array<Record<string, unknown>> };
+  transcript?: {
+    text?: string;
+    words?: Array<{ word: string; start?: number; end?: number; confidence?: number }>;
+    confidence?: number;
+    language?: string | null;
+    language_method?: string | null;
+  };
+  audio?: Record<string, unknown> & { waveform_energy?: number[] };
+  scenes?: { boundaries?: number[]; change_strength?: number; boundary_confirmed?: boolean | null };
+  signals?: SegmentSignalSummary;
+  model_manifests?: Array<{
+    extractor: string;
+    library_version?: string | null;
+    model_version?: string | null;
+    configuration?: Record<string, unknown>;
+  }>;
+  human_review?: Record<string, unknown> & { state?: string };
 };
 
 export type VisualEvidence = {
@@ -84,6 +128,75 @@ export type VisualEvidence = {
   object_count?: number;
   top_objects?: string[];
   blur_penalty?: number;
+  motion_acceleration?: number;
+  camera_movement?: number;
+  pacing_variation?: number;
+  saturation?: number;
+  visual_clutter?: number;
+  scene_boundaries?: number[];
+  shot_change_count?: number;
+  scene_detector?: string;
+  detector?: string;
+  detector_degraded?: boolean;
+  fallback_reason?: string | null;
+};
+
+export type DetectorProvenance = {
+  requested_engine?: string;
+  active_detector?: string;
+  model?: string | null;
+  fallback_reason?: string | null;
+  degraded?: boolean;
+  observations?: number;
+  tracked_instances?: number;
+};
+
+export type SignalFamily = Record<string, unknown> & {
+  confidence?: number;
+  findings?: string[];
+};
+
+export type SegmentSignalSummary = {
+  visual?: SignalFamily;
+  audio?: SignalFamily;
+  narrative?: SignalFamily;
+  social?: SignalFamily;
+  reliability?: { score?: number; band?: "High" | "Medium" | "Low" | string; reasons?: string[] };
+};
+
+export type DecisionMetric = {
+  key: string;
+  name: string;
+  label: string;
+  score: number;
+  confidence: "High" | "Medium" | "Low" | string;
+  confidence_score: number;
+  timestamp: { start: number; end: number; label: string };
+  reasons: string[];
+  next_action: string;
+  evidence_reliability: "High" | "Medium" | "Low" | string;
+};
+
+export type PriorityRecommendation = {
+  segment_id?: string | null;
+  timestamp: { start: number; end: number; label: string };
+  status: string;
+  why: string[];
+  suggested_action: string;
+  evidence_reliability: "High" | "Medium" | "Low" | string;
+  impact_score: number;
+};
+
+export type TimelinePoint = {
+  segment_id?: string | null;
+  start: number;
+  end: number;
+  label: string;
+  visual?: SignalFamily;
+  audio?: SignalFamily;
+  narrative?: SignalFamily;
+  social?: SignalFamily;
+  reliability?: SegmentSignalSummary["reliability"];
 };
 
 export type AnalysisPayload = {
@@ -128,6 +241,13 @@ export type AnalysisPayload = {
     csv?: string | null;
     json?: string | null;
   };
+  analysis_version?: string;
+  decision_metrics?: DecisionMetric[];
+  priority_recommendations?: PriorityRecommendation[];
+  timeline_summary?: { resolution: string; families: string[]; points: TimelinePoint[] };
+  signal_availability?: Record<string, { status: string; extractors?: string[]; missing?: string[] }>;
+  review_summary?: { state: string; reviewed_segments: number; total_segments: number; counts?: Record<string, number> };
+  analysis_run?: Record<string, unknown> | null;
 };
 
 export type DetailedInsightReportStatus = { report_id: string; job_id?: string | null; status: string; progress?: number; stage?: string; attempts?: number; created_at?: string; updated_at?: string; error?: string | null; report_url?: string | null };
@@ -212,6 +332,9 @@ export type ComparisonVideo = {
   percentile?: number;
   rank?: number;
   metrics?: Record<string, number>;
+  batch_signals?: Record<string, number | null>;
+  decision_labels?: Record<string, string>;
+  category_benchmark_position?: { rank: number; total: number; label: string };
   strongest_ad_slot?: {
     start: number;
     end: number;
@@ -237,6 +360,21 @@ export type ComparisonPayload = {
   videos: ComparisonVideo[];
   metric_comparison: Array<{ metric: string; values: Array<{ video_id: string; value: number; rank: number }> }>;
   shared_keywords: string[];
+  batch_insights?: {
+    best_hook?: BatchInsightWinner | null;
+    most_consistent_creative_momentum?: BatchInsightWinner | null;
+    clearest_message?: BatchInsightWinner | null;
+    lowest_creative_friction?: BatchInsightWinner | null;
+    strongest_placement_ready_moment?: (BatchInsightWinner & { moment?: ComparisonVideo["strongest_ad_slot"] }) | null;
+    best_keyword_coverage?: BatchInsightWinner | null;
+    most_readable_on_screen_text?: BatchInsightWinner | null;
+    most_stable_audio_quality?: BatchInsightWinner | null;
+    evidence_reliability?: BatchInsightWinner | null;
+    shared_themes?: string[];
+    repeated_weaknesses?: Array<{ finding: string; videos: number }>;
+    best_practices_to_reuse?: string[];
+    benchmark_scope?: string;
+  };
   ab?: {
     video_a_id: string;
     video_b_id: string;
@@ -247,6 +385,13 @@ export type ComparisonPayload = {
   recommendations: Recommendation[];
   caveats: string[];
   detailed_insight_report?: DetailedInsightReportStatus | null;
+};
+
+export type BatchInsightWinner = {
+  video_id: string;
+  title: string;
+  score: number;
+  label?: string | null;
 };
 
 export type ComparisonStatus = {
