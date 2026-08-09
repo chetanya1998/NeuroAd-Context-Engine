@@ -981,6 +981,10 @@ CORS_ORIGINS=https://your-web-domain.com
 Because `NEXT_PUBLIC_API_BASE` is baked into the Next.js browser bundle at
 build time, redeploy/rebuild the web app after changing it.
 
+For durable Cloudflare R2 video storage and direct browser uploads, follow
+[R2_MIGRATION.md](./R2_MIGRATION.md). R2 stores durable source media and
+artifacts; the analysis worker still uses local scratch disk for FFmpeg/OpenCV.
+
 ### Backend
 
 ```bash

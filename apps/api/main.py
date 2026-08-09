@@ -29,7 +29,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request as FastAPIRequest, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -45,6 +45,7 @@ from insight_report import (
 )
 from runpod_client import RunPodClient, RunPodError, RunPodSettings
 from admin_platform import AdminServices, create_admin_router, init_admin_platform, record_admin_metric_event
+from object_storage import ObjectStorage, content_type_for_suffix
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -116,6 +117,7 @@ UPLOAD_DIR = STORAGE_DIR / "uploads"
 FRAME_DIR = STORAGE_DIR / "frames"
 AUDIO_DIR = STORAGE_DIR / "audio"
 REPORT_DIR = STORAGE_DIR / "reports"
+SCRATCH_DIR = path_from_env("NEUROAD_SCRATCH_DIR", Path("/tmp/neuroad"))
 DB_PATH = path_from_env("NEUROAD_DB_PATH", STORAGE_DIR / "neuroad.db")
 MODEL_DIR = path_from_env("NEUROAD_MODEL_DIR", STORAGE_DIR.parent / "models")
 VOSK_MODEL_DIR = path_from_env("VOSK_MODEL_DIR", MODEL_DIR / "vosk-model-small-en-us-0.15")
@@ -144,6 +146,7 @@ CONVERTIBLE_VIDEO_EXTENSIONS = ALLOWED_EXTENSIONS | {
     ".ogv",
 }
 EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_WORKERS", 1)))
+OBJECT_STORAGE = ObjectStorage()
 INSIGHT_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, int_from_env("NEUROAD_INSIGHT_WORKERS", 1)))
 FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "1.0") or "1.0")
 MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 6))
@@ -467,7 +470,7 @@ COCO_LABELS = [
 
 def ensure_storage_dirs() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    for directory in [UPLOAD_DIR, FRAME_DIR, AUDIO_DIR, REPORT_DIR, MODEL_DIR]:
+    for directory in [UPLOAD_DIR, FRAME_DIR, AUDIO_DIR, REPORT_DIR, MODEL_DIR, SCRATCH_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -635,6 +638,18 @@ class ComparisonAnalyzeRequest(BaseModel):
     video_ids: Optional[list[str]] = None
 
 
+class DirectUploadInitRequest(BaseModel):
+    filename: str
+    size_bytes: int
+    content_type: Optional[str] = None
+    comparison_id: Optional[str] = None
+    allow_internal_training: bool = False
+
+
+class DirectUploadCompleteRequest(BaseModel):
+    comparison_id: Optional[str] = None
+
+
 class ProductResolveRequest(BaseModel):
     url: str
 
@@ -693,7 +708,29 @@ def media_url(path: Path | None) -> str | None:
         rel = path.resolve().relative_to(STORAGE_DIR.resolve())
     except ValueError:
         return None
-    return f"/media/{rel.as_posix()}"
+    return f"/api/media/{rel.as_posix()}" if OBJECT_STORAGE.ready else f"/media/{rel.as_posix()}"
+
+
+def r2_key_from_reference(reference: str | None) -> str | None:
+    return OBJECT_STORAGE.key_from_uri(reference or "") if OBJECT_STORAGE.ready else None
+
+
+def materialize_source_for_processing(reference: str, video_id: str) -> Path:
+    key = r2_key_from_reference(reference)
+    if not key:
+        return Path(reference)
+    return OBJECT_STORAGE.download_file(key, SCRATCH_DIR / video_id / f"source{Path(key).suffix or '.mp4'}")
+
+
+def upload_durable_artifacts(video_id: str) -> None:
+    if not OBJECT_STORAGE.ready:
+        return
+    for root in [FRAME_DIR / video_id, REPORT_DIR / video_id, REPORT_DIR / f"{video_id}.json", REPORT_DIR / f"{video_id}.csv"]:
+        paths = root.rglob("*") if root.is_dir() else [root]
+        for path in paths:
+            if path.is_file():
+                key = path.resolve().relative_to(STORAGE_DIR.resolve()).as_posix()
+                OBJECT_STORAGE.upload_file(path, key, content_type_for_suffix(path.suffix))
 
 
 def connect() -> sqlite3.Connection:
@@ -1989,7 +2026,9 @@ def health() -> dict[str, Any]:
         "storage_ready": storage_ready,
         "database_ready": db_ready,
         "storage_dir": str(STORAGE_DIR),
+        "scratch_dir": str(SCRATCH_DIR),
         "database_path": str(DB_PATH),
+        "object_storage": {"backend": OBJECT_STORAGE.settings.backend, "enabled": OBJECT_STORAGE.enabled, "ready": OBJECT_STORAGE.ready, "bucket": OBJECT_STORAGE.settings.bucket if OBJECT_STORAGE.ready else None, "missing_fields": OBJECT_STORAGE.settings.missing_fields if OBJECT_STORAGE.enabled else []},
         "limits": {
             "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
             "max_source_seconds": MAX_SOURCE_SECONDS,
@@ -1998,6 +2037,56 @@ def health() -> dict[str, Any]:
         },
         "dependencies": dependencies,
     }
+
+
+@app.get("/api/media/{key:path}", include_in_schema=False)
+def get_object_media(key: str) -> RedirectResponse:
+    if not OBJECT_STORAGE.ready:
+        raise HTTPException(status_code=404, detail="Object media storage is not enabled.")
+    return RedirectResponse(OBJECT_STORAGE.presign_get(key), status_code=307)
+
+
+@app.post("/api/uploads/init")
+def initialize_direct_upload(payload: DirectUploadInitRequest) -> dict[str, Any]:
+    if not OBJECT_STORAGE.enabled:
+        return {"storage": "local"}
+    try:
+        OBJECT_STORAGE.require_ready()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    suffix = Path(payload.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported video format. Use MP4, MOV, WebM, or M4V.")
+    if payload.size_bytes <= 0 or payload.size_bytes > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"Upload must be between 1 byte and {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+    if payload.comparison_id:
+        get_comparison_or_404(payload.comparison_id)
+    video_id = new_id("video")
+    key = f"uploads/{video_id}/source{suffix}"
+    content_type = payload.content_type or content_type_for_suffix(suffix)
+    execute("""insert into videos (id, source_type, source_url, title, description, thumbnail_url, duration_seconds, status, file_path, embed_url, created_at) values (?, 'upload', null, ?, '', null, 0, 'uploading', ?, null, ?)""", (video_id, Path(payload.filename).stem[:240] or "Uploaded video", OBJECT_STORAGE.uri(key), utc_now()))
+    execute("""insert or replace into data_asset_consents (video_id, consent_status, policy_version, recorded_at, withdrawn_at) values (?, ?, ?, ?, null)""", (video_id, "opted_in" if payload.allow_internal_training else "not_opted_in", os.getenv("NEUROAD_TRAINING_CONSENT_POLICY_VERSION", "2026-08-01"), utc_now()))
+    return {"storage": "r2", "video_id": video_id, "object_key": key, "upload_url": OBJECT_STORAGE.presign_put(key, content_type), "content_type": content_type, "expires_in_seconds": OBJECT_STORAGE.settings.presign_ttl_seconds}
+
+
+@app.post("/api/uploads/{video_id}/complete")
+def complete_direct_upload(video_id: str, payload: Optional[DirectUploadCompleteRequest] = None) -> dict[str, Any]:
+    if not OBJECT_STORAGE.ready:
+        raise HTTPException(status_code=409, detail="Direct object uploads are not enabled.")
+    video = get_video_or_404(video_id)
+    key = r2_key_from_reference(video["file_path"])
+    if not key or video["status"] != "uploading":
+        raise HTTPException(status_code=409, detail="This video is not waiting for a direct upload.")
+    try:
+        size = int(OBJECT_STORAGE.head(key).get("ContentLength") or 0)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="The R2 upload could not be verified. Upload the file again.") from exc
+    if size <= 0 or size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="The uploaded object is empty or exceeds the current upload limit.")
+    if payload and payload.comparison_id:
+        add_video_to_comparison(payload.comparison_id, video_id)
+    execute("update videos set status = 'uploaded' where id = ?", (video_id,))
+    return {"video_id": video_id, "status": "uploaded", "duration_seconds": 0}
 
 
 async def store_uploaded_video(file: UploadFile, allow_internal_training: bool = False) -> dict[str, Any]:
@@ -3142,6 +3231,7 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             insert_id=f"analysis:{job_id}:failed",
         )
         return
+    source_reference: str | None = None
     try:
         execute("update videos set status = 'processing' where id = ?", (video_id,))
         update_job(job_id, "processing", 4, "metadata")
@@ -3185,9 +3275,10 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         if not video or not video["file_path"]:
             raise RuntimeError("No analyzable media file is attached.")
 
-        source = Path(video["file_path"])
+        source_reference = str(video["file_path"])
+        source = materialize_source_for_processing(source_reference, video_id)
         source = normalize_video_for_analysis(source, video_id)
-        if str(source) != video["file_path"]:
+        if not r2_key_from_reference(source_reference) and str(source) != video["file_path"]:
             execute("update videos set file_path = ? where id = ?", (str(source), video_id))
             video = query_one("select * from videos where id = ?", (video_id,))
         duration = probe_duration_or_raise(source)
@@ -3218,6 +3309,7 @@ def process_upload_job(job_id: str, video_id: str) -> None:
         update_job(job_id, "processing", 90, "ad_scoring")
 
         generate_exports(video_id)
+        upload_durable_artifacts(video_id)
         execute(
             "update videos set status = 'completed', duration_seconds = ?, thumbnail_url = ? where id = ?",
             (int(duration), enriched_segments[0].get("thumbnail_url") if enriched_segments else None, video_id),
@@ -3256,6 +3348,9 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             },
             insert_id=f"analysis:{job_id}:failed",
         )
+    finally:
+        if source_reference and r2_key_from_reference(source_reference):
+            shutil.rmtree(SCRATCH_DIR / video_id, ignore_errors=True)
 
 
 def refresh_comparison_progress(comparison_id: str) -> dict[str, int]:
@@ -3374,7 +3469,11 @@ def normalize_video_for_analysis(source: Path, video_id: str) -> Path:
     if not ffmpeg:
         raise RuntimeError("FFmpeg is required to convert this video before analysis.")
 
-    target = UPLOAD_DIR / f"{video_id}.mp4"
+    try:
+        source.relative_to(SCRATCH_DIR)
+        target = source.with_name(f"{video_id}.mp4")
+    except ValueError:
+        target = UPLOAD_DIR / f"{video_id}.mp4"
     if target == source:
         return source
 
@@ -5855,6 +5954,9 @@ def persist_comparison_report(comparison_id: str) -> None:
         "update comparisons set comparison_mode = ?, inferred_category = ?, summary = ?, updated_at = ? where id = ?",
         (payload["comparison"]["comparison_mode"], payload["comparison"]["inferred_category"], json.dumps(payload["recommendations"]), utc_now(), comparison_id),
     )
+    if OBJECT_STORAGE.ready:
+        for path in [json_path, csv_path]:
+            OBJECT_STORAGE.upload_file(path, path.resolve().relative_to(STORAGE_DIR.resolve()).as_posix(), content_type_for_suffix(path.suffix))
 
 
 def summarize(video: sqlite3.Row, segments: list[dict[str, Any]]) -> dict[str, Any]:
