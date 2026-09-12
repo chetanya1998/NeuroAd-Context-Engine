@@ -4,7 +4,6 @@ R2 is deliberately kept behind this small adapter.  The analysis pipeline still
 needs ordinary local files for FFmpeg and OpenCV, so objects are materialized to
 local scratch storage for the duration of processing.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +11,6 @@ from functools import cached_property
 import os
 from pathlib import Path
 from typing import Any
-
 
 R2_URI_PREFIX = "r2://"
 
