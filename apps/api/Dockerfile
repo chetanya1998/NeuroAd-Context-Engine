@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir --index-url "$TORCH_INDEX_URL" \
         onnx==1.17.0 \
         onnxruntime==1.19.2 \
         loguru==0.7.3 \
+        opencv-python-headless==4.10.0.84 \
         tabulate==0.9.0 \
         thop==0.1.1.post2209072238
 RUN git clone --depth 1 --branch "$YOLOX_SOURCE_REF" https://github.com/Megvii-BaseDetection/YOLOX.git source \
