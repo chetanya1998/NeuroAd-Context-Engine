@@ -564,7 +564,7 @@ def runtime_dependency_status() -> dict[str, Any]:
         except Exception as exc:
             queue_error = f"{type(exc).__name__}: {exc}"
     object_detection_enabled = env_enabled("NEUROAD_ENABLE_OBJECT_DETECTION", True)
-    object_detection_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo").lower()
+    object_detection_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
     production_environment = os.getenv("NEUROAD_ENVIRONMENT", "development").lower() == "production"
     ultralytics_license_accepted = env_enabled("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", False)
     detector_license_ready = bool(
@@ -4130,7 +4130,7 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             "librosa": env_enabled("NEUROAD_ENABLE_LIBROSA", True),
             "audio_cleanup": env_enabled("NEUROAD_ENABLE_AUDIO_CLEANUP", False),
         }
-        object_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo").lower()
+        object_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
         object_configuration = {
             "schema": "tracked-multi-object-v1",
             "library": installed_package_version("ultralytics"),
@@ -5497,7 +5497,7 @@ def extract_semantic_evidence(segments: list[dict[str, Any]]) -> dict[int, dict[
 
 def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
     enabled = env_enabled("NEUROAD_ENABLE_OBJECT_DETECTION", True)
-    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolo").lower()
+    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
     OBJECT_DETECTION_RUNTIME.update(
         {
             "requested_engine": engine,

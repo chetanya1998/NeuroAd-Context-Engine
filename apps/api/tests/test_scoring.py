@@ -756,6 +756,27 @@ def test_production_ultralytics_inference_requires_license_acknowledgement(monke
         main.detect_objects({})
 
 
+def test_production_defaults_to_mobilenet_without_ultralytics_acknowledgement(monkeypatch, tmp_path):
+    graph = tmp_path / "model.pb"
+    config = tmp_path / "model.pbtxt"
+    graph.write_bytes(b"model")
+    config.write_text("model")
+    monkeypatch.setenv("NEUROAD_ENVIRONMENT", "production")
+    monkeypatch.delenv("NEUROAD_OBJECT_DETECTION_ENGINE", raising=False)
+    monkeypatch.delenv("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", raising=False)
+    monkeypatch.setattr(main, "MOBILENET_SSD_GRAPH", graph)
+    monkeypatch.setattr(main, "MOBILENET_SSD_CONFIG", config)
+    monkeypatch.setattr(
+        main,
+        "detect_mobilenet_ssd_objects",
+        lambda _frames: {1: [{"label": "person", "confidence": 0.9}]},
+    )
+
+    detections = main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}})
+
+    assert detections[1][0]["detector"] == "mobilenet_fallback"
+
+
 def test_yoloe_failure_uses_yolo26_with_explicit_fallback_provenance(monkeypatch, tmp_path):
     yolo_model = tmp_path / "yolo26s.pt"
     yolo_model.write_bytes(b"test-weight-placeholder")
