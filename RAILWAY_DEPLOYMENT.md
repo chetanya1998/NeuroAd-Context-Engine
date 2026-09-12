@@ -16,12 +16,12 @@ apps/api/Dockerfile
 
 ## 1. Push Code
 
-Commit and push the deployment files to the `V1.0` branch:
+Commit and push the deployment files to the `main` branch:
 
 ```bash
 git add .
 git commit -m "Configure Railway backend deployment"
-git push origin V1.0
+git push origin main
 ```
 
 ## 2. Create Railway Backend
@@ -30,7 +30,7 @@ In Railway:
 
 1. Create a new project.
 2. Deploy from GitHub repo.
-3. Select the `V1.0` branch.
+3. Select the `main` branch.
 4. Set the service root/source directory to:
 
 ```text
@@ -150,13 +150,16 @@ yolox_onnx.available: true
 object_detection.primary_ready: true
 ```
 
+Also confirm `build.git_sha` matches the commit just pushed to `main`. A healthy
+older deployment can otherwise mask a failed or misconfigured Railway release.
+
 ## 6. Deploy Netlify Frontend
 
 In Netlify:
 
 1. Add new project.
 2. Import the same GitHub repo.
-3. Select branch `V1.0`.
+3. Select branch `main`.
 4. Use these settings:
 
 ```text
@@ -189,6 +192,12 @@ CORS_ORIGINS=https://your-netlify-site.netlify.app,http://localhost:3000,http://
 
 Redeploy/restart the Railway backend.
 
+Use the browser origin only (scheme + host + optional non-default port), not a
+page URL. Trailing slashes are normalized by the API, but paths, query strings,
+and hashes are not valid CORS origins. If R2 direct upload is enabled, add the
+same public web origin to the bucket's CORS `AllowedOrigins`; API CORS and R2
+CORS are separate checks.
+
 ## 8. Final Smoke Test
 
 Check:
@@ -200,3 +209,14 @@ https://your-netlify-site.netlify.app
 ```
 
 Then upload a short MP4 and run analysis.
+
+For a release check before asking a browser user to upload, run an API CORS
+preflight from a terminal. It must return `200` and echo the Netlify origin in
+`access-control-allow-origin`:
+
+```bash
+curl -i -X OPTIONS https://your-railway-domain.up.railway.app/api/videos/upload \
+  -H 'Origin: https://your-netlify-site.netlify.app' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type'
+```

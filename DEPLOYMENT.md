@@ -39,7 +39,7 @@ Railway is the recommended backend host for the current MVP. Follow:
 Key Railway settings:
 
 ```text
-Git branch: V1.0
+Git branch: main
 Service source/root directory: apps/api
 Builder: Dockerfile
 Dockerfile: apps/api/Dockerfile
@@ -161,7 +161,7 @@ Netlify uses the root `netlify.toml`.
 Build settings:
 
 ```text
-Git branch: V1.0
+Git branch: main
 Base directory: repository root
 Build command: npm --workspace apps/web run build
 Publish directory: apps/web/.next

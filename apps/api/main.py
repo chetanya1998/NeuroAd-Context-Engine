@@ -96,11 +96,47 @@ def env_enabled(name: str, default: bool = False) -> bool:
 def cors_origins_from_env() -> list[str]:
     value = os.getenv("CORS_ORIGINS")
     if value:
-        return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return [origin for origin in (normalize_browser_origin(item) for item in value.split(",")) if origin]
     return [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+
+
+def normalize_browser_origin(value: str) -> str:
+    """Normalize deployment configuration to the value browsers send in Origin.
+
+    Operators commonly paste a Netlify or custom-domain URL with a trailing
+    slash into ``CORS_ORIGINS``. Browsers never send that slash in their Origin
+    header, which silently causes every browser upload to fail its preflight.
+    This deliberately normalizes only an HTTP(S) origin; malformed values stay
+    unchanged so they cannot accidentally broaden the CORS allow-list.
+    """
+    candidate = value.strip()
+    if not candidate:
+        return ""
+    try:
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and not parsed.username
+            and not parsed.password
+            and parsed.path in {"", "/"}
+            and not parsed.params
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            host = parsed.hostname.lower()
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            port = parsed.port
+            if port and not ((parsed.scheme == "http" and port == 80) or (parsed.scheme == "https" and port == 443)):
+                host = f"{host}:{port}"
+            return f"{parsed.scheme.lower()}://{host}"
+    except ValueError:
+        pass
+    return candidate
 
 
 def local_network_cors_origin_regex() -> str | None:
@@ -119,7 +155,7 @@ def local_network_cors_origin_regex() -> str | None:
 def admin_cors_origins_from_env() -> set[str]:
     value = os.getenv("ADMIN_CORS_ORIGINS")
     if value:
-        return {origin.strip() for origin in value.split(",") if origin.strip()}
+        return {origin for origin in (normalize_browser_origin(item) for item in value.split(",")) if origin}
     return {"http://localhost:3001"}
 
 
@@ -2370,6 +2406,7 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok" if ready else "degraded",
         "ready": ready,
+        "build": build_metadata(),
         "storage_ready": storage_ready,
         "database_ready": db_ready,
         "detector_ready": detector_ready,
@@ -2425,7 +2462,7 @@ def initialize_direct_upload(payload: DirectUploadInitRequest) -> dict[str, Any]
     if payload.size_bytes <= 0:
         raise HTTPException(status_code=400, detail="Upload an non-empty video file.")
     if payload.size_bytes > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail=f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
+        raise HTTPException(status_code=413, detail=upload_size_limit_message())
     if payload.comparison_id:
         get_comparison_or_404(payload.comparison_id)
 
@@ -2474,8 +2511,10 @@ def complete_direct_upload(video_id: str, payload: Optional[DirectUploadComplete
     except Exception as exc:
         raise HTTPException(status_code=400, detail="The R2 upload could not be verified. Upload the file again.") from exc
     size = int(metadata.get("ContentLength") or 0)
-    if size <= 0 or size > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="The uploaded object is empty or exceeds the current upload limit.")
+    if size <= 0:
+        raise HTTPException(status_code=400, detail="The uploaded object is empty.")
+    if size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=upload_size_limit_message())
     if payload and payload.comparison_id:
         add_video_to_comparison(payload.comparison_id, video_id)
     execute("update videos set status = 'uploaded' where id = ?", (video_id,))
@@ -2490,13 +2529,19 @@ async def store_uploaded_video(file: UploadFile, allow_internal_training: bool =
     video_id = new_id("video")
     target = UPLOAD_DIR / f"{video_id}{suffix}"
     size = 0
-    with target.open("wb") as output:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                target.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail="Upload exceeds the 200 MB MVP limit.")
-            output.write(chunk)
+    try:
+        with target.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail=upload_size_limit_message())
+                output.write(chunk)
+    except HTTPException:
+        target.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="The server could not store this upload. Retry the upload.") from exc
 
     duration = probe_duration(target)
     try:
@@ -2525,6 +2570,10 @@ async def store_uploaded_video(file: UploadFile, allow_internal_training: bool =
         ),
     )
     return {"video_id": video_id, "status": "uploaded", "duration_seconds": duration, "internal_training_opt_in": allow_internal_training}
+
+
+def upload_size_limit_message() -> str:
+    return f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
 
 
 def get_comparison_or_404(comparison_id: str) -> sqlite3.Row:

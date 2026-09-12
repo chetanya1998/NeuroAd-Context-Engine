@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import subprocess
 import wave
@@ -64,6 +65,19 @@ def test_cors_origins_can_be_configured(monkeypatch):
     assert cors_origins_from_env() == ["https://app.example.com", "http://localhost:3000"]
 
 
+def test_cors_origins_normalize_trailing_slashes_and_default_ports(monkeypatch):
+    monkeypatch.setenv(
+        "CORS_ORIGINS",
+        " https://APP.example.com/ , https://app.example.com:443, http://localhost:3000/ ",
+    )
+
+    assert cors_origins_from_env() == [
+        "https://app.example.com",
+        "https://app.example.com",
+        "http://localhost:3000",
+    ]
+
+
 def test_r2_settings_build_the_cloudflare_s3_endpoint(monkeypatch):
     monkeypatch.setenv("NEUROAD_OBJECT_STORAGE", "r2")
     monkeypatch.setenv("R2_ACCOUNT_ID", "account-123")
@@ -111,6 +125,47 @@ def test_direct_upload_init_creates_a_signed_r2_upload(monkeypatch):
     assert captured[0][2] == "r2://neuroad-production/uploads/video_test/source.mp4"
 
 
+def test_direct_upload_init_rejects_oversized_files_with_413(monkeypatch):
+    class FakeStorage:
+        enabled = True
+        ready = True
+
+        @staticmethod
+        def require_ready():
+            return None
+
+    monkeypatch.setattr(main, "OBJECT_STORAGE", FakeStorage())
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024 * 1024)
+
+    with pytest.raises(HTTPException) as error:
+        main.initialize_direct_upload(main.DirectUploadInitRequest(filename="clip.mp4", size_bytes=(1024 * 1024) + 1))
+
+    assert error.value.status_code == 413
+    assert "1 MB limit" in str(error.value.detail)
+
+
+def test_proxy_upload_cleans_up_partial_oversized_file(monkeypatch, tmp_path):
+    class OversizedUpload:
+        filename = "clip.mp4"
+
+        def __init__(self):
+            self.read_count = 0
+
+        async def read(self, _: int) -> bytes:
+            self.read_count += 1
+            return b"x" * 1025 if self.read_count == 1 else b""
+
+    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(main, "new_id", lambda _: "video_test")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.store_uploaded_video(OversizedUpload()))
+
+    assert error.value.status_code == 413
+    assert not (tmp_path / "video_test.mp4").exists()
+
+
 def test_convertible_video_suffixes_include_common_container_formats():
     assert convertible_video_suffix_from_url("https://cdn.example.com/video.mkv") == ".mkv"
     assert convertible_video_suffix_from_url("https://cdn.example.com/video.avi") == ".avi"
@@ -153,6 +208,7 @@ def test_health_reports_deployment_limits():
     assert payload["limits"]["max_upload_mb"] == 200
     assert payload["limits"]["max_analysis_seconds"] == 600
     assert "ffmpeg" in payload["dependencies"]
+    assert "git_sha" in payload["build"]
 
 
 def test_youtube_bot_challenge_is_detected():
