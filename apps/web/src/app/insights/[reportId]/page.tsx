@@ -47,8 +47,8 @@ function InsightDashboard({ report }: { report: InsightReport }) {
   return (
     <AppShell>
       <main className="ph-no-capture mx-auto max-w-7xl px-5 py-7 sm:py-9 lg:px-10">
-        <header className="relative overflow-hidden rounded-2xl border border-cyan/20 bg-gradient-to-br from-cyan/10 via-zinc-950 to-violet-500/10 p-5 sm:p-7">
-          <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan/15 blur-3xl" />
+        <header className="report-glass-hero relative overflow-hidden rounded-2xl border p-5 sm:p-7">
+          <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/[0.06] blur-3xl" />
           <div className="relative">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">

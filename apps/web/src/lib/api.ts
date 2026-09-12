@@ -1,10 +1,22 @@
 import type { AnalysisPayload, ComparisonPayload, ComparisonStatus, InsightJob, InsightReport, JobStatus, ProductFitPayload, ProductProfile, SegmentEvidence } from "./types";
 import { analyticsHeaders } from "./analytics";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+function localApiBase() {
+  if (typeof window === "undefined") return "http://localhost:8000";
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
+
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? localApiBase();
 
 type UploadOptions = {
   onProgress?: (progress: number) => void;
+};
+
+type DirectUploadInit = {
+  storage: "local" | "r2";
+  video_id?: string;
+  upload_url?: string;
+  content_type?: string;
 };
 
 function apiConnectionErrorMessage() {
@@ -18,6 +30,9 @@ function apiConnectionErrorMessage() {
       const isLocalSite = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
       if (isLocalApi && !isLocalSite) {
         return "This website is configured to call localhost:8000 for uploads. That only works on the developer machine; public users need NEXT_PUBLIC_API_BASE set to the deployed NeuroAd API URL.";
+      }
+      if (apiUrl.hostname === window.location.hostname && apiUrl.port === "8000") {
+        return `Uploads cannot reach the local NeuroAd API at ${apiUrl.origin}. Verify that it is running and permits ${window.location.origin} through CORS, then retry.`;
       }
       if (window.location.protocol === "https:" && apiUrl.protocol === "http:" && !isLocalApi) {
         return "Uploads cannot reach the API because this secure site is configured with an insecure API URL. Set NEXT_PUBLIC_API_BASE to the backend HTTPS URL and redeploy.";
@@ -66,7 +81,68 @@ export function absoluteMediaUrl(path?: string | null) {
   return `${API_BASE}${path}`;
 }
 
+function putWithXhr(url: string, body: Document | XMLHttpRequestBodyInit | null, options?: UploadOptions, headers?: Record<string, string>, connectionMessage = apiConnectionErrorMessage()) {
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", url);
+    request.timeout = 10 * 60 * 1000;
+    Object.entries(headers ?? {}).forEach(([name, value]) => request.setRequestHeader(name, value));
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) options?.onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+    };
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        options?.onProgress?.(100);
+        resolve();
+        return;
+      }
+      const response = new Response(request.responseText, {
+        status: request.status,
+        statusText: request.statusText,
+        headers: { "Content-Type": request.getResponseHeader("Content-Type") ?? "application/json" }
+      });
+      parseResponse<unknown>(response).then(() => reject(new Error(request.statusText))).catch(reject);
+    };
+    request.onerror = () => reject(new Error(connectionMessage));
+    request.ontimeout = () => reject(new Error("The upload is taking too long on this connection. Try a smaller file, move to a stronger network, or upload again when the connection is stable."));
+    request.send(body);
+  });
+}
+
+async function uploadDirectlyToR2(file: File, options?: UploadOptions, comparisonId?: string) {
+  const initialized = await parseResponse<DirectUploadInit>(
+    await apiFetch(`${API_BASE}/api/uploads/init`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: file.name,
+        size_bytes: file.size,
+        content_type: file.type || undefined,
+        comparison_id: comparisonId
+      })
+    })
+  );
+  if (initialized.storage !== "r2" || !initialized.video_id || !initialized.upload_url || !initialized.content_type) return null;
+
+  await putWithXhr(
+    initialized.upload_url,
+    file,
+    options,
+    { "Content-Type": initialized.content_type },
+    "The direct upload to secure storage was interrupted. Retry the upload; it will not use the Railway API data path."
+  );
+  return parseResponse<{ video_id: string; status: string; duration_seconds: number }>(
+    await apiFetch(`${API_BASE}/api/uploads/${initialized.video_id}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comparison_id: comparisonId })
+    })
+  );
+}
+
 export async function uploadVideo(file: File, options?: UploadOptions) {
+  const directUpload = await uploadDirectlyToR2(file, options);
+  if (directUpload) return directUpload;
   const form = new FormData();
   form.append("file", file);
   return new Promise<{ video_id: string; status: string }>((resolve, reject) => {
@@ -118,6 +194,18 @@ export async function createComparison(title?: string) {
 }
 
 export async function uploadComparisonVideos(comparisonId: string, files: File[], options?: UploadOptions) {
+  const directUploads = [];
+  for (const file of files) {
+    const directUpload = await uploadDirectlyToR2(file, options, comparisonId);
+    if (!directUpload) break;
+    directUploads.push(directUpload);
+  }
+  if (directUploads.length === files.length) {
+    return { comparison_id: comparisonId, status: "uploaded", videos: directUploads };
+  }
+  if (directUploads.length) {
+    throw new Error("Some videos were uploaded directly to storage before this batch could continue. Remove the incomplete comparison and retry.");
+  }
   const form = new FormData();
   files.forEach((file) => form.append("files", file));
   return new Promise<{ comparison_id: string; status: string; videos: Array<{ video_id: string; status: string; duration_seconds: number }> }>((resolve, reject) => {

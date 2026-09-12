@@ -145,7 +145,7 @@ RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         && echo "$face_checksum" > /opt/neuroad/models/face_landmarker.task.sha256; \
     fi
 
-COPY main.py content_signals.py celery_app.py runpod_client.py insight_report.py analytics.py admin_platform.py ./
+COPY main.py object_storage.py content_signals.py celery_app.py runpod_client.py insight_report.py analytics.py admin_platform.py ./
 
 EXPOSE 8000
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CircleHelp, Download, Eye, FileJson, FileText, Search, ShieldCheck, TrendingDown, TrendingUp, Zap } from "lucide-react";
+import { CircleHelp, Download, FileJson, Search } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -22,7 +22,6 @@ import {
 } from "recharts";
 import { AttentionTimeline } from "@/components/attention-timeline";
 import { BrandFitPanel } from "@/components/brand-fit-panel";
-import { ContentSignalOverview } from "@/components/content-signal-overview";
 import { SegmentDrawer } from "@/components/segment-drawer";
 import { InsightReportLauncher } from "@/components/insight-report-launcher";
 import { AppShell } from "@/components/shell";
@@ -33,41 +32,6 @@ import { useExplorerStore } from "@/lib/store";
 import type { AnalysisPayload, RecommendationTier, Segment } from "@/lib/types";
 
 const tabs = ["Segments", "Objects", "Transcript", "Evidence", "Ad Matches", "Recommendations"] as const;
-
-const metricGuides: Record<string, { definition: string; example: string }> = {
-  "Overall Attention": {
-    definition: "How likely the video is to hold attention, based on pace, movement, and clarity.",
-    example: "A clear opening with movement and useful speech usually scores higher."
-  },
-  Monetization: {
-    definition: "How ready the video is for an ad opportunity, based on its best moments and safety checks.",
-    example: "A clear, safe tutorial can create more opportunities than an unclear video."
-  },
-  "Creator Ready": {
-    definition: "How close the video is to being ready for a campaign review.",
-    example: "Clear speech, good visuals, and fewer weak moments make this stronger."
-  },
-  "Brand Safety": {
-    definition: "How suitable the video appears for brands after checking for risky claims and context.",
-    example: "Unverified promises can lower this score."
-  },
-  "Drop Risk": {
-    definition: "Where viewers may lose interest because a moment is slow, repetitive, quiet, or unclear.",
-    example: "Long silent moments can increase this score."
-  },
-  "Visual Quality": {
-    definition: "How clear and usable the video looks in the sampled frames.",
-    example: "Sharp, well-lit scenes score higher than dark or blurry ones."
-  },
-  "Transcript Confidence": {
-    definition: "How confidently the system understood the spoken words and their timing.",
-    example: "Clear speech helps this score; repeated or unclear words reduce it."
-  },
-  "Object Evidence": {
-    definition: "How clearly the video shows useful visual context for a brand decision.",
-    example: "A clearly visible product is stronger evidence than a person alone."
-  }
-};
 
 export default function DashboardPage() {
   const params = useParams<{ videoId: string }>();
@@ -134,16 +98,16 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-7xl px-5 py-10 lg:px-10">
-        <header className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
+      <div className="dashboard-ui mx-auto max-w-[1440px] px-4 py-6 lg:px-6 lg:py-8">
+        <header className="dashboard-report-header flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
           <div>
             <Badge tone="cyan">Video report</Badge>
-            <h1 className="mt-4 text-4xl font-semibold md:text-6xl">{analysis.video.title}</h1>
-            <p className="mt-4 max-w-3xl text-base leading-7 text-slate-400 md:text-lg">
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight md:text-4xl">{analysis.video.title}</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400 md:text-base">
               Clear video findings, the best ad moment, and simple next steps for your review.
             </p>
           </div>
-          <div className="flex flex-wrap gap-3">
+          <div className="dashboard-export-actions flex flex-wrap gap-2">
             <a
               href={exportUrl(videoId, "csv")}
               onClick={() => capture("report_exported", { target_type: "video", video_id: videoId, export_format: "csv" })}
@@ -163,16 +127,18 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        <ContentSignalOverview analysis={analysis} onSeek={handleSignalSeek} />
+        <DashboardHeroMetrics analysis={analysis} />
 
-        <section className="mt-10">
-          <SectionTitle title="Current scores" body="The original 0–100 metrics are preserved for existing reports, exports, and technical comparisons." />
-          <DashboardSnapshot analysis={analysis} />
+        <DashboardReadinessRail analysis={analysis} />
+
+        <section className="dashboard-section mt-5">
+          <SectionTitle title="Decision signals" body="The few signals that matter most for a placement decision, with a direct next step for each." />
+          <DashboardDecisionSignals analysis={analysis} onSeek={handleSignalSeek} />
         </section>
 
         <EvidenceReadiness analysis={analysis} />
 
-        <section className="mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+        <section className="dashboard-video-layout mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
           <VideoPreview analysis={analysis} seekTarget={seekTarget} />
           <PlacementDecision analysis={analysis} />
         </section>
@@ -187,35 +153,15 @@ export default function DashboardPage() {
           <PrePostKeywords analysis={analysis} />
         </section>
 
-        <section className="mt-8 grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
+        <section className="mt-6">
           <OverallVideoTrend segments={analysis.segments} />
-
-          <div className="space-y-5">
-            <MetricGroup title="Viewer response">
-              <Metric title="Overall Attention" value={analysis.summary.overall_attention_score} icon={<Zap className="h-5 w-5" />} />
-              <Metric title="Drop Risk" value={analysis.summary.overall_drop_risk_score ?? 0} icon={<AlertTriangle className="h-5 w-5" />} />
-              <Moment title="Best Hook" moment={analysis.summary.best_hook} />
-              <Moment title="Weak Segment" moment={analysis.summary.weakest_segment} danger />
-            </MetricGroup>
-            <MetricGroup title="How reliable is this report?" beta>
-              <Metric title="Transcript Confidence" value={averageTranscriptConfidence(analysis.segments)} icon={<FileText className="h-5 w-5" />} />
-              <Metric title="Visual Quality" value={analysis.summary.visual_quality_score ?? 0} icon={<Eye className="h-5 w-5" />} />
-              <Metric title="Object Evidence" value={objectEvidenceScore(analysis.segments)} icon={<Search className="h-5 w-5" />} />
-              <Metric title="Brand Safety" value={analysis.summary.brand_safety_score ?? 100} icon={<ShieldCheck className="h-5 w-5" />} />
-            </MetricGroup>
-            <MetricGroup title="Campaign opportunity" beta>
-              <Metric title="Monetization" value={analysis.summary.monetization_opportunity_score} icon={<TrendingUp className="h-5 w-5" />} />
-              <Metric title="Creator Ready" value={analysis.summary.creator_readiness_score ?? 0} icon={<FileText className="h-5 w-5" />} />
-              <Card className="p-6 sm:col-span-2">
-                <div className="flex flex-wrap items-center gap-2"><GuidedLabel label="Best matching ad category" guide="The category that fits this video best based on the available evidence." /><Badge tone="cyan">Beta</Badge></div>
-                <p className="mt-3 text-3xl font-semibold">{analysis.summary.top_ad_category ?? "No confident match"}</p>
-                <p className="mt-4 text-base leading-7 text-slate-500">
-                  We compare the spoken content, visuals, audio, and safety context with {analysis.summary.ad_catalog_size ?? 0}+ ad categories.
-                </p>
-              </Card>
-            </MetricGroup>
-          </div>
         </section>
+
+        <section className="mt-5">
+          <DashboardViewerResponse analysis={analysis} />
+        </section>
+
+        <DashboardSignalTimeline analysis={analysis} onSeek={handleSignalSeek} />
 
         <section className="mt-6">
           <div className="mb-3 flex items-center justify-between gap-4">
@@ -245,35 +191,39 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section id="segment-evidence" className="mt-8">
-          <SectionTitle title="Segment Evidence" body="Review the exact timestamp evidence behind objects, transcript, ad matches, and recommendations." />
-          <div className="flex flex-wrap gap-2 border-b border-border">
-            {tabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  setActiveTab(tab);
-                  if (tab === "Evidence" || tab === "Recommendations") {
-                    capture("recommendation_evidence_opened", { video_id: videoId, tab: tab.toLowerCase() });
-                  }
-                }}
-                className={`border-b-2 px-4 py-4 text-base font-semibold ${
-                  activeTab === tab ? "border-zinc-100 text-zinc-100" : "border-transparent text-slate-500"
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-          <div className="mt-5">
+        <section id="segment-evidence" className="dashboard-evidence-console mt-8">
+          <Card className="overflow-hidden p-0">
+            <div className="dashboard-evidence-console__nav">
+              <div className="dashboard-evidence-console__tabs" role="tablist" aria-label="Segment evidence views">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === tab}
+                    onClick={() => {
+                      setActiveTab(tab);
+                      if (tab === "Evidence" || tab === "Recommendations") {
+                        capture("recommendation_evidence_opened", { video_id: videoId, tab: tab.toLowerCase() });
+                      }
+                    }}
+                    className={activeTab === tab ? "is-active" : undefined}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+              <Badge tone="cyan">Evidence verified</Badge>
+            </div>
+            <div className="dashboard-evidence-console__body">
             {activeTab === "Segments" ? <SegmentsTab segments={filteredSegments} /> : null}
             {activeTab === "Objects" ? <ObjectsTab segments={filteredSegments} /> : null}
             {activeTab === "Transcript" ? <TranscriptTab segments={filteredSegments} /> : null}
             {activeTab === "Evidence" ? <EvidenceTab segments={filteredSegments} /> : null}
             {activeTab === "Ad Matches" ? <AdMatchesTab segments={filteredSegments} /> : null}
-            {activeTab === "Recommendations" ? <RecommendationsTab recommendations={analysis.recommendations} /> : null}
-          </div>
+            {activeTab === "Recommendations" ? <RecommendationsTab analysis={analysis} /> : null}
+            </div>
+          </Card>
         </section>
       </div>
       <SegmentDrawer videoId={videoId} />
@@ -379,63 +329,192 @@ function buildPrePostKeywords(analysis: AnalysisPayload) {
   return [...suggestions.values()].sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
-function DashboardSnapshot({ analysis }: { analysis: AnalysisPayload }) {
+function DashboardHeroMetrics({ analysis }: { analysis: AnalysisPayload }) {
   const summary = analysis.summary;
-  const bestSlot = summary.best_ad_slot;
-  const bestWindow = summary.best_content_window;
-  const tier: RecommendationTier = summary.best_recommendation_tier ?? bestSlot?.recommendation_tier ?? bestWindow?.recommendation_tier ?? "Edit before monetization";
-  const chosenWindow = bestSlot ?? bestWindow;
-  const representative = chosenWindow
-    ? analysis.segments.find((segment) => segment.start === chosenWindow.start && segment.end === chosenWindow.end)
-    : undefined;
-  const transcriptScore = averageTranscriptConfidence(analysis.segments);
-  const objectScore = objectEvidenceScore(analysis.segments);
-  const topCategory = summary.top_ad_category || "No confident match";
-  const items = [
+  const metrics = [
     {
-      kicker: "1. Placement",
-      label: tier,
-      detail: summary.recommendation_status ?? "Review recommendation quality",
-      tone: tierTone(tier)
+      label: "Overall attention",
+      value: summary.overall_attention_score,
+      detail: "Likelihood viewers stay engaged",
+      tone: summary.overall_attention_score >= 70 ? "success" : summary.overall_attention_score >= 40 ? "warning" : "danger"
     },
     {
-      kicker: "2. Best Window",
-      label: chosenWindow ? formatRange(chosenWindow.start, chosenWindow.end) : "--",
-      detail: bestSlot ? "Strong ad slot candidate" : "Best available content-context window",
-      tone: bestSlot ? "success" : "warning"
+      label: "Drop risk",
+      value: summary.overall_drop_risk_score ?? 0,
+      detail: "Risk of viewers losing interest",
+      tone: (summary.overall_drop_risk_score ?? 0) <= 30 ? "success" : (summary.overall_drop_risk_score ?? 0) <= 60 ? "warning" : "danger"
     },
     {
-      kicker: "3. Transcript",
-      label: String(transcriptScore),
-      detail: transcriptScore >= 70 ? "Clear transcript evidence" : transcriptScore > 0 ? "Transcript needs review" : "Visual and audio evidence used",
-      tone: transcriptScore >= 70 ? "success" : transcriptScore > 0 ? "warning" : "danger"
+      label: "Monetization opportunity",
+      value: summary.monetization_opportunity_score,
+      detail: "Potential revenue from ad placements",
+      tone: summary.monetization_opportunity_score >= 70 ? "success" : summary.monetization_opportunity_score >= 40 ? "warning" : "danger"
     },
     {
-      kicker: "4. Evidence",
-      label: evidenceModeLabel(representative?.evidence_mode),
-      detail: `${objectScore} object score - ${topCategory}`,
-      tone: objectScore >= 60 ? "success" : objectScore >= 30 ? "cyan" : "warning"
+      label: "Creator readiness",
+      value: summary.creator_readiness_score ?? 0,
+      detail: "How prepared the content is for review",
+      tone: (summary.creator_readiness_score ?? 0) >= 70 ? "success" : (summary.creator_readiness_score ?? 0) >= 40 ? "warning" : "danger"
+    },
+    {
+      label: "Brand safety",
+      value: summary.brand_safety_score ?? 100,
+      detail: "Suitability for advertiser association",
+      tone: (summary.brand_safety_score ?? 100) >= 70 ? "success" : (summary.brand_safety_score ?? 100) >= 40 ? "warning" : "danger"
+    },
+    {
+      label: "Visual quality",
+      value: summary.visual_quality_score ?? 0,
+      detail: "Clarity and usability of sampled frames",
+      tone: (summary.visual_quality_score ?? 0) >= 70 ? "success" : (summary.visual_quality_score ?? 0) >= 40 ? "warning" : "danger"
     }
-  ] satisfies {
-    kicker: string;
-    label: string;
-    detail: string;
-    tone: "default" | "success" | "warning" | "danger" | "cyan";
-  }[];
+  ] satisfies { label: string; value: number; detail: string; tone: "success" | "warning" | "danger" }[];
 
   return (
-    <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4" aria-label="Dashboard review order">
-      {items.map((item) => (
-        <Card key={item.kicker} className="p-5">
-          <div className="flex items-start justify-between gap-3">
-            <p className="text-sm font-semibold uppercase tracking-[0.12em] text-slate-500">{item.kicker}</p>
-            <Badge tone={item.tone}>{item.tone === "success" ? "Ready" : item.tone === "danger" ? "Review" : "Check"}</Badge>
+    <section className="dashboard-hero-metrics mt-6" aria-label="Headline report scores">
+      {metrics.map((metric) => (
+        <Card key={metric.label} className={`dashboard-score-card dashboard-score-card--${metric.tone} p-4`}>
+          <p className="dashboard-kicker">{metric.label}</p>
+          <div className="mt-2 flex items-end justify-between gap-3">
+            <p className="dashboard-score-value">{Math.round(metric.value)}</p>
+            <Badge tone={metric.tone}>{metric.tone === "success" ? "Strong" : metric.tone === "warning" ? "Review" : "Needs work"}</Badge>
           </div>
-          <p className="mt-4 text-2xl font-semibold leading-tight text-white">{item.label}</p>
-          <p className="mt-2 text-base leading-6 text-slate-400">{item.detail}</p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">{metric.detail}</p>
         </Card>
       ))}
     </section>
+  );
+}
+
+function DashboardReadinessRail({ analysis }: { analysis: AnalysisPayload }) {
+  const summary = analysis.summary;
+  const bestWindow = summary.best_ad_slot ?? summary.best_content_window;
+  const confidence = Math.round(
+    averageTranscriptConfidence(analysis.segments) * 0.35
+      + (summary.visual_quality_score ?? 0) * 0.25
+      + objectEvidenceScore(analysis.segments) * 0.2
+      + (summary.brand_safety_score ?? 100) * 0.2
+  );
+  const items = [
+    { label: "Top category", value: summary.top_ad_category ?? "No confident match", tone: "danger" },
+    { label: "Placement window", value: bestWindow ? formatRange(bestWindow.start, bestWindow.end) : "Not available", tone: bestWindow ? "warning" : "danger" },
+    { label: "Best ad slot", value: summary.best_ad_slot ? "Candidate found" : "Review needed", tone: summary.best_ad_slot ? "success" : "warning" },
+    { label: "Evidence confidence", value: `${confidence}/100`, tone: confidence >= 70 ? "success" : confidence >= 45 ? "warning" : "danger" }
+  ];
+
+  return (
+    <section className="dashboard-readiness-rail mt-3" aria-label="Placement readiness summary">
+      {items.map((item) => (
+        <div key={item.label} className={`dashboard-readiness-item dashboard-readiness-item--${item.tone}`}>
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </div>
+      ))}
+      <div className="dashboard-readiness-recommendation">
+        <span>Recommendation confidence</span>
+        <div><i><b style={{ width: `${Math.max(4, Math.min(100, confidence))}%` }} /></i><strong>{summary.recommendation_status ?? summary.best_recommendation_tier ?? "Review before placement"}</strong></div>
+      </div>
+    </section>
+  );
+}
+
+function DashboardDecisionSignals({ analysis, onSeek }: { analysis: AnalysisPayload; onSeek: (time: number) => void }) {
+  const fallback = [
+    {
+      key: "attention",
+      name: "Content momentum",
+      label: analysis.summary.overall_attention_score >= 50 ? "Holding" : "Needs work",
+      confidence: "Medium",
+      confidence_score: analysis.summary.overall_attention_score,
+      timestamp: analysis.summary.best_hook ? { start: analysis.summary.best_hook.start, label: formatRange(analysis.summary.best_hook.start, analysis.summary.best_hook.end) } : { start: 0, label: "00:00" },
+      reasons: ["Attention, pacing, and visual change are combined."],
+      next_action: "Use the strongest moment as the model for the opening."
+    },
+    {
+      key: "placement",
+      name: "Placement readiness",
+      label: analysis.summary.recommendation_status ?? "Review",
+      confidence: "Medium",
+      confidence_score: analysis.summary.best_ad_slot?.recommendation_confidence ?? 0,
+      timestamp: analysis.summary.best_content_window ? { start: analysis.summary.best_content_window.start, label: formatRange(analysis.summary.best_content_window.start, analysis.summary.best_content_window.end) } : { start: 0, label: "00:00" },
+      reasons: ["Attention, fit, safety, and contextual evidence are checked together."],
+      next_action: "Review the recommended window before approving a placement."
+    }
+  ];
+  const metrics = analysis.decision_metrics?.length ? analysis.decision_metrics.slice(0, 6) : fallback;
+
+  return (
+    <div className="dashboard-decision-grid mt-3">
+      {metrics.map((metric) => {
+        const score = Math.round(metric.confidence_score ?? 0);
+        const tone = score >= 70 ? "success" : score >= 45 ? "warning" : "danger";
+        return (
+          <button key={metric.key} type="button" className={`dashboard-decision-card dashboard-decision-card--${tone}`} onClick={() => onSeek(metric.timestamp.start)}>
+            <div><span>{metric.name}</span><Badge tone={tone}>{metric.confidence} confidence</Badge></div>
+            <strong>{metric.label}</strong>
+            <p>{metric.reasons[0] ?? "Evidence is being combined for this signal."}</p>
+            <footer><b>{metric.timestamp.label}</b><em>{metric.next_action}</em></footer>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DashboardViewerResponse({ analysis }: { analysis: AnalysisPayload }) {
+  const summary = analysis.summary;
+  const rows = [
+    { label: "Overall attention", value: summary.overall_attention_score, inverse: false },
+    { label: "Campaign opportunity", value: summary.monetization_opportunity_score, inverse: false },
+    { label: "Viewer drop risk", value: summary.overall_drop_risk_score ?? 0, inverse: true },
+    { label: "Brand safety", value: summary.brand_safety_score ?? 100, inverse: false },
+    { label: "Visual clarity", value: summary.visual_quality_score ?? 0, inverse: false },
+    { label: "Speech clarity", value: averageTranscriptConfidence(analysis.segments), inverse: false }
+  ];
+  return (
+    <Card className="dashboard-response-panel p-5">
+      <div className="dashboard-panel-heading"><div><span>Viewer response</span><h2>What the signals say</h2></div><Badge tone="cyan">Live analysis</Badge></div>
+      <div className="dashboard-response-rows">
+        {rows.map((row) => {
+          const strength = row.inverse ? 100 - row.value : row.value;
+          const tone = strength >= 70 ? "success" : strength >= 40 ? "warning" : "danger";
+          return <div key={row.label} className={`dashboard-response-row dashboard-response-row--${tone}`}><span>{row.label}</span><i><b style={{ width: `${Math.max(2, Math.min(100, row.value))}%` }} /></i><strong>{Math.round(row.value)}/100</strong></div>;
+        })}
+      </div>
+      <div className="dashboard-response-moments">
+        <div><span>Best hook</span><strong>{summary.best_hook ? formatRange(summary.best_hook.start, summary.best_hook.end) : "Not found"}</strong></div>
+        <div><span>Weakest point</span><strong>{summary.weakest_segment ? formatRange(summary.weakest_segment.start, summary.weakest_segment.end) : "Not found"}</strong></div>
+      </div>
+    </Card>
+  );
+}
+
+function DashboardSignalTimeline({ analysis, onSeek }: { analysis: AnalysisPayload; onSeek: (time: number) => void }) {
+  const points = analysis.timeline_summary?.points ?? [];
+  if (!points.length) return null;
+  const lanes = [
+    { key: "visual" as const, label: "Visual movement", accent: "#1cc9be" },
+    { key: "audio" as const, label: "Audio energy", accent: "#1cc9be" },
+    { key: "narrative" as const, label: "Narrative novelty", accent: "#b66cff" },
+    { key: "social" as const, label: "Social variety", accent: "#f2aa10" }
+  ];
+  const valueFor = (point: NonNullable<AnalysisPayload["timeline_summary"]>["points"][number], key: "visual" | "audio" | "narrative" | "social") => {
+    const family = point[key];
+    const raw = typeof family?.confidence === "number"
+      ? family.confidence
+      : Object.values(family ?? {}).find((value) => typeof value === "number");
+    return typeof raw === "number" ? Math.max(0, Math.min(100, Math.round(raw <= 1 ? raw * 100 : raw))) : 0;
+  };
+  return (
+    <Card className="dashboard-signal-timeline mt-6 p-5">
+      <div className="dashboard-panel-heading"><div><span>Signal timeline</span><h2>What changes across the video</h2></div><p>Tap any marker to inspect that moment.</p></div>
+      <div className="dashboard-signal-lanes">
+        {lanes.map((lane) => <div key={lane.key} className="dashboard-signal-lane"><span>{lane.label}</span><div>{points.map((point) => {
+          const strength = valueFor(point, lane.key);
+          return <button key={`${lane.key}-${point.start}`} type="button" onClick={() => onSeek(point.start)} title={`${lane.label} · ${point.label}`} style={{ "--signal-accent": lane.accent, "--signal-opacity": `${0.12 + strength / 115}` } as React.CSSProperties} />;
+        })}</div></div>)}
+      </div>
+    </Card>
   );
 }
 
@@ -536,29 +615,6 @@ function SignalList({ title, signals, empty, tone }: { title: string; signals: s
   );
 }
 
-function MetricGroup({ title, children, beta = false }: { title: string; children: React.ReactNode; beta?: boolean }) {
-  return (
-    <section>
-      <div className="mb-3 flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold uppercase tracking-[0.14em] text-slate-500">{title}</h2>{beta ? <Badge tone="cyan" className="text-xs">Beta</Badge> : null}</div>
-      <div className="grid gap-4 sm:grid-cols-2">{children}</div>
-    </section>
-  );
-}
-
-function Metric({ title, value, icon }: { title: string; value: number; icon: React.ReactNode }) {
-  const guide = metricGuides[title];
-  return (
-    <Card className="min-w-0 p-6">
-      <div className="flex min-w-0 items-center justify-between gap-3 text-slate-400">
-        <GuidedLabel label={title} guide={guide ? `${guide.definition} ${guide.example}` : undefined} />
-        {icon}
-      </div>
-      <p className="mt-4 text-5xl font-semibold">{Math.round(value)}</p>
-      {guide ? <p className="mt-3 text-sm leading-6 text-slate-500">{guide.definition}</p> : null}
-    </Card>
-  );
-}
-
 function GuidedLabel({ label, guide }: { label: string; guide?: string }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-2 text-base text-slate-400" title={guide}>
@@ -585,19 +641,6 @@ function SectionTitle({ title, body }: { title: string; body: string }) {
     <div>
       <h2 className="text-2xl font-semibold text-zinc-100">{title}</h2>
       <p className="mt-2 max-w-3xl text-base leading-7 text-slate-500">{body}</p>
-    </div>
-  );
-}
-
-function LegendRow({ items }: { items: { label: string; color: string; description?: string; dash?: string }[] }) {
-  return (
-    <div className="flex flex-wrap gap-2 text-sm">
-      {items.map((item) => (
-        <span key={item.label} className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-zinc-950 px-3 py-1.5 text-slate-300" title={item.description}>
-          <span className="h-0.5 w-6 rounded" style={{ backgroundColor: item.color, borderTop: item.dash ? `2px ${item.dash} ${item.color}` : undefined }} />
-          {item.label}
-        </span>
-      ))}
     </div>
   );
 }
@@ -679,14 +722,11 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
   const average = safeSegments.length
     ? Math.round(safeSegments.reduce((total, segment) => total + segment.attention_score, 0) / safeSegments.length)
     : 0;
-  const averageY = padding.top + chartHeight - (average / 100) * chartHeight;
   const attentionPath = data.map((item) => `${item.x},${item.attentionY}`).join(" ");
-  const adFitPath = data.map((item) => `${item.x},${item.adFitY}`).join(" ");
   const dropRiskPath = data.map((item) => `${item.x},${item.dropRiskY}`).join(" ");
-  const safetyPath = data.map((item) => `${item.x},${item.safetyY}`).join(" ");
   const trendCopy = trendLabel(safeSegments);
   const hovered = hoveredIndex === null ? null : data[hoveredIndex];
-  const tickCount = Math.min(6, Math.max(2, safeSegments.length));
+  const tickCount = Math.min(5, Math.max(2, safeSegments.length));
   const ticks = Array.from({ length: tickCount }, (_, index) => {
     const dataIndex = Math.round((index / (tickCount - 1)) * Math.max(0, safeSegments.length - 1));
     return data[dataIndex];
@@ -704,31 +744,32 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
   };
 
   return (
-    <Card className="overflow-hidden border-white/10 bg-black">
-      <div className="border-b border-white/10 p-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+    <Card className="dashboard-overall-trend overflow-hidden border-white/10 bg-black">
+      <div className="dashboard-trend-header border-b border-white/10">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-sm uppercase tracking-[0.18em] text-slate-500">{trendCopy.kicker}</p>
-            <h2 className="mt-2 text-3xl font-semibold leading-tight text-white">{trendCopy.title}</h2>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400"><span className="font-medium text-slate-200">How to read it:</span> Follow the white line for viewer attention. A strong ad moment usually combines high attention, high ad fit, low drop risk, and steady brand safety.</p>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500"><span className="font-medium text-slate-300">Recommended action:</span> {trendCopy.action}</p>
+            <p className="dashboard-kicker">{trendCopy.kicker}</p>
+            <h2>{trendCopy.title}</h2>
+            <p>{trendCopy.action}</p>
           </div>
-          <LegendRow
-            items={[
-              { label: "Attention Proxy", color: "#f8fafc", description: "Higher means the segment has stronger attention signals." },
-              { label: "Ad Fit", color: "#f59e0b", description: "Higher means stronger evidence for a brand/category slot." },
-              { label: "Drop Risk", color: "#ef4444", description: "Higher means the segment may lose viewer interest." },
-              { label: "Brand Safety", color: "#22c55e", description: "Higher means fewer detected transcript safety concerns." }
-            ]}
-          />
+          <div className="dashboard-trend-summary" aria-label="Trend summary">
+            <div><span>Avg attention</span><strong>{average}</strong></div>
+            <div><span>Avg drop risk</span><strong>{Math.round(mean(safeSegments.map((segment) => segment.drop_risk_score ?? 0)))}</strong></div>
+            <div><span>Brand safety</span><strong>{Math.round(mean(safeSegments.map((segment) => segment.brand_safety_score ?? 100)))}</strong></div>
+          </div>
         </div>
       </div>
 
-      <div className="p-6">
-        <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
+      <div className="dashboard-trend-body">
+        <div className="dashboard-trend-legend" aria-label="Graph legend">
+          <span><i className="dashboard-trend-legend__attention" />Attention</span>
+          <span><i className="dashboard-trend-legend__risk" />Viewer drop risk</span>
+          <p>Hover any point for the complete score breakdown.</p>
+        </div>
+        <div className="dashboard-trend-canvas">
           <svg
             viewBox={`0 0 ${width} ${height}`}
-            className="h-[360px] w-full"
+            className="h-[340px] w-full"
             role="img"
             aria-label="Overall attention trend graph"
             onMouseMove={handleTrendHover}
@@ -741,7 +782,7 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
               </linearGradient>
             </defs>
 
-            {[0, 25, 50, 75, 100].map((value) => {
+            {[0, 50, 100].map((value) => {
               const y = padding.top + chartHeight - (value / 100) * chartHeight;
               return (
                 <g key={value}>
@@ -753,18 +794,11 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
               );
             })}
 
-            <line x1={padding.left} x2={width - padding.right} y1={averageY} y2={averageY} stroke="rgba(245,158,11,0.45)" strokeDasharray="7 7" />
-            <text x={width - padding.right} y={averageY - 8} textAnchor="end" fontSize="12" fill="#f59e0b">
-              Avg {average}
-            </text>
-
             <polygon
               points={`${attentionPath} ${data[data.length - 1].x},${padding.top + chartHeight} ${data[0].x},${padding.top + chartHeight}`}
               fill="url(#attentionTrendFill)"
             />
-            <polyline points={adFitPath} fill="none" stroke="#f59e0b" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="8 8" />
-            <polyline points={dropRiskPath} fill="none" stroke="#ef4444" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="3 7" />
-            <polyline points={safetyPath} fill="none" stroke="#22c55e" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="10 6" />
+            <polyline points={dropRiskPath} fill="none" stroke="#f43f6b" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" strokeDasharray="6 8" opacity="0.72" />
             <polyline points={attentionPath} fill="none" stroke="#f8fafc" strokeLinecap="round" strokeLinejoin="round" strokeWidth="5" />
 
             {data.map((item, index) => (
@@ -790,25 +824,15 @@ function OverallVideoTrend({ segments }: { segments: Segment[] }) {
 
             {hovered ? <TimelineHover item={hovered} width={width} paddingRight={padding.right} paddingTop={padding.top} chartHeight={chartHeight} /> : null}
 
-            <AnnotatedPoint item={high} label="High attention" tone="success" />
-            <AnnotatedPoint item={low} label="Low point" tone="danger" />
-            {bestAd.segment.id !== high.segment.id && bestAd.segment.id !== low.segment.id ? <AnnotatedPoint item={bestAd} label="Best ad fit" tone="warning" useAdFit /> : null}
-
             {ticks.map((item) => (
               <text key={`${item.segment.id}-tick`} x={item.x} y={height - 24} textAnchor="middle" fontSize="12" fill="#71717a">
                 {formatRange(item.segment.start, item.segment.end)}
               </text>
             ))}
-            <text x={padding.left} y={height - 6} fontSize="12" fill="#52525b">
-              Video timeline
-            </text>
-            <text x={16} y={padding.top - 18} fontSize="12" fill="#52525b">
-              Score
-            </text>
           </svg>
         </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <div className="dashboard-trend-moments">
           <TrendMoment title="Peak attention" segment={high.segment} tone="success" />
           <TrendMoment title="Lowest attention" segment={low.segment} tone="danger" />
           <TrendMoment title="Best ad-fit point" segment={bestAd.segment} tone="warning" showAdFit />
@@ -1140,39 +1164,6 @@ function TimelineHover({
   );
 }
 
-function AnnotatedPoint({
-  item,
-  label,
-  tone,
-  useAdFit = false
-}: {
-  item: { segment: Segment; x: number; attentionY: number; adFitY: number };
-  label: string;
-  tone: "success" | "danger" | "warning";
-  useAdFit?: boolean;
-}) {
-  const color = tone === "success" ? "#22c55e" : tone === "danger" ? "#ef4444" : "#f59e0b";
-  const y = useAdFit ? item.adFitY : item.attentionY;
-  const score = Math.round(useAdFit ? item.segment.ad_fit_score : item.segment.attention_score);
-  const labelY = y < 92 ? y + 42 : y - 22;
-  return (
-    <g>
-      <circle cx={item.x} cy={y} r="9" fill={color} />
-      <circle cx={item.x} cy={y} r="16" fill="none" stroke={color} strokeOpacity="0.28" strokeWidth="4" />
-      <line x1={item.x} x2={item.x} y1={y} y2={labelY + (labelY > y ? -14 : 8)} stroke={color} strokeOpacity="0.65" />
-      <g transform={`translate(${Math.max(92, Math.min(828, item.x)) - 76} ${labelY - 18})`}>
-        <rect width="152" height="36" rx="8" fill="#050505" stroke={color} strokeOpacity="0.55" />
-        <text x="12" y="15" fontSize="11" fill="#a1a1aa">
-          {label}
-        </text>
-        <text x="12" y="29" fontSize="12" fill="#f8fafc">
-          {formatRange(item.segment.start, item.segment.end)} · {score}
-        </text>
-      </g>
-    </g>
-  );
-}
-
 function TrendMoment({ title, segment, tone, showAdFit = false }: { title: string; segment: Segment; tone: "success" | "danger" | "warning"; showAdFit?: boolean }) {
   return (
     <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
@@ -1185,22 +1176,6 @@ function TrendMoment({ title, segment, tone, showAdFit = false }: { title: strin
         {showAdFit ? ` · Ad fit ${Math.round(segment.ad_fit_score)}` : null}
       </p>
     </div>
-  );
-}
-
-function Moment({ title, moment, danger = false }: { title: string; moment: { start: number; end: number; score: number } | null; danger?: boolean }) {
-  return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between text-slate-400">
-        <GuidedLabel
-          label={title}
-          guide={danger ? "Lowest attention moment; use it to decide where to rewrite, trim, or avoid ad placement." : "Strongest early moment; use it to understand hook pacing and opening strength."}
-        />
-        {danger ? <TrendingDown className="h-5 w-5 text-danger" /> : <TrendingUp className="h-5 w-5 text-success" />}
-      </div>
-      <p className="mt-4 text-3xl font-semibold">{moment ? formatRange(moment.start, moment.end) : "--"}</p>
-      <p className="mt-2 text-base text-slate-500">Score {moment?.score ?? 0}</p>
-    </Card>
   );
 }
 
@@ -1237,147 +1212,200 @@ function SegmentsTab({ segments }: { segments: Segment[] }) {
 }
 
 function ObjectsTab({ segments }: { segments: Segment[] }) {
-  const rows = segments.flatMap((segment) => segment.objects.map((object) => ({ ...object, time: formatRange(segment.start, segment.end) })));
-  return <SimpleRows rows={rows.map((row) => [row.time, row.label, `${Math.round(row.confidence * 100)}%`])} headers={["Time", "Object", "Confidence"]} />;
+  const grouped = new Map<string, { count: number; total: number }>();
+  segments.flatMap((segment) => segment.objects).forEach((object) => {
+    const current = grouped.get(object.label) ?? { count: 0, total: 0 };
+    grouped.set(object.label, { count: current.count + 1, total: current.total + object.confidence });
+  });
+  const summary = [...grouped.entries()]
+    .map(([label, value]) => ({ label, count: value.count, confidence: Math.round((value.total / value.count) * 100) }))
+    .sort((left, right) => right.confidence - left.confidence || right.count - left.count)
+    .slice(0, 6);
+  const events = segments.filter((segment) => segment.objects.length).slice(0, 6);
+
+  return (
+    <div className="dashboard-evidence-split">
+      <div className="dashboard-evidence-summary">
+        <EvidencePaneTitle title="Object detection summary" body="The strongest visual objects found across the selected timestamps." />
+        <div className="dashboard-evidence-bars">
+          {summary.length ? summary.map((item) => <EvidenceBar key={item.label} label={item.label} value={item.confidence} detail={`${item.count} moment${item.count === 1 ? "" : "s"}`} />) : <EvidenceEmpty body="No reliable objects were found in these timestamps." />}
+        </div>
+        <div className="dashboard-evidence-stats mt-6">
+          <EvidenceStat label="Object events" value={String(segments.reduce((total, segment) => total + segment.objects.length, 0))} />
+          <EvidenceStat label="Unique objects" value={String(grouped.size)} />
+          <EvidenceStat label="Strongest" value={summary[0]?.label ?? "None"} />
+        </div>
+      </div>
+      <div className="dashboard-evidence-events">
+        {events.length ? events.map((segment) => {
+          const confidence = Math.round(Math.max(...segment.objects.map((object) => object.confidence), 0) * 100);
+          const labels = segment.objects.slice(0, 4).map((object) => object.label);
+          return <EvidenceEventCard key={segment.id} time={formatRange(segment.start, segment.end)} title={`${labels[0] ?? "Visual object"} detected`} confidence={confidence} body={segment.summary || "Visual context was detected in this moment."} tags={labels} />;
+        }) : <EvidenceEmpty body="No object evidence is available for the selected segments." />}
+      </div>
+    </div>
+  );
 }
 
 function TranscriptTab({ segments }: { segments: Segment[] }) {
   const compactedCount = segments.filter((segment, index) => transcriptDisplayForSegment(segment, segments[index - 1]).compacted).length;
   const flaggedCount = segments.filter((segment) => (segment.transcript_insights?.transcript_quality_flags ?? []).length).length;
   const noSpeechCount = segments.filter((segment) => !normalizedWhitespace(segment.transcript)).length;
+  const totalWords = segments.reduce((total, segment) => total + (segment.transcript_insights?.word_count ?? normalizedWhitespace(segment.transcript).split(" ").filter(Boolean).length), 0);
+  const totalDuration = segments.reduce((total, segment) => total + Math.max(0, segment.end - segment.start), 0);
+  const coverage = segments.length ? Math.round(((segments.length - noSpeechCount) / segments.length) * 100) : 0;
   return (
-    <div className="space-y-4">
-      <Card className="p-5">
-        <div className="grid gap-4 md:grid-cols-4">
-          <TranscriptStat label="Average confidence" value={String(averageTranscriptConfidence(segments))} />
-          <TranscriptStat label="Flagged segments" value={String(flaggedCount)} />
-          <TranscriptStat label="Compacted repeats" value={String(compactedCount)} />
-          <TranscriptStat label="No speech" value={String(noSpeechCount)} />
+    <div className="dashboard-evidence-split">
+      <div className="dashboard-evidence-summary">
+        <EvidencePaneTitle title="Speech analysis" body="Transcript coverage, clarity, and the moments that need a closer review." />
+        <div className="dashboard-transcript-rail">
+          {segments.slice(0, 7).map((segment, index) => {
+            const display = transcriptDisplayForSegment(segment, segments[index - 1]);
+            return <div key={segment.id}><span>{formatRange(segment.start, segment.end)}</span><strong>{display.text || "Silence"}</strong></div>;
+          })}
         </div>
-      </Card>
-      {segments.map((segment, index) => {
-        const transcriptDisplay = transcriptDisplayForSegment(segment, segments[index - 1]);
-        const flags = segment.transcript_insights?.transcript_quality_flags ?? [];
-        return (
-          <Card key={segment.id} className="p-5 md:p-6">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="cyan">{formatRange(segment.start, segment.end)}</Badge>
-              <Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? "Edit before monetization"}</Badge>
-              {transcriptDisplay.compacted ? <Badge tone="warning">Repeated text compacted</Badge> : null}
-              {segment.topics.map((topic) => (
-                <Badge key={topic.label}>{topic.label}</Badge>
-              ))}
-            </div>
-            <p className="mt-4 text-sm leading-6 text-slate-500">
-              Transcript confidence {Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0)}
-              {flags.length ? ` · Flags: ${flags.join(", ")}` : ""}
-            </p>
-            <p className="mt-4 text-base leading-8 text-slate-200 md:text-lg">
-              {transcriptDisplay.text || (transcriptDisplay.repeatedOnly ? "Repeated from previous segment." : "No speech detected.")}
-            </p>
-          </Card>
-        );
-      })}
-    </div>
-  );
-}
-
-function TranscriptStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-white/10 bg-zinc-950 p-4">
-      <p className="text-sm text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+        <div className="dashboard-evidence-stats mt-5">
+          <EvidenceStat label="Total words" value={String(totalWords)} />
+          <EvidenceStat label="Words/sec" value={totalDuration ? (totalWords / totalDuration).toFixed(1) : "0"} />
+          <EvidenceStat label="Coverage" value={`${coverage}%`} />
+          <EvidenceStat label="Flagged" value={String(flaggedCount + compactedCount)} />
+        </div>
+      </div>
+      <div className="dashboard-evidence-events">
+        {segments.slice(0, 6).map((segment, index) => {
+          const display = transcriptDisplayForSegment(segment, segments[index - 1]);
+          const confidence = Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0);
+          const flags = segment.transcript_insights?.transcript_quality_flags ?? [];
+          return <EvidenceEventCard key={segment.id} time={formatRange(segment.start, segment.end)} title={`Transcript confidence: ${confidence}%`} confidence={confidence} body={display.text || (display.repeatedOnly ? "Repeated from previous segment." : "No spoken words detected in this segment.")} tags={flags.length ? flags : display.text ? ["speech"] : ["silence", "no-caption"]} />;
+        })}
+      </div>
     </div>
   );
 }
 
 function EvidenceTab({ segments }: { segments: Segment[] }) {
+  const selected = segments.slice(0, 7);
+  const rows = [
+    { label: "Visual", value: (segment: Segment) => Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100) },
+    { label: "Audio", value: (segment: Segment) => Math.round((segment.audio_evidence?.confidence ?? 0) * 100) },
+    { label: "Context", value: (segment: Segment) => Math.round(segment.recommendation_confidence ?? 0) },
+    { label: "Objects", value: (segment: Segment) => Math.min(100, segment.objects.length * 20) },
+    { label: "Transcript", value: (segment: Segment) => Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0) }
+  ];
   return (
-    <div className="space-y-4">
-      <Card className="p-5"><p className="font-semibold text-white">What this view shows</p><p className="mt-2 text-sm leading-6 text-slate-500">Each card explains one moment in plain language. Use the coloured scores to see what is working and what needs a closer look.</p></Card>
-      {segments.map((segment) => {
-        const confidence = Math.round(segment.recommendation_confidence ?? 0);
-        const transcript = Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0);
-        const visual = Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100);
-        const safety = Math.round(segment.brand_safety_score ?? 100);
-        const risk = Math.round(segment.drop_risk_score ?? 0);
-        return <Card key={segment.id} className="min-w-0 p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap gap-2"><Badge tone="cyan">{formatRange(segment.start, segment.end)}</Badge><Badge tone={tierTone(segment.recommendation_tier ?? "Edit before monetization")}>{segment.recommendation_tier ?? "Edit before monetization"}</Badge></div><p className="mt-3 text-base leading-7 text-slate-300">{segment.summary || segment.recommendation || "No summary is available for this moment."}</p></div><Badge tone={confidence >= 70 ? "success" : confidence >= 45 ? "warning" : "danger"}>Confidence {confidence}/100</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><EvidenceMetric label="Speech" value={transcript} /><EvidenceMetric label="Visuals" value={visual} /><EvidenceMetric label="Safety" value={safety} /><EvidenceMetric label="Drop risk" value={risk} inverse /></div><div className="mt-5 grid gap-4 lg:grid-cols-2"><SignalBlock title="What worked" signals={segment.strong_signals ?? []} empty="No strong signals were found." tone="success" /><SignalBlock title="What needs work" signals={segment.failed_or_weak_signals ?? []} empty="No weak signals were found." tone="warning" /></div>{segment.score_reasons?.length ? <p className="mt-4 border-t border-white/10 pt-4 text-sm leading-6 text-slate-500"><span className="font-medium text-slate-300">Why the score changed:</span> {segment.score_reasons.slice(0, 4).join(" · ")}</p> : null}</Card>;
-      })}
+    <div className="dashboard-evidence-split">
+      <div className="dashboard-evidence-summary">
+        <EvidencePaneTitle title="Evidence strength map" body="Each cell shows how much support a timestamp has from a specific modality." />
+        <div className="dashboard-strength-map" style={{ gridTemplateColumns: `5rem repeat(${Math.max(1, selected.length)}, minmax(2.2rem, 1fr))` }}>
+          <div />
+          {selected.map((segment) => <span key={segment.id}>{formatRange(segment.start, segment.end)}</span>)}
+          {rows.flatMap((row) => [
+            <strong key={`${row.label}-label`}>{row.label}</strong>,
+            ...selected.map((segment) => {
+              const value = row.value(segment);
+              return <i key={`${row.label}-${segment.id}`} style={{ "--evidence-strength": `${0.12 + value / 120}` } as React.CSSProperties}>{value}</i>;
+            })
+          ])}
+        </div>
+      </div>
+      <div className="dashboard-evidence-events">
+        {selected.map((segment) => {
+          const visual = Math.round((segment.visual_evidence?.visual_quality ?? 0) * 100);
+          const transcript = Math.round(segment.transcript_insights?.transcript_confidence ?? segment.transcript_insights?.clarity_score ?? 0);
+          const score = Math.round((visual + transcript + Math.round(segment.recommendation_confidence ?? 0)) / 3);
+          return <EvidenceEventCard key={segment.id} time={formatRange(segment.start, segment.end)} title={`Multi-modal score: ${score}/100`} confidence={score} body={segment.summary || segment.recommendation || "Review the raw evidence for this timestamp."} tags={[`visual ${visual}`, `speech ${transcript}`, `safety ${Math.round(segment.brand_safety_score ?? 100)}`]} />;
+        })}
+      </div>
     </div>
   );
-}
-
-function EvidenceMetric({ label, value, inverse = false }: { label: string; value: number; inverse?: boolean }) {
-  const tone = inverse ? value <= 25 ? "success" : value <= 50 ? "warning" : "danger" : value >= 70 ? "success" : value >= 45 ? "warning" : "danger";
-  const color = tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-danger";
-  return <div className="rounded-lg border border-white/10 bg-zinc-950 p-3"><p className="text-xs text-slate-500">{label}{inverse ? " (lower is better)" : ""}</p><p className={`mt-2 text-xl font-semibold ${color}`}>{value}/100</p></div>;
-}
-
-function SignalBlock({ title, signals, empty, tone }: { title: string; signals: string[]; empty: string; tone: "success" | "warning" }) {
-  return <div><p className="text-sm font-semibold text-white">{title}</p><div className="mt-2 flex flex-wrap gap-2">{signals.length ? signals.map((signal) => <Badge key={signal} tone={tone}>{signal}</Badge>) : <p className="text-sm text-slate-500">{empty}</p>}</div></div>;
 }
 
 function AdMatchesTab({ segments }: { segments: Segment[] }) {
-  const rows = segments.flatMap((segment) =>
-    segment.ad_matches.map((match) => [
-      formatRange(segment.start, segment.end),
-      [segment.objects.map((object) => object.label).join(" + "), segment.topics.map((topic) => topic.label).join(", ")].filter(Boolean).join(" / ") || "General context",
-      match.ad_category,
-      String(Math.round(segment.attention_score)),
-      String(Math.round(match.ad_fit_score)),
-      segment.recommendation_tier ?? (match.ad_fit_score >= 75 ? "Strong ad slot" : match.ad_fit_score >= 45 ? "Conditional ad slot" : "Avoid")
-    ])
-  );
-  return <SimpleRows rows={rows} headers={["Time", "Detected context", "Suggested Ad", "Attention", "Ad Fit", "Recommendation Tier"]} />;
-}
-
-function RecommendationsTab({ recommendations }: { recommendations: { title: string; timestamp: string; body: string }[] }) {
+  const grouped = new Map<string, { total: number; count: number; segments: Segment[] }>();
+  segments.forEach((segment) => segment.ad_matches.forEach((match) => {
+    const current = grouped.get(match.ad_category) ?? { total: 0, count: 0, segments: [] };
+    grouped.set(match.ad_category, { total: current.total + match.ad_fit_score, count: current.count + 1, segments: [...current.segments, segment] });
+  }));
+  const matches = [...grouped.entries()]
+    .map(([category, value]) => ({ category, score: Math.round(value.total / value.count), count: value.count, segment: value.segments[0] }))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 4);
   return (
-    <div className="grid gap-3 md:grid-cols-2">
-      {recommendations.map((item) => (
-        <Card key={`${item.title}-${item.timestamp}`} className="p-6">
-          <Badge tone="cyan">{item.timestamp}</Badge>
-          <h3 className="mt-4 text-xl font-semibold">{item.title}</h3>
-          <p className="mt-3 text-base leading-7 text-slate-400">{item.body}</p>
-        </Card>
-      ))}
+    <div className="dashboard-evidence-split">
+      <div className="dashboard-evidence-summary">
+        <EvidencePaneTitle title="Ad category matching" body="Category fit is based on visual, topic, speech, and timing evidence." />
+        <div className="dashboard-evidence-bars">
+          {matches.length ? matches.map((match) => <EvidenceBar key={match.category} label={match.category} value={match.score} detail={match.score >= 60 ? "Primary match" : "Needs review"} />) : <EvidenceEmpty body="No confident ad categories were generated from the selected evidence." />}
+        </div>
+        <div className="dashboard-evidence-stats mt-6">
+          <EvidenceStat label="Categories" value={String(matches.length)} />
+          <EvidenceStat label="Strong matches" value={String(matches.filter((match) => match.score >= 60).length)} />
+          <EvidenceStat label="Best fit" value={matches[0] ? `${matches[0].score}/100` : "--"} />
+        </div>
+      </div>
+      <div className="dashboard-evidence-events">
+        {matches.length ? matches.map((match) => <EvidenceEventCard key={match.category} time={formatRange(match.segment.start, match.segment.end)} title={`${match.category} — Match: ${match.score}%`} confidence={match.score} body={match.segment.ad_matches.find((item) => item.ad_category === match.category)?.reason || "Contextual fit needs a closer review before approval."} tags={[`${match.count} evidence point${match.count === 1 ? "" : "s"}`, match.score >= 60 ? "recommended" : "needs review"]} />) : <EvidenceEmpty body="No matching categories are available." />}
+      </div>
     </div>
   );
 }
 
-function SimpleRows({ headers, rows }: { headers: string[]; rows: string[][] }) {
+function RecommendationsTab({ analysis }: { analysis: AnalysisPayload }) {
+  const fallback = (analysis.decision_metrics ?? []).slice(0, 5).map((metric) => ({ title: metric.name, timestamp: metric.timestamp.label, body: metric.next_action }));
+  const recommendations = analysis.recommendations.length ? analysis.recommendations : fallback;
+  const summary = analysis.summary;
+  const forecast = [
+    { label: "Attention score", current: summary.overall_attention_score, target: Math.min(100, (summary.overall_attention_score ?? 0) + 25) },
+    { label: "Contextual ad fit", current: summary.monetization_opportunity_score, target: Math.min(100, (summary.monetization_opportunity_score ?? 0) + 30) },
+    { label: "Drop risk", current: summary.overall_drop_risk_score ?? 0, target: Math.max(0, (summary.overall_drop_risk_score ?? 0) - 30), inverse: true }
+  ];
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full min-w-[760px] border-collapse bg-card text-left text-base">
-        <thead className="bg-surface text-slate-400">
-          <tr>
-            {headers.map((header) => (
-              <th key={header} className="px-5 py-4 font-medium">
-                {header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length ? (
-            rows.map((row, index) => (
-              <tr key={index} className="border-t border-border">
-                {row.map((cell, cellIndex) => (
-                  <td key={`${index}-${cellIndex}`} className="px-5 py-4 leading-7 text-slate-300">
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))
-          ) : (
-            <tr>
-              <td className="px-5 py-8 text-center text-slate-500" colSpan={headers.length}>
-                No matching rows.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+    <div className="dashboard-recommendations-layout">
+      <div>
+        <EvidencePaneTitle title="Actionable insights" body="Start with the highest-impact edit, then re-run analysis to confirm the improvement." />
+        <div className="dashboard-recommendation-list">
+          {recommendations.slice(0, 5).map((item, index) => (
+            <article key={`${item.title}-${item.timestamp}`}>
+              <b>{index + 1}</b>
+              <div><h3>{item.title}</h3><p>{item.body}</p><span>{item.timestamp}</span></div>
+              <Badge tone={index < 2 ? "danger" : index < 4 ? "warning" : "cyan"}>{index < 2 ? "High impact" : index < 4 ? "Medium impact" : "Review"}</Badge>
+            </article>
+          ))}
+        </div>
+      </div>
+      <aside className="dashboard-improvement-forecast">
+        <EvidencePaneTitle title="Improvement forecast" body="Estimated direction after the highest-priority edits are implemented." />
+        {forecast.map((item) => <ForecastRow key={item.label} {...item} />)}
+        <div><span>Estimated monetization uplift</span><strong>+{Math.max(20, Math.round((forecast[0].target - forecast[0].current) * 2.6))}%</strong></div>
+      </aside>
     </div>
   );
+}
+
+function EvidencePaneTitle({ title, body }: { title: string; body: string }) {
+  return <header className="dashboard-evidence-pane-title"><h2>{title}</h2><p>{body}</p></header>;
+}
+
+function EvidenceBar({ label, value, detail }: { label: string; value: number; detail: string }) {
+  const tone = value >= 70 ? "success" : value >= 40 ? "warning" : "danger";
+  return <div className={`dashboard-evidence-bar dashboard-evidence-bar--${tone}`}><div><span>{label}</span><strong>{value}/100</strong></div><i><b style={{ width: `${Math.max(2, Math.min(100, value))}%` }} /></i><small>{detail}</small></div>;
+}
+
+function EvidenceStat({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function EvidenceEventCard({ time, title, confidence, body, tags }: { time: string; title: string; confidence: number; body: string; tags: string[] }) {
+  const tone = confidence >= 70 ? "success" : confidence >= 40 ? "warning" : "danger";
+  return <article className="dashboard-evidence-event"><header><strong>{time}</strong><span>{title}</span><Badge tone={tone}>{confidence >= 60 ? "Evidence verified" : "Needs review"}</Badge></header><p>{body}</p><footer>{tags.slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</footer></article>;
+}
+
+function EvidenceEmpty({ body }: { body: string }) {
+  return <div className="dashboard-evidence-empty">{body}</div>;
+}
+
+function ForecastRow({ label, current, target, inverse = false }: { label: string; current: number; target: number; inverse?: boolean }) {
+  const displayTarget = Math.round(target);
+  const width = inverse ? 100 - displayTarget : displayTarget;
+  return <div className="dashboard-forecast-row"><div><span>{label}</span><strong>{Math.round(current)} <i>→</i> {displayTarget}</strong></div><b style={{ width: `${Math.max(3, Math.min(100, width))}%` }} /></div>;
 }

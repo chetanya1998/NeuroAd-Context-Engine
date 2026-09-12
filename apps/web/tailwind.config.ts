@@ -5,15 +5,15 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: "#000000",
-        card: "#050505",
-        surface: "#0A0A0A",
-        border: "#202020",
-        primary: "#F8FAFC",
-        cyan: "#E5E7EB",
-        success: "#22C55E",
-        warning: "#F59E0B",
-        danger: "#EF4444"
+        background: "#080711",
+        card: "#12111d",
+        surface: "#0d0c16",
+        border: "#29263a",
+        primary: "#16c7bb",
+        cyan: "#16c7bb",
+        success: "#16c784",
+        warning: "#f2aa10",
+        danger: "#f43f6b"
       },
       fontFamily: {
         sans: ["Inter", "Manrope", "ui-sans-serif", "system-ui", "sans-serif"]

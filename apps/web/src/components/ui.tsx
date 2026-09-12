@@ -4,7 +4,7 @@ export function Card({
   children,
   className
 }: Readonly<{ children: React.ReactNode; className?: string }>) {
-  return <div className={clsx("rounded-lg border border-border bg-card", className)}>{children}</div>;
+  return <div className={clsx("ui-card rounded-lg border border-border bg-card", className)}>{children}</div>;
 }
 
 export function Badge({
@@ -20,7 +20,7 @@ export function Badge({
     cyan: "border-zinc-500/40 bg-white/5 text-zinc-100"
   };
   return (
-    <span className={clsx("inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-sm font-medium whitespace-normal break-words", tones[tone], className)}>
+    <span className={clsx("ui-badge inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-sm font-medium whitespace-normal break-words", tones[tone], className)}>
       {children}
     </span>
   );
@@ -40,7 +40,7 @@ export function Button({
   return (
     <button
       className={clsx(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 py-2 text-base font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
+        "ui-button inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 py-2 text-base font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
         variants[variant],
         className
       )}

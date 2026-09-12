@@ -3,6 +3,7 @@ import subprocess
 import wave
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from content_signals import build_signal_payload
+from object_storage import ObjectStorageSettings, normalize_key
 from main import (
     attention_label,
     convertible_video_suffix_from_url,
@@ -60,6 +62,53 @@ def test_attention_labels():
 def test_cors_origins_can_be_configured(monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com, http://localhost:3000")
     assert cors_origins_from_env() == ["https://app.example.com", "http://localhost:3000"]
+
+
+def test_r2_settings_build_the_cloudflare_s3_endpoint(monkeypatch):
+    monkeypatch.setenv("NEUROAD_OBJECT_STORAGE", "r2")
+    monkeypatch.setenv("R2_ACCOUNT_ID", "account-123")
+    monkeypatch.setenv("R2_BUCKET", "neuroad-production")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+
+    settings = ObjectStorageSettings.from_env()
+
+    assert not settings.missing_fields
+    assert settings.endpoint_url == "https://account-123.r2.cloudflarestorage.com"
+    assert normalize_key("uploads/video/source.mp4") == "uploads/video/source.mp4"
+    with pytest.raises(ValueError):
+        normalize_key("../secrets.txt")
+
+
+def test_direct_upload_init_creates_a_signed_r2_upload(monkeypatch):
+    captured = []
+
+    class FakeStorage:
+        enabled = True
+        ready = True
+        settings = SimpleNamespace(presign_ttl_seconds=900)
+
+        def require_ready(self):
+            return None
+
+        def uri(self, key):
+            return f"r2://neuroad-production/{key}"
+
+        def presign_put(self, key, content_type):
+            assert key == "uploads/video_test/source.mp4"
+            assert content_type == "video/mp4"
+            return "https://signed-upload.example.test"
+
+    monkeypatch.setattr(main, "OBJECT_STORAGE", FakeStorage())
+    monkeypatch.setattr(main, "new_id", lambda _: "video_test")
+    monkeypatch.setattr(main, "execute", lambda sql, params=(): captured.append(params))
+
+    response = main.initialize_direct_upload(main.DirectUploadInitRequest(filename="clip.mp4", size_bytes=1024))
+
+    assert response["storage"] == "r2"
+    assert response["video_id"] == "video_test"
+    assert response["upload_url"] == "https://signed-upload.example.test"
+    assert captured[0][2] == "r2://neuroad-production/uploads/video_test/source.mp4"
 
 
 def test_convertible_video_suffixes_include_common_container_formats():

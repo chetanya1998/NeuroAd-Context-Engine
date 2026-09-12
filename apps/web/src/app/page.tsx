@@ -389,7 +389,7 @@ export default function HomePage() {
   }
 
   return (
-    <AppShell>
+    <AppShell className="landing-shell">
       {/* ═══════════════════════════════════════════════════════════
           SECTION 1 — HERO
        ═══════════════════════════════════════════════════════════ */}
