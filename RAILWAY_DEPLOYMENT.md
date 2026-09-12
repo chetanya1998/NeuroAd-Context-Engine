@@ -88,7 +88,10 @@ NEUROAD_ENABLE_VAD=0
 NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper
 NEUROAD_ENABLE_OBJECT_DETECTION=1
-NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+NEUROAD_OBJECT_DETECTION_ENGINE=yolox_onnx
+NEUROAD_YOLOX_INPUT_SIZE=416
+NEUROAD_YOLOX_CONFIDENCE=0.25
+NEUROAD_YOLOX_NMS_THRESHOLD=0.45
 VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
@@ -124,7 +127,7 @@ POSTHOG_DEBUG=false
 NEUROAD_ENVIRONMENT=production
 ```
 
-Railway MVP should keep `NEUROAD_ENABLE_AUDIO_CLEANUP=0` unless you move to a larger worker. The production image includes YOLO11n and Tesseract; it falls back to MobileNet/OpenCV visual context when YOLO is unavailable.
+Railway MVP should keep `NEUROAD_ENABLE_AUDIO_CLEANUP=0` unless you move to a larger worker. The production image runs Apache-2.0 YOLOX-Nano through ONNX Runtime and falls back to MobileNet/OpenCV visual context if the model is unavailable. Ultralytics remains an optional, explicitly licensed engine.
 
 RunPod is invoked only by the Railway backend when a user requests a Detailed Insight Report after deterministic video analysis completes. The API key must not be added to Netlify or to any `NEXT_PUBLIC_*` variable. A RunPod cold start or report failure does not fail the underlying video analysis and can be retried within the configured limit.
 
@@ -143,7 +146,8 @@ Expected:
 ```text
 ready: true
 faster_whisper.available: true
-mobilenet_ssd.available: true
+yolox_onnx.available: true
+object_detection.primary_ready: true
 ```
 
 ## 6. Deploy Netlify Frontend

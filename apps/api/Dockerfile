@@ -1,3 +1,38 @@
+FROM python:3.11-slim AS yolox-onnx-exporter
+
+ARG YOLOX_SOURCE_REF=0.3.0
+ARG YOLOX_SOURCE_COMMIT=419778480ab6ec0590e5d3831b3afb3b46ab2aa3
+ARG YOLOX_CHECKPOINT_URL=https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.pth
+ARG YOLOX_CHECKPOINT_SHA256=cd28f55fbbc1829f99d9ac9b38a16d259a22889739c8728ea877610201feff7b
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_VERSION=2.8.0+cpu
+ARG TORCHVISION_VERSION=0.23.0+cpu
+
+WORKDIR /opt/yolox
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl git \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --index-url "$TORCH_INDEX_URL" \
+        "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION" \
+    && pip install --no-cache-dir \
+        numpy==1.26.4 \
+        onnx==1.17.0 \
+        onnxruntime==1.19.2 \
+        loguru==0.7.3 \
+        tabulate==0.9.0 \
+        thop==0.1.1.post2209072238
+RUN git clone --depth 1 --branch "$YOLOX_SOURCE_REF" https://github.com/Megvii-BaseDetection/YOLOX.git source \
+    && test "$(git -C source rev-parse HEAD)" = "$YOLOX_SOURCE_COMMIT"
+COPY export_yolox_onnx.py smoke_yolox_onnx.py /opt/yolox/
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-connrefused -o /tmp/yolox_nano.pth "$YOLOX_CHECKPOINT_URL" \
+    && echo "$YOLOX_CHECKPOINT_SHA256  /tmp/yolox_nano.pth" | sha256sum -c - \
+    && PYTHONPATH=/opt/yolox/source python /opt/yolox/export_yolox_onnx.py \
+        --checkpoint /tmp/yolox_nano.pth --output /opt/models/yolox_nano.onnx --input-size 416 \
+    && python /opt/yolox/smoke_yolox_onnx.py --model /opt/models/yolox_nano.onnx --input-size 416 \
+    && rm /tmp/yolox_nano.pth
+
+
 FROM python:3.11-slim
 
 ARG NEUROAD_GIT_SHA=development
@@ -23,7 +58,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEUROAD_ENABLE_TRANSCRIPTION=1 \
     NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper \
     NEUROAD_ENABLE_OBJECT_DETECTION=1 \
-    NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd \
+    NEUROAD_OBJECT_DETECTION_ENGINE=yolox_onnx \
     NEUROAD_ENABLE_OCR=1 \
     NEUROAD_ENABLE_SILERO_VAD=1 \
     NEUROAD_ENABLE_LIBROSA=1 \
@@ -39,6 +74,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WHISPER_VAD_FILTER=1 \
     YOLO_MODEL=/opt/neuroad/models/yolo26s.pt \
     YOLOE_MODEL=/opt/neuroad/models/yoloe-26l-seg.pt \
+    YOLOX_MODEL=/opt/neuroad/models/yolox_nano.onnx \
+    NEUROAD_YOLOX_INPUT_SIZE=416 \
+    NEUROAD_YOLOX_CONFIDENCE=0.25 \
+    NEUROAD_YOLOX_NMS_THRESHOLD=0.45 \
     NEUROAD_GIT_SHA=$NEUROAD_GIT_SHA \
     NEUROAD_GIT_BRANCH=$NEUROAD_GIT_BRANCH \
     NEUROAD_BUILD_TIME=$NEUROAD_BUILD_TIME \
@@ -95,6 +134,8 @@ RUN if [ "$INSTALL_YOLO" = "1" ] || [ "$INSTALL_SIGNALS" = "1" ] || [ "$INSTALL_
     fi
 COPY requirements-yolo.txt .
 RUN if [ "$INSTALL_YOLO" = "1" ]; then pip install --default-timeout=1000 -r requirements-yolo.txt; fi
+COPY requirements-yolox.txt .
+RUN pip install --default-timeout=1000 -r requirements-yolox.txt
 COPY requirements-uvr.txt .
 RUN if [ "$INSTALL_UVR" = "1" ]; then pip install --default-timeout=1000 -r requirements-uvr.txt; fi
 COPY requirements-signals.txt .
@@ -144,6 +185,8 @@ RUN if [ "$INSTALL_VOSK" = "1" ]; then \
         && if [ -n "$MEDIAPIPE_FACE_MODEL_SHA256" ] && [ "$face_checksum" != "$MEDIAPIPE_FACE_MODEL_SHA256" ]; then echo "MediaPipe face model checksum mismatch"; exit 1; fi \
         && echo "$face_checksum" > /opt/neuroad/models/face_landmarker.task.sha256; \
     fi
+
+COPY --from=yolox-onnx-exporter /opt/models/yolox_nano.onnx /opt/neuroad/models/yolox_nano.onnx
 
 COPY main.py object_storage.py content_signals.py celery_app.py runpod_client.py insight_report.py analytics.py admin_platform.py ./
 

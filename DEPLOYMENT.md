@@ -77,7 +77,10 @@ NEUROAD_ENABLE_VAD=0
 NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper
 NEUROAD_ENABLE_OBJECT_DETECTION=1
-NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd
+NEUROAD_OBJECT_DETECTION_ENGINE=yolox_onnx
+NEUROAD_YOLOX_INPUT_SIZE=416
+NEUROAD_YOLOX_CONFIDENCE=0.25
+NEUROAD_YOLOX_NMS_THRESHOLD=0.45
 VOSK_MODEL_DIR=/opt/neuroad/models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=/opt/neuroad/models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=/opt/neuroad/models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
@@ -92,7 +95,7 @@ COMPARISON_MAX_VIDEOS=5
 YOLO_MODEL=yolov8n.pt
 ```
 
-Docker installs faster-whisper and OpenCV MobileNet-SSD by default. The faster-whisper model is downloaded into the mounted `/data/neuroad/models` directory on its first analysis, then reused after redeploys. Production uses MobileNet-SSD by default; enable `INSTALL_YOLO=1` and select `yolo` only after resolving Ultralytics licensing. UVR remains optional because it is expensive on the Railway MVP worker.
+Docker builds the checksum-verified YOLOX-Nano ONNX model and installs ONNX Runtime by default. The faster-whisper model is downloaded into the mounted `/data/neuroad/models` directory on its first analysis, then reused after redeploys. Enable `INSTALL_YOLO=1` and select `yolo` only after resolving Ultralytics licensing. UVR remains optional because it is expensive on the Railway MVP worker.
 
 Set CORS after Netlify deploys:
 

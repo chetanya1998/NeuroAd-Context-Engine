@@ -756,25 +756,83 @@ def test_production_ultralytics_inference_requires_license_acknowledgement(monke
         main.detect_objects({})
 
 
-def test_production_defaults_to_mobilenet_without_ultralytics_acknowledgement(monkeypatch, tmp_path):
-    graph = tmp_path / "model.pb"
-    config = tmp_path / "model.pbtxt"
-    graph.write_bytes(b"model")
-    config.write_text("model")
+def test_production_defaults_to_yolox_without_ultralytics_acknowledgement(monkeypatch, tmp_path):
+    model = tmp_path / "yolox_nano.onnx"
+    model.write_bytes(b"model")
     monkeypatch.setenv("NEUROAD_ENVIRONMENT", "production")
     monkeypatch.delenv("NEUROAD_OBJECT_DETECTION_ENGINE", raising=False)
     monkeypatch.delenv("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", raising=False)
-    monkeypatch.setattr(main, "MOBILENET_SSD_GRAPH", graph)
-    monkeypatch.setattr(main, "MOBILENET_SSD_CONFIG", config)
+    monkeypatch.setattr(main, "YOLOX_MODEL_PATH", model)
     monkeypatch.setattr(
         main,
-        "detect_mobilenet_ssd_objects",
+        "detect_yolox_onnx_objects",
         lambda _frames: {1: [{"label": "person", "confidence": 0.9}]},
     )
 
     detections = main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}})
 
+    assert detections[1][0]["detector"] == "yolox_nano_onnx"
+
+
+def test_yolox_letterbox_uses_bgr_114_padding():
+    image = main.np.zeros((100, 200, 3), dtype=main.np.uint8)
+
+    tensor, scale, width, height = main.yolox_letterbox(image)
+
+    assert tensor.shape == (1, 3, 416, 416)
+    assert scale == pytest.approx(2.08)
+    assert (width, height) == (200, 100)
+    assert main.np.all(tensor[0, :, 300, 10] == 114)
+
+
+def test_yolox_raw_output_is_decoded_and_mapped_to_coco_evidence():
+    raw = main.np.zeros((1, 3549, 85), dtype=main.np.float32)
+    raw[0, 0, :4] = [5.0, 5.0, main.np.log(10.0), main.np.log(10.0)]
+    raw[0, 0, 4] = 0.9
+    raw[0, 0, 5] = 0.8
+
+    decoded = main.decode_yolox_onnx_output(raw)
+    evidence = main.yolox_rows_to_detections(raw, 1.0, 416, 416, 1.25)
+
+    assert decoded[0, :4] == pytest.approx([40.0, 40.0, 80.0, 80.0])
+    assert evidence == [
+        {
+            "label": "person",
+            "confidence": pytest.approx(0.72),
+            "bbox": pytest.approx([0.0, 0.0, 80.0, 80.0]),
+            "frame_timestamp": 1.25,
+            "detector": "yolox_nano_onnx",
+            "evidence_kind": "object",
+        }
+    ]
+
+
+def test_yolox_nms_is_class_aware():
+    kept = main.yolox_class_aware_nms(
+        [[0, 0, 100, 100], [5, 5, 95, 95], [5, 5, 95, 95]],
+        [0, 0, 1],
+        [0.9, 0.8, 0.7],
+    )
+
+    assert kept == [0, 2]
+
+
+def test_yolox_failure_falls_back_to_mobilenet(monkeypatch, tmp_path):
+    graph = tmp_path / "model.pb"
+    config = tmp_path / "model.pbtxt"
+    graph.write_bytes(b"model")
+    config.write_text("model")
+    monkeypatch.setenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolox_onnx")
+    monkeypatch.delenv("NEUROAD_REQUIRE_OBJECT_DETECTION", raising=False)
+    monkeypatch.setattr(main, "MOBILENET_SSD_GRAPH", graph)
+    monkeypatch.setattr(main, "MOBILENET_SSD_CONFIG", config)
+    monkeypatch.setattr(main, "detect_yolox_onnx_objects", lambda _frames: (_ for _ in ()).throw(RuntimeError("missing yolox")))
+    monkeypatch.setattr(main, "detect_mobilenet_ssd_objects", lambda _frames: {1: [{"label": "person", "confidence": 0.7}]})
+
+    detections = main.detect_objects({1: {"path": "frame.jpg", "timestamp": 0}})
+
     assert detections[1][0]["detector"] == "mobilenet_fallback"
+    assert "missing yolox" in main.OBJECT_DETECTION_RUNTIME["fallback_reason"]
 
 
 def test_yoloe_failure_uses_yolo26_with_explicit_fallback_provenance(monkeypatch, tmp_path):

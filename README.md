@@ -272,10 +272,9 @@ The dashboard leads with the strongest moment, priority fixes, decision signals,
 
 ### Production release gates
 
-- The configured YOLO weight must exist and pass the image-build inference smoke test. Missing weights make health checks degraded instead of silently reporting successful YOLO analysis.
-- The default YOLO26S image weight is checksum-pinned; `smoke_detector.py` loads it and runs a real inference during the image build and can be reused by CI or operators.
-- Production deployments using Ultralytics remain unhealthy until `NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED=1` explicitly records that the deployment has resolved AGPL-3.0 or enterprise-license obligations.
-- Every object observation records the real detector (`yolo26_cpu`, `yoloe_gpu`, `mobilenet_fallback`, or `heuristic_fallback`) and fallback reason. Degraded detectors cannot emit a `Ready` placement decision.
+- The default YOLOX-Nano ONNX model is generated from pinned source and checkpoint inputs, then must pass a CPU inference smoke test during the image build. Missing model assets make health checks degraded instead of silently reporting successful analysis.
+- Ultralytics remains optional; production deployments using it remain unhealthy until `NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED=1` explicitly records that the deployment has resolved AGPL-3.0 or enterprise-license obligations.
+- Every object observation records the real detector (`yolox_nano_onnx`, `yolo26_cpu`, `yoloe_gpu`, `mobilenet_fallback`, or `heuristic_fallback`) and fallback reason. Degraded detectors cannot emit a `Ready` placement decision.
 - Face processing stores anonymous boxes and behaviour signals only. Face recognition embeddings and inferred personal attributes are not stored.
 - Model manifests record library/model versions, configurations, calibration version, and available weight checksums.
 
@@ -1032,11 +1031,15 @@ NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=vosk
 NEUROAD_REQUIRE_TRANSCRIPTION=0
 NEUROAD_ENABLE_OBJECT_DETECTION=1
-NEUROAD_OBJECT_DETECTION_ENGINE=yolo
+NEUROAD_OBJECT_DETECTION_ENGINE=yolox_onnx
 NEUROAD_REQUIRE_OBJECT_DETECTION=0
 VOSK_MODEL_DIR=./models/vosk-model-small-en-us-0.15
 MOBILENET_SSD_GRAPH=./models/mobilenet-ssd/frozen_inference_graph.pb
 MOBILENET_SSD_CONFIG=./models/mobilenet-ssd/ssd_mobilenet_v1_coco.pbtxt
+YOLOX_MODEL=./models/yolox_nano.onnx
+NEUROAD_YOLOX_INPUT_SIZE=416
+NEUROAD_YOLOX_CONFIDENCE=0.25
+NEUROAD_YOLOX_NMS_THRESHOLD=0.45
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 YTDLP_COOKIES_FILE=/absolute/path/to/cookies.txt
 YTDLP_COOKIES_BROWSER=chrome
@@ -1084,7 +1087,8 @@ Notes:
 - `NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper` uses the default CPU INT8 path and stores the configured model under `NEUROAD_MODEL_DIR`.
 - `NEUROAD_TRANSCRIPTION_ENGINE=vosk` remains available as a lightweight offline fallback.
 - `NEUROAD_ENABLE_TRANSCRIPTION=0` skips transcription completely.
-- `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` uses the configured YOLO26S CPU/local fallback at `YOLO_MODEL`.
+- `NEUROAD_OBJECT_DETECTION_ENGINE=yolox_onnx` is the production default and uses the bundled Apache-2.0 YOLOX-Nano ONNX model at `YOLOX_MODEL` through ONNX Runtime.
+- `NEUROAD_OBJECT_DETECTION_ENGINE=yolo` uses the optional configured YOLO26S CPU/local fallback at `YOLO_MODEL`.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=yoloe` uses prompted YOLOE segmentation at `YOLOE_MODEL`; build a GPU-worker image with `INSTALL_YOLOE=1` and configure `NEUROAD_YOLOE_PROMPTS` for the product profile.
 - `NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd` is available as an OpenCV DNN fallback when the MobileNet-SSD files are installed.
 - `NEUROAD_ENABLE_OBJECT_DETECTION=0` skips model-based object detection and uses the OpenCV visual-context fallback.
@@ -1108,7 +1112,7 @@ The relevant Docker build args are:
 INSTALL_VOSK=1
 INSTALL_MOBILENET_SSD=1
 INSTALL_WHISPER=1
-INSTALL_YOLO=1
+INSTALL_YOLO=0
 INSTALL_YOLOE=0
 ```
 
@@ -1118,12 +1122,12 @@ The runtime env is:
 NEUROAD_ENABLE_TRANSCRIPTION=1
 NEUROAD_TRANSCRIPTION_ENGINE=faster_whisper
 NEUROAD_ENABLE_OBJECT_DETECTION=1
-NEUROAD_OBJECT_DETECTION_ENGINE=yolo
+NEUROAD_OBJECT_DETECTION_ENGINE=yolox_onnx
 ```
 
 ### Optional Lightweight Fallbacks
 
-If a smaller or more constrained environment cannot use the default model stack, Vosk and MobileNet-SSD can be retained as fallback paths. Set `INSTALL_WHISPER=0` or `INSTALL_YOLO=0` at image build time only when the corresponding runtime engine is also changed.
+If a smaller or more constrained environment cannot use the default model stack, Vosk and MobileNet-SSD can be retained as fallback paths. Set `INSTALL_WHISPER=0` or choose `NEUROAD_OBJECT_DETECTION_ENGINE=mobilenet_ssd` when the corresponding runtime engine is changed.
 
 To install faster-whisper locally in the Python environment:
 
@@ -1172,6 +1176,8 @@ Then set:
 ```bash
 NEUROAD_ENABLE_OBJECT_DETECTION=1
 NEUROAD_OBJECT_DETECTION_ENGINE=yolo
+# Set NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED=1 only after completing the
+# applicable AGPL or Ultralytics enterprise-license compliance review.
 ```
 
 ## Storage

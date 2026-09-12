@@ -1,0 +1,2 @@
+# MIT-licensed runtime for the Apache-2.0 YOLOX-Nano ONNX artifact.
+onnxruntime==1.19.2

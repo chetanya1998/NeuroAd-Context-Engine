@@ -187,9 +187,13 @@ FRAME_SAMPLE_RATE = float(os.getenv("NEUROAD_FRAME_SAMPLE_RATE", "3.0") or "3.0"
 MAX_FRAMES_PER_SEGMENT = max(1, int_from_env("NEUROAD_MAX_FRAMES_PER_SEGMENT", 40))
 YOLO_MODEL_PATH = path_from_env("YOLO_MODEL", MODEL_DIR / "yolo26s.pt")
 YOLOE_MODEL_PATH = path_from_env("YOLOE_MODEL", MODEL_DIR / "yoloe-26l-seg.pt")
+YOLOX_MODEL_PATH = path_from_env("YOLOX_MODEL", MODEL_DIR / "yolox_nano.onnx")
 YOLO_CONFIDENCE = float_from_env("NEUROAD_YOLO_CONFIDENCE", 0.25)
 YOLO_IMAGE_SIZE = max(320, int_from_env("NEUROAD_YOLO_IMAGE_SIZE", 640))
 YOLO_BATCH_SIZE = max(1, int_from_env("NEUROAD_YOLO_BATCH_SIZE", 12))
+YOLOX_INPUT_SIZE = int_from_env("NEUROAD_YOLOX_INPUT_SIZE", 416)
+YOLOX_CONFIDENCE = float_from_env("NEUROAD_YOLOX_CONFIDENCE", 0.25)
+YOLOX_NMS_THRESHOLD = float_from_env("NEUROAD_YOLOX_NMS_THRESHOLD", 0.45)
 MAX_OBJECTS_PER_FRAME = max(1, int_from_env("NEUROAD_MAX_OBJECTS_PER_FRAME", 30))
 MAX_OBJECTS_PER_SEGMENT = max(MAX_OBJECTS_PER_FRAME, int_from_env("NEUROAD_MAX_OBJECTS_PER_SEGMENT", 90))
 VOSK_MODEL_CACHE: Any | None = None
@@ -202,6 +206,8 @@ OBJECT_DETECTOR_FALLBACK_REASON: str | None = None
 YOLO_MODEL_SIGNATURE: str | None = None
 YOLOE_MODEL_CACHE: Any | None = None
 YOLOE_MODEL_SIGNATURE: tuple[str, tuple[str, ...]] | None = None
+YOLOX_ONNX_SESSION_CACHE: Any | None = None
+YOLOX_ONNX_SESSION_SIGNATURE: str | None = None
 PADDLE_OCR_CACHE: dict[str, Any] = {}
 SILERO_VAD_MODEL_CACHE: Any | None = None
 SENTENCE_MODEL_CACHE: Any | None = None
@@ -519,6 +525,20 @@ COCO_LABELS = [
     "hair brush",
 ]
 
+# YOLOX uses contiguous COCO-80 indices, unlike TensorFlow MobileNet-SSD's
+# background-prefixed label list above.
+YOLOX_COCO_LABELS = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+
 
 def ensure_storage_dirs() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -564,7 +584,7 @@ def runtime_dependency_status() -> dict[str, Any]:
         except Exception as exc:
             queue_error = f"{type(exc).__name__}: {exc}"
     object_detection_enabled = env_enabled("NEUROAD_ENABLE_OBJECT_DETECTION", True)
-    object_detection_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
+    object_detection_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolox_onnx").lower()
     production_environment = os.getenv("NEUROAD_ENVIRONMENT", "development").lower() == "production"
     ultralytics_license_accepted = env_enabled("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", False)
     detector_license_ready = bool(
@@ -572,9 +592,12 @@ def runtime_dependency_status() -> dict[str, Any]:
     )
     yolo_model_ready = YOLO_MODEL_PATH.is_file() and YOLO_MODEL_PATH.stat().st_size > 0
     yoloe_model_ready = YOLOE_MODEL_PATH.is_file() and YOLOE_MODEL_PATH.stat().st_size > 0
+    onnxruntime_available = importlib.util.find_spec("onnxruntime") is not None
+    yolox_model_ready = YOLOX_MODEL_PATH.is_file() and YOLOX_MODEL_PATH.stat().st_size > 0
     mobilenet_ready = MOBILENET_SSD_GRAPH.is_file() and MOBILENET_SSD_CONFIG.is_file()
     primary_detector_ready = (
         not object_detection_enabled
+        or (object_detection_engine == "yolox_onnx" and onnxruntime_available and yolox_model_ready)
         or (object_detection_engine == "yolo" and ultralytics_available and yolo_model_ready and detector_license_ready)
         or (object_detection_engine == "yoloe" and ultralytics_available and yoloe_model_ready and detector_license_ready)
         or (object_detection_engine == "mobilenet_ssd" and mobilenet_ready)
@@ -608,6 +631,17 @@ def runtime_dependency_status() -> dict[str, Any]:
             "available": mobilenet_ready,
             "graph_path": str(MOBILENET_SSD_GRAPH),
             "config_path": str(MOBILENET_SSD_CONFIG),
+        },
+        "yolox_onnx": {
+            "available": bool(onnxruntime_available and yolox_model_ready),
+            "runtime_available": onnxruntime_available,
+            "runtime_version": installed_package_version("onnxruntime"),
+            "model_path": str(YOLOX_MODEL_PATH),
+            "model_ready": yolox_model_ready,
+            "cached": YOLOX_ONNX_SESSION_CACHE is not None,
+            "input_size": YOLOX_INPUT_SIZE,
+            "confidence": YOLOX_CONFIDENCE,
+            "nms_threshold": YOLOX_NMS_THRESHOLD,
         },
         "ultralytics": {
             "available": ultralytics_available, "model_path": str(YOLO_MODEL_PATH), "model_ready": YOLO_MODEL_PATH.exists(),
@@ -4130,18 +4164,29 @@ def process_upload_job(job_id: str, video_id: str) -> None:
             "librosa": env_enabled("NEUROAD_ENABLE_LIBROSA", True),
             "audio_cleanup": env_enabled("NEUROAD_ENABLE_AUDIO_CLEANUP", False),
         }
-        object_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
+        object_engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolox_onnx").lower()
         object_configuration = {
             "schema": "tracked-multi-object-v1",
-            "library": installed_package_version("ultralytics"),
+            "library": (
+                installed_package_version("onnxruntime")
+                if object_engine == "yolox_onnx"
+                else installed_package_version("ultralytics")
+            ),
             "engine": object_engine,
             "environment": os.getenv("NEUROAD_ENVIRONMENT", "development").lower(),
             "license_acknowledged": env_enabled("NEUROAD_ULTRALYTICS_LICENSE_ACCEPTED", False),
-            "model": model_file_signature(YOLOE_MODEL_PATH if object_engine == "yoloe" else YOLO_MODEL_PATH),
+            "model": model_file_signature(
+                YOLOX_MODEL_PATH
+                if object_engine == "yolox_onnx"
+                else YOLOE_MODEL_PATH
+                if object_engine == "yoloe"
+                else YOLO_MODEL_PATH
+            ),
             "fallback_model": model_file_signature(YOLO_MODEL_PATH) if object_engine == "yoloe" else None,
             "prompts": yoloe_text_prompts() if object_engine == "yoloe" else [],
-            "confidence": YOLO_CONFIDENCE,
-            "image_size": YOLO_IMAGE_SIZE,
+            "confidence": YOLOX_CONFIDENCE if object_engine == "yolox_onnx" else YOLO_CONFIDENCE,
+            "image_size": YOLOX_INPUT_SIZE if object_engine == "yolox_onnx" else YOLO_IMAGE_SIZE,
+            "nms_threshold": YOLOX_NMS_THRESHOLD if object_engine == "yolox_onnx" else None,
             "batch_size": YOLO_BATCH_SIZE,
             "face_model": model_file_signature(MEDIAPIPE_FACE_MODEL),
         }
@@ -5497,12 +5542,20 @@ def extract_semantic_evidence(segments: list[dict[str, Any]]) -> dict[int, dict[
 
 def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
     enabled = env_enabled("NEUROAD_ENABLE_OBJECT_DETECTION", True)
-    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "mobilenet_ssd").lower()
+    engine = os.getenv("NEUROAD_OBJECT_DETECTION_ENGINE", "yolox_onnx").lower()
     OBJECT_DETECTION_RUNTIME.update(
         {
             "requested_engine": engine,
             "active_detector": "unavailable",
-            "model": str(YOLOE_MODEL_PATH) if engine == "yoloe" else str(YOLO_MODEL_PATH) if engine == "yolo" else None,
+            "model": (
+                str(YOLOX_MODEL_PATH)
+                if engine == "yolox_onnx"
+                else str(YOLOE_MODEL_PATH)
+                if engine == "yoloe"
+                else str(YOLO_MODEL_PATH)
+                if engine == "yolo"
+                else None
+            ),
             "fallback_reason": None,
             "degraded": True,
         }
@@ -5523,6 +5576,9 @@ def detect_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str
         )
 
     try:
+        if engine == "yolox_onnx":
+            detections = detect_yolox_onnx_objects(frames)
+            return finalize_object_detections(detections, detector="yolox_nano_onnx")
         if engine == "yoloe":
             detections = detect_yoloe_objects(frames)
             return finalize_object_detections(detections, detector="yoloe_gpu")
@@ -5637,14 +5693,16 @@ def finalize_object_detections(
         {
             "active_detector": detector,
             "model": (
-                str(YOLOE_MODEL_PATH)
+                str(YOLOX_MODEL_PATH)
+                if detector == "yolox_nano_onnx"
+                else str(YOLOE_MODEL_PATH)
                 if detector == "yoloe_gpu"
                 else str(YOLO_MODEL_PATH)
                 if detector in {"yolo_local", "yolo26_cpu"}
                 else None
             ),
             "fallback_reason": fallback_reason,
-            "degraded": detector not in {"yolo_local", "yoloe_gpu", "yolo26_cpu"},
+            "degraded": detector not in {"yolox_nano_onnx", "yolo_local", "yoloe_gpu", "yolo26_cpu"},
         }
     )
     return normalized
@@ -5818,6 +5876,154 @@ def detect_yolo_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dic
             output[segment_index].extend(
                 sorted(frame_objects, key=lambda item: item["confidence"], reverse=True)[:MAX_OBJECTS_PER_FRAME]
             )
+    return output
+
+
+def get_yolox_onnx_session() -> Any:
+    """Load the fixed-shape YOLOX-Nano ONNX artifact for CPU inference."""
+    global YOLOX_ONNX_SESSION_CACHE, YOLOX_ONNX_SESSION_SIGNATURE
+    if YOLOX_INPUT_SIZE != 416:
+        raise RuntimeError("The bundled YOLOX-Nano ONNX model requires NEUROAD_YOLOX_INPUT_SIZE=416.")
+    if not YOLOX_MODEL_PATH.is_file() or YOLOX_MODEL_PATH.stat().st_size <= 0:
+        raise RuntimeError(f"Configured YOLOX ONNX model is missing: {YOLOX_MODEL_PATH}")
+    signature = f"{YOLOX_MODEL_PATH}:{YOLOX_MODEL_PATH.stat().st_mtime_ns}:{YOLOX_INPUT_SIZE}"
+    if YOLOX_ONNX_SESSION_CACHE is not None and YOLOX_ONNX_SESSION_SIGNATURE == signature:
+        return YOLOX_ONNX_SESSION_CACHE
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError("onnxruntime is required for YOLOX ONNX object detection.") from exc
+    session = ort.InferenceSession(str(YOLOX_MODEL_PATH), providers=["CPUExecutionProvider"])
+    inputs = session.get_inputs()
+    outputs = session.get_outputs()
+    expected_shape = [1, 3, YOLOX_INPUT_SIZE, YOLOX_INPUT_SIZE]
+    if len(inputs) != 1 or len(outputs) != 1 or list(inputs[0].shape) != expected_shape:
+        raise RuntimeError("The YOLOX ONNX model does not match the expected 1x3x416x416 contract.")
+    YOLOX_ONNX_SESSION_CACHE = session
+    YOLOX_ONNX_SESSION_SIGNATURE = signature
+    return session
+
+
+def yolox_letterbox(image: np.ndarray) -> tuple[np.ndarray, float, int, int]:
+    """YOLOX's BGR/114-padding preprocessing for its static 416px model."""
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("opencv-python is required for YOLOX ONNX object detection.") from exc
+    height, width = image.shape[:2]
+    if not height or not width:
+        raise RuntimeError("YOLOX received an empty frame.")
+    scale = min(YOLOX_INPUT_SIZE / width, YOLOX_INPUT_SIZE / height)
+    resized_width = max(1, int(round(width * scale)))
+    resized_height = max(1, int(round(height * scale)))
+    resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+    padded = np.full((YOLOX_INPUT_SIZE, YOLOX_INPUT_SIZE, 3), 114, dtype=np.uint8)
+    padded[:resized_height, :resized_width] = resized
+    tensor = np.ascontiguousarray(padded.transpose(2, 0, 1), dtype=np.float32)[None, ...]
+    return tensor, scale, width, height
+
+
+def decode_yolox_onnx_output(raw_output: Any) -> np.ndarray:
+    """Decode raw YOLOX head outputs into cx/cy/width/height/object/class rows."""
+    output = np.asarray(raw_output, dtype=np.float32)
+    if output.ndim == 3:
+        if output.shape[0] != 1:
+            raise RuntimeError(f"YOLOX expected batch size 1, received {output.shape[0]}.")
+        output = output[0]
+    if output.shape != (3549, 85):
+        raise RuntimeError(f"Unexpected YOLOX ONNX output shape: {output.shape}")
+    grids: list[np.ndarray] = []
+    expanded_strides: list[np.ndarray] = []
+    for stride in (8, 16, 32):
+        feature_size = YOLOX_INPUT_SIZE // stride
+        x_grid, y_grid = np.meshgrid(np.arange(feature_size), np.arange(feature_size))
+        grids.append(np.stack((x_grid, y_grid), axis=2).reshape(1, -1, 2))
+        expanded_strides.append(np.full((1, feature_size * feature_size, 1), stride, dtype=np.float32))
+    grid = np.concatenate(grids, axis=1)[0].astype(np.float32)
+    strides = np.concatenate(expanded_strides, axis=1)[0]
+    decoded = output.copy()
+    decoded[:, :2] = (decoded[:, :2] + grid) * strides
+    decoded[:, 2:4] = np.exp(np.clip(decoded[:, 2:4], -20, 20)) * strides
+    return decoded
+
+
+def yolox_class_aware_nms(
+    boxes: list[list[float]], class_ids: list[int], scores: list[float]
+) -> list[int]:
+    kept: list[int] = []
+    for class_id in sorted(set(class_ids)):
+        candidates = [index for index, value in enumerate(class_ids) if value == class_id]
+        candidates.sort(key=lambda index: scores[index], reverse=True)
+        while candidates:
+            selected = candidates.pop(0)
+            kept.append(selected)
+            candidates = [
+                index for index in candidates
+                if bbox_iou(boxes[selected], boxes[index]) < YOLOX_NMS_THRESHOLD
+            ]
+    return sorted(kept, key=lambda index: scores[index], reverse=True)
+
+
+def yolox_rows_to_detections(
+    raw_output: Any, scale: float, original_width: int, original_height: int, timestamp: float
+) -> list[dict[str, Any]]:
+    decoded = decode_yolox_onnx_output(raw_output)
+    class_scores = decoded[:, 4:5] * decoded[:, 5:]
+    class_ids = np.argmax(class_scores, axis=1)
+    scores = class_scores[np.arange(decoded.shape[0]), class_ids]
+    candidates = np.where(scores >= YOLOX_CONFIDENCE)[0]
+    boxes: list[list[float]] = []
+    labels: list[int] = []
+    confidences: list[float] = []
+    for index in candidates.tolist():
+        center_x, center_y, width, height = decoded[index, :4]
+        x1 = max(0.0, min(float(original_width), float((center_x - width / 2) / scale)))
+        y1 = max(0.0, min(float(original_height), float((center_y - height / 2) / scale)))
+        x2 = max(0.0, min(float(original_width), float((center_x + width / 2) / scale)))
+        y2 = max(0.0, min(float(original_height), float((center_y + height / 2) / scale)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        boxes.append([x1, y1, x2, y2])
+        labels.append(int(class_ids[index]))
+        confidences.append(float(scores[index]))
+    kept = yolox_class_aware_nms(boxes, labels, confidences)
+    return [
+        {
+            "label": YOLOX_COCO_LABELS[labels[index]] if 0 <= labels[index] < len(YOLOX_COCO_LABELS) else str(labels[index]),
+            "confidence": confidences[index],
+            "bbox": boxes[index],
+            "frame_timestamp": timestamp,
+            "detector": "yolox_nano_onnx",
+            "evidence_kind": "object",
+        }
+        for index in kept[:MAX_OBJECTS_PER_FRAME]
+    ]
+
+
+def detect_yolox_onnx_objects(frames: dict[int, dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("opencv-python is required for YOLOX ONNX object detection.") from exc
+    session = get_yolox_onnx_session()
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+    output: dict[int, list[dict[str, Any]]] = {segment_index: [] for segment_index in frames}
+    for segment_index, sample in detection_frame_samples(frames):
+        image = cv2.imread(str(sample["path"]))
+        if image is None:
+            continue
+        tensor, scale, original_width, original_height = yolox_letterbox(image)
+        raw_output = session.run([output_name], {input_name: tensor})[0]
+        output[segment_index].extend(
+            yolox_rows_to_detections(
+                raw_output,
+                scale,
+                original_width,
+                original_height,
+                float(sample.get("timestamp", 0.0) or 0.0),
+            )
+        )
     return output
 
 
@@ -7326,7 +7532,9 @@ def write_analysis(
                 )
             active_detector = str(OBJECT_DETECTION_RUNTIME.get("active_detector") or "unavailable")
             detector_model_path = (
-                YOLOE_MODEL_PATH
+                YOLOX_MODEL_PATH
+                if active_detector == "yolox_nano_onnx"
+                else YOLOE_MODEL_PATH
                 if active_detector == "yoloe_gpu"
                 else YOLO_MODEL_PATH
                 if active_detector in {"yolo_local", "yolo26_cpu"}
@@ -7341,13 +7549,18 @@ def write_analysis(
             manifests = [
                 {
                     "extractor": "object_detection",
-                    "library_version": installed_package_version("ultralytics"),
+                    "library_version": (
+                        installed_package_version("onnxruntime")
+                        if active_detector == "yolox_nano_onnx"
+                        else installed_package_version("ultralytics")
+                    ),
                     "model_version": str(detector_model_path.name) if detector_model_path is not None else active_detector,
                     "weight_checksum": detector_checksum,
                     "configuration": {
                         "detector": OBJECT_DETECTION_RUNTIME,
-                        "confidence": YOLO_CONFIDENCE,
-                        "image_size": YOLO_IMAGE_SIZE,
+                        "confidence": YOLOX_CONFIDENCE if active_detector == "yolox_nano_onnx" else YOLO_CONFIDENCE,
+                        "image_size": YOLOX_INPUT_SIZE if active_detector == "yolox_nano_onnx" else YOLO_IMAGE_SIZE,
+                        "nms_threshold": YOLOX_NMS_THRESHOLD if active_detector == "yolox_nano_onnx" else None,
                     },
                 },
                 {
